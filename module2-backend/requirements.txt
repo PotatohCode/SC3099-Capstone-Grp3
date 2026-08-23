@@ -1,10 +1,16 @@
+# NOTE: several pins below were bumped from the original skeleton versions
+# because they predate Python 3.13 wheel builds (psycopg2-binary, pydantic /
+# pydantic-core, cryptography, bcrypt) — the old pins force a from-source
+# build that needs pg_config / a Rust toolchain / MSVC linker most dev
+# machines won't have. If your machine is on Python 3.11/3.12 these would
+# have worked as-is too, so this bump is safe either way.
 fastapi==0.109.0
 uvicorn[standard]==0.27.0
-sqlalchemy==2.0.25
-alembic==1.13.1
-psycopg2-binary==2.9.9
-pydantic==2.5.3
-pydantic-settings==2.1.0
+sqlalchemy==2.0.36  # 2.0.25 breaks on Python 3.13's typing internals
+alembic==1.13.3
+psycopg2-binary==2.9.12  # 2.9.9 has no Python 3.13 wheel
+pydantic==2.9.2  # 2.5.3's pydantic-core has no Python 3.13 wheel
+pydantic-settings==2.6.1
 pydantic[email]
 email-validator
 python-jose[cryptography]==3.3.0
@@ -15,8 +21,8 @@ httpx==0.26.0
 python-dotenv==1.0.0
 
 # Security
-cryptography==42.0.0
-bcrypt==4.1.2
+cryptography==44.0.1  # 42.0.0 has no Python 3.13 wheel
+bcrypt==4.2.1  # 4.1.2 has no Python 3.13 wheel
 
 # Observability
 opentelemetry-api==1.22.0

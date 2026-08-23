@@ -1,0 +1,24 @@
+# --- Python (module2-backend, module3-face-recognition) --------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.env
+*.env.local
+
+# --- Node (module1-frontend) -------------------------------------------------
+node_modules/
+.next/
+out/
+
+# --- Streamlit (module4-observability) ---------------------------------------
+.streamlit/secrets.toml
+
+# --- OS / editor ---------------------------------------------------------------
+.DS_Store
+Thumbs.db
+
+# --- Local dev artifacts --------------------------------------------------------
+*.log

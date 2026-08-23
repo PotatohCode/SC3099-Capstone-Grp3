@@ -6,13 +6,15 @@
 # ============================================
 # From module2-backend/requirements.txt
 # ============================================
+# See module2-backend/requirements.txt for why these pins were bumped from
+# the original skeleton versions (no Python 3.13 wheels on the old ones).
 fastapi==0.109.0
 uvicorn[standard]==0.27.0
-sqlalchemy==2.0.25
-alembic==1.13.1
-psycopg2-binary==2.9.9
-pydantic==2.5.3
-pydantic-settings==2.1.0
+sqlalchemy==2.0.36
+alembic==1.13.3
+psycopg2-binary==2.9.12
+pydantic==2.9.2
+pydantic-settings==2.6.1
 pydantic[email]
 email-validator
 python-jose[cryptography]==3.3.0
@@ -23,8 +25,8 @@ httpx==0.26.0
 python-dotenv==1.0.0
 
 # Security
-cryptography==42.0.0
-bcrypt==4.1.2
+cryptography==44.0.1
+bcrypt==4.2.1
 
 # Geolocation
 geopy==2.4.1
