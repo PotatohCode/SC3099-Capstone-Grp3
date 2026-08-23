@@ -20,5 +20,12 @@ out/
 .DS_Store
 Thumbs.db
 
+# --- Claude Code local tool config (permissions allowlist, session-local) ------
+.claude/
+
 # --- Local dev artifacts --------------------------------------------------------
 *.log
+
+# --- Local-only planning/progress docs (Claude-authored, not pushed) -----------
+module2-backend/IMPLEMENTATION-PLAN.md
+module2-backend/PROGRESS.md

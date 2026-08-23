@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import get_settings
+from app.routers import auth, users
 
 settings = get_settings()
 
@@ -39,5 +40,9 @@ async def root():
     return {"service": "SAIV Backend API", "version": "1.0.0"}
 
 
+API_PREFIX = "/api/v1"
+app.include_router(auth.router, prefix=API_PREFIX)
+app.include_router(users.router, prefix=API_PREFIX)
+
 # Routers are mounted here phase-by-phase, all under /api/v1 per
-# API-SPECIFICATION.md. Phase 2 adds: auth, users.
+# API-SPECIFICATION.md. Phase 3 adds: admin, courses, sessions, enrollments.
