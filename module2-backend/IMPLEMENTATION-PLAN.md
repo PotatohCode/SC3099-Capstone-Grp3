@@ -203,5 +203,6 @@ FACE_SERVICE_URL=http://localhost:8001                               # or http:/
 
 A phase isn't "done" until: the relevant `tests/public/` file passes locally against
 your running service, the endpoints are visible and correctly documented at
-`/docs`, and (once merged) the containerized `docker-compose up` build still boots
-clean.
+`/docs`, (once merged) the containerized `docker-compose up` build still boots
+clean, and [PROGRESS.md](PROGRESS.md) has a new checkpoint entry so the phase's
+before/after is on record.
