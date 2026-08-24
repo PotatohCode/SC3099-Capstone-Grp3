@@ -5,7 +5,11 @@ tests can seed/manipulate state without direct DB access, not just for the
 Observability test category.
 
 Every route here requires admin role (401 on bad/missing token via
-get_current_user, 403 on a valid non-admin token via require_role).
+get_current_user, 403 on a valid non-admin token via require_role) - each
+handler takes `current_user` itself (rather than a blanket router-level
+dependency) specifically so it can pass the *acting* admin's id to
+log_event, not just the affected resource's id. See KNOWN-ISSUES.md's
+"Admin endpoints don't record who performed the action" entry.
 """
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
@@ -30,17 +34,17 @@ from app.schemas.enrollment import EnrollmentCreate, EnrollmentResponse
 from app.services.audit import log_event
 from app.services.sanitize import sanitize_text
 
-router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_role("admin"))])
+router = APIRouter(prefix="/admin", tags=["admin"])
 
 
 @router.patch("/users/{user_id}/deactivate", response_model=AdminUserStatusResponse)
-def deactivate_user(user_id: str, db: Session = Depends(get_db)):
+def deactivate_user(user_id: str, current_user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
     user = db.get(User, user_id)
     if user is None:
         raise APIError(status.HTTP_404_NOT_FOUND, "User not found", ErrorCode.USER_NOT_FOUND)
 
     user.is_active = False
-    log_event(db, "user_updated", user_id=user.id, resource_type="user", resource_id=user.id,
+    log_event(db, "user_updated", user_id=current_user.id, resource_type="user", resource_id=user.id,
               details={"is_active": False})
     db.commit()
 
@@ -50,13 +54,13 @@ def deactivate_user(user_id: str, db: Session = Depends(get_db)):
 
 
 @router.patch("/users/{user_id}/activate", response_model=AdminUserStatusResponse)
-def activate_user(user_id: str, db: Session = Depends(get_db)):
+def activate_user(user_id: str, current_user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
     user = db.get(User, user_id)
     if user is None:
         raise APIError(status.HTTP_404_NOT_FOUND, "User not found", ErrorCode.USER_NOT_FOUND)
 
     user.is_active = True
-    log_event(db, "user_updated", user_id=user.id, resource_type="user", resource_id=user.id,
+    log_event(db, "user_updated", user_id=current_user.id, resource_type="user", resource_id=user.id,
               details={"is_active": True})
     db.commit()
 
@@ -66,7 +70,11 @@ def activate_user(user_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/users/bulk", response_model=AdminUserBulkResponse, status_code=status.HTTP_201_CREATED)
-def bulk_create_users(payload: AdminUserBulkCreate, db: Session = Depends(get_db)):
+def bulk_create_users(
+    payload: AdminUserBulkCreate,
+    current_user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
     created: list[User] = []
     errors: list[AdminUserBulkErrorItem] = []
 
@@ -83,7 +91,8 @@ def bulk_create_users(payload: AdminUserBulkCreate, db: Session = Depends(get_db
         )
         db.add(user)
         db.flush()
-        log_event(db, "user_created", user_id=user.id, resource_type="user", resource_id=user.id)
+        log_event(db, "user_created", user_id=user.id, resource_type="user", resource_id=user.id,
+                  details={"created_by": current_user.id})
         created.append(user)
 
     db.commit()
@@ -103,7 +112,10 @@ def bulk_create_users(payload: AdminUserBulkCreate, db: Session = Depends(get_db
 
 @router.patch("/sessions/{session_id}/status", response_model=AdminSessionStatusResponse)
 def update_session_status(
-    session_id: str, payload: AdminSessionStatusUpdate, db: Session = Depends(get_db)
+    session_id: str,
+    payload: AdminSessionStatusUpdate,
+    current_user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
 ):
     session_obj = db.get(ClassSession, session_id)
     if session_obj is None:
@@ -112,7 +124,7 @@ def update_session_status(
     old_status = session_obj.status
     session_obj.status = payload.status
     log_event(
-        db, "session_updated", resource_type="session", resource_id=session_obj.id,
+        db, "session_updated", user_id=current_user.id, resource_type="session", resource_id=session_obj.id,
         details={"old_status": old_status, "new_status": payload.status},
     )
     db.commit()
@@ -127,7 +139,11 @@ def update_session_status(
 
 
 @router.post("/enrollments/", response_model=EnrollmentResponse, status_code=status.HTTP_201_CREATED)
-def admin_create_enrollment(payload: EnrollmentCreate, db: Session = Depends(get_db)):
+def admin_create_enrollment(
+    payload: EnrollmentCreate,
+    current_user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
     if db.get(User, payload.student_id) is None:
         raise APIError(status.HTTP_404_NOT_FOUND, "Student not found", ErrorCode.STUDENT_NOT_FOUND)
     if db.get(Course, payload.course_id) is None:
@@ -145,7 +161,7 @@ def admin_create_enrollment(payload: EnrollmentCreate, db: Session = Depends(get
     db.add(enrollment)
     db.flush()
     log_event(
-        db, "enrollment_added", resource_type="enrollment", resource_id=enrollment.id,
+        db, "enrollment_added", user_id=current_user.id, resource_type="enrollment", resource_id=enrollment.id,
         details={"student_id": payload.student_id, "course_id": payload.course_id},
     )
     db.commit()

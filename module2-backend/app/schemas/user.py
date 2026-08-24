@@ -3,6 +3,8 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
+from app.schemas.common import Role
+
 
 class UserResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -24,3 +26,10 @@ class UserUpdateRequest(BaseModel):
     full_name: Optional[str] = Field(default=None, min_length=1, max_length=255)
     camera_consent: Optional[bool] = None
     geolocation_consent: Optional[bool] = None
+
+
+class UserAdminUpdate(BaseModel):
+    """PATCH /users/{user_id} - admin only. Role reassignment + soft-delete toggle."""
+
+    role: Optional[Role] = None
+    is_active: Optional[bool] = None

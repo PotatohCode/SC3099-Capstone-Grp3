@@ -1,10 +1,7 @@
-from typing import Literal
-
 from pydantic import BaseModel, EmailStr, Field
 
+from app.schemas.common import Role
 from app.schemas.user import UserResponse
-
-Role = Literal["student", "instructor", "ta", "admin"]
 
 
 class RegisterRequest(BaseModel):
