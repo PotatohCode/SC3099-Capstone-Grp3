@@ -18,7 +18,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.core.config import get_settings
 from app.core.errors import DEFAULT_CODE_BY_STATUS, APIError, ErrorCode
-from app.routers import admin, auth, checkins, courses, devices, enrollments, sessions, users
+from app.routers import admin, audit, auth, checkins, courses, devices, enrollments, sessions, users
 
 settings = get_settings()
 logger = logging.getLogger("saiv.errors")
@@ -84,6 +84,8 @@ app.include_router(sessions.router, prefix=API_PREFIX)
 app.include_router(enrollments.router, prefix=API_PREFIX)
 app.include_router(devices.router, prefix=API_PREFIX)
 app.include_router(checkins.router, prefix=API_PREFIX)
+app.include_router(audit.router, prefix=API_PREFIX)
 
 # Routers are mounted here phase-by-phase, all under /api/v1 per
-# API-SPECIFICATION.md. Phase 7 adds: stats, audit, export.
+# API-SPECIFICATION.md. Phase 7 (7b-7e) adds: stats, export, rate
+# limiting, metrics, retention job.
