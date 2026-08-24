@@ -99,3 +99,8 @@ class AuditAction(str, enum.Enum):
     COURSE_CREATED = "course_created"
     COURSE_UPDATED = "course_updated"
     COURSE_DELETED = "course_deleted"
+    # Same rationale: device_registered is the only device action in the
+    # API-SPEC's 18-item list, but update/removal are just as
+    # security-relevant (device trust changes, device revocation).
+    DEVICE_UPDATED = "device_updated"
+    DEVICE_REMOVED = "device_removed"
