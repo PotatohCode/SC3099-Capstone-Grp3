@@ -29,7 +29,7 @@ from app.db.models.session import ClassSession
 from app.db.models.user import User
 from app.schemas.export import ExportRecord, SessionExportResponse, SessionExportSummary
 from app.services.audit import log_event
-from app.services.authz import require_edit_course, require_manage_session
+from app.services.authz import require_export_course, require_manage_session
 
 router = APIRouter(prefix="/export", tags=["export"])
 
@@ -87,7 +87,7 @@ def export_course_attendance(
     course = db.get(Course, course_id)
     if course is None:
         raise APIError(404, "Course not found", ErrorCode.COURSE_NOT_FOUND)
-    require_edit_course(current_user, course)
+    require_export_course(db, current_user, course)
 
     query = (
         db.query(CheckIn)

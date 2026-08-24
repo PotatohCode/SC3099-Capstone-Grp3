@@ -71,6 +71,43 @@ def can_manage_session(db: Session, user: User, session_obj: ClassSession) -> bo
     return False
 
 
+def can_export_course(db: Session, user: User, course: Course) -> bool:
+    """Stricter than can_edit_course - for read endpoints that disclose
+    real records (currently just export), not write/setup actions.
+    admin, or an instructor who owns the course directly (exact
+    instructor_id match, no None-leniency), or an instructor who owns at
+    least one session under it.
+
+    Found 2026-08-24 (Phase 7c): can_edit_course's "unassigned course is
+    manageable by any instructor" leniency let a totally unrelated
+    instructor export a course's attendance (names/emails/risk scores)
+    purely because nobody had claimed the course - confirmed live. This
+    helper closes that gap for export specifically. Deliberately NOT
+    folded into can_edit_course itself: POST /enrollments/ and
+    POST /sessions/ need an instructor to act on a fresh, unclaimed
+    course *before* any session exists (setting up a roster comes before
+    scheduling the first lecture) - export doesn't have that problem,
+    since there's nothing to export before a session exists anyway. See
+    KNOWN-ISSUES.md for the full writeup."""
+    if user.role == "admin":
+        return True
+    if user.role != "instructor":
+        return False
+    if course.instructor_id == user.id:
+        return True
+    return (
+        db.query(ClassSession)
+        .filter(ClassSession.course_id == course.id, ClassSession.instructor_id == user.id)
+        .first()
+        is not None
+    )
+
+
+def require_export_course(db: Session, user: User, course: Course) -> None:
+    if not can_export_course(db, user, course):
+        raise APIError(status.HTTP_403_FORBIDDEN, "Not authorized for this course", ErrorCode.INSUFFICIENT_PERMISSIONS)
+
+
 def require_edit_course(user: User, course: Course) -> None:
     if not can_edit_course(user, course):
         raise APIError(status.HTTP_403_FORBIDDEN, "Not authorized for this course", ErrorCode.INSUFFICIENT_PERMISSIONS)
