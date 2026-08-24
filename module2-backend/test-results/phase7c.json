@@ -1,0 +1,912 @@
+{
+  "timestamp": "2026-08-24T21:17:50.015120",
+  "summary": {
+    "total_points": 77.0,
+    "earned_points": 77.0,
+    "percentage": 100.0,
+    "letter_grade": "A",
+    "tests_passed": 66,
+    "tests_failed": 0,
+    "tests_total": 66
+  },
+  "by_file": {
+    "test_api_functional.py": {
+      "max_points": 28,
+      "earned_points": 28,
+      "passed": 16,
+      "failed": 0
+    },
+    "test_frontend_dashboard.py": {
+      "max_points": 8,
+      "earned_points": 8,
+      "passed": 8,
+      "failed": 0
+    },
+    "test_integration.py": {
+      "max_points": 4,
+      "earned_points": 4,
+      "passed": 3,
+      "failed": 0
+    },
+    "test_observability.py": {
+      "max_points": 12,
+      "earned_points": 12,
+      "passed": 12,
+      "failed": 0
+    },
+    "test_performance.py": {
+      "max_points": 5.0,
+      "earned_points": 5.0,
+      "passed": 7,
+      "failed": 0
+    },
+    "test_privacy_basic.py": {
+      "max_points": 8,
+      "earned_points": 8,
+      "passed": 8,
+      "failed": 0
+    },
+    "test_security_basic.py": {
+      "max_points": 12,
+      "earned_points": 12,
+      "passed": 12,
+      "failed": 0
+    }
+  },
+  "by_category": {
+    "authentication": {
+      "max_points": 5,
+      "earned_points": 5,
+      "passed": 5,
+      "failed": 0
+    },
+    "user_management": {
+      "max_points": 5,
+      "earned_points": 5,
+      "passed": 3,
+      "failed": 0
+    },
+    "courses": {
+      "max_points": 4,
+      "earned_points": 4,
+      "passed": 2,
+      "failed": 0
+    },
+    "sessions": {
+      "max_points": 4,
+      "earned_points": 4,
+      "passed": 2,
+      "failed": 0
+    },
+    "checkin": {
+      "max_points": 8,
+      "earned_points": 8,
+      "passed": 3,
+      "failed": 0
+    },
+    "devices": {
+      "max_points": 2,
+      "earned_points": 2,
+      "passed": 1,
+      "failed": 0
+    },
+    "frontend_contract": {
+      "max_points": 4,
+      "earned_points": 4,
+      "passed": 4,
+      "failed": 0
+    },
+    "dashboard_contract": {
+      "max_points": 4,
+      "earned_points": 4,
+      "passed": 4,
+      "failed": 0
+    },
+    "integration": {
+      "max_points": 2,
+      "earned_points": 2,
+      "passed": 1,
+      "failed": 0
+    },
+    "performance": {
+      "max_points": 2,
+      "earned_points": 2,
+      "passed": 2,
+      "failed": 0
+    },
+    "observability_bonus": {
+      "max_points": 12,
+      "earned_points": 12,
+      "passed": 12,
+      "failed": 0
+    },
+    "latency": {
+      "max_points": 3.0,
+      "earned_points": 3.0,
+      "passed": 4,
+      "failed": 0
+    },
+    "concurrency": {
+      "max_points": 1,
+      "earned_points": 1,
+      "passed": 1,
+      "failed": 0
+    },
+    "db_optimization": {
+      "max_points": 1.0,
+      "earned_points": 1.0,
+      "passed": 2,
+      "failed": 0
+    },
+    "consent": {
+      "max_points": 3,
+      "earned_points": 3,
+      "passed": 3,
+      "failed": 0
+    },
+    "data_minimization": {
+      "max_points": 3,
+      "earned_points": 3,
+      "passed": 3,
+      "failed": 0
+    },
+    "data_retention": {
+      "max_points": 2,
+      "earned_points": 2,
+      "passed": 2,
+      "failed": 0
+    },
+    "auth_security": {
+      "max_points": 4,
+      "earned_points": 4,
+      "passed": 4,
+      "failed": 0
+    },
+    "authorization": {
+      "max_points": 4,
+      "earned_points": 4,
+      "passed": 4,
+      "failed": 0
+    },
+    "input_validation": {
+      "max_points": 3,
+      "earned_points": 3,
+      "passed": 3,
+      "failed": 0
+    },
+    "rate_limiting": {
+      "max_points": 1,
+      "earned_points": 1,
+      "passed": 1,
+      "failed": 0
+    }
+  },
+  "tests": [
+    {
+      "node_id": "tests/public/test_api_functional.py::TestAuthentication::test_user_registration",
+      "name": "test_user_registration",
+      "file": "test_api_functional.py",
+      "max_points": 1,
+      "earned_points": 1,
+      "passed": true,
+      "category": "authentication",
+      "duration": 0.4398002999369055,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_api_functional.py::TestAuthentication::test_duplicate_registration_fails",
+      "name": "test_duplicate_registration_fails",
+      "file": "test_api_functional.py",
+      "max_points": 1,
+      "earned_points": 1,
+      "passed": true,
+      "category": "authentication",
+      "duration": 0.016165199922397733,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_api_functional.py::TestAuthentication::test_user_login_success",
+      "name": "test_user_login_success",
+      "file": "test_api_functional.py",
+      "max_points": 1,
+      "earned_points": 1,
+      "passed": true,
+      "category": "authentication",
+      "duration": 0.38878849998582155,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_api_functional.py::TestAuthentication::test_login_wrong_password_fails",
+      "name": "test_login_wrong_password_fails",
+      "file": "test_api_functional.py",
+      "max_points": 1,
+      "earned_points": 1,
+      "passed": true,
+      "category": "authentication",
+      "duration": 0.3862861000234261,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_api_functional.py::TestAuthentication::test_token_refresh",
+      "name": "test_token_refresh",
+      "file": "test_api_functional.py",
+      "max_points": 1,
+      "earned_points": 1,
+      "passed": true,
+      "category": "authentication",
+      "duration": 0.40550750005058944,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_api_functional.py::TestUserManagement::test_get_current_user",
+      "name": "test_get_current_user",
+      "file": "test_api_functional.py",
+      "max_points": 2,
+      "earned_points": 2,
+      "passed": true,
+      "category": "user_management",
+      "duration": 0.012582399998791516,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_api_functional.py::TestUserManagement::test_update_user_profile",
+      "name": "test_update_user_profile",
+      "file": "test_api_functional.py",
+      "max_points": 2,
+      "earned_points": 2,
+      "passed": true,
+      "category": "user_management",
+      "duration": 0.018952999962493777,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_api_functional.py::TestUserManagement::test_unauthorized_access_fails",
+      "name": "test_unauthorized_access_fails",
+      "file": "test_api_functional.py",
+      "max_points": 1,
+      "earned_points": 1,
+      "passed": true,
+      "category": "user_management",
+      "duration": 0.00485959998331964,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_api_functional.py::TestCourseManagement::test_list_courses",
+      "name": "test_list_courses",
+      "file": "test_api_functional.py",
+      "max_points": 2,
+      "earned_points": 2,
+      "passed": true,
+      "category": "courses",
+      "duration": 0.025630000047385693,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_api_functional.py::TestCourseManagement::test_get_course_details",
+      "name": "test_get_course_details",
+      "file": "test_api_functional.py",
+      "max_points": 2,
+      "earned_points": 2,
+      "passed": true,
+      "category": "courses",
+      "duration": 0.01783699996303767,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_api_functional.py::TestSessionManagement::test_list_active_sessions",
+      "name": "test_list_active_sessions",
+      "file": "test_api_functional.py",
+      "max_points": 2,
+      "earned_points": 2,
+      "passed": true,
+      "category": "sessions",
+      "duration": 0.09548549994360656,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_api_functional.py::TestSessionManagement::test_get_session_details",
+      "name": "test_get_session_details",
+      "file": "test_api_functional.py",
+      "max_points": 2,
+      "earned_points": 2,
+      "passed": true,
+      "category": "sessions",
+      "duration": 0.020543199963867664,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_api_functional.py::TestCheckInWorkflow::test_successful_checkin",
+      "name": "test_successful_checkin",
+      "file": "test_api_functional.py",
+      "max_points": 3,
+      "earned_points": 3,
+      "passed": true,
+      "category": "checkin",
+      "duration": 0.04183630004990846,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_api_functional.py::TestCheckInWorkflow::test_duplicate_checkin_fails",
+      "name": "test_duplicate_checkin_fails",
+      "file": "test_api_functional.py",
+      "max_points": 3,
+      "earned_points": 3,
+      "passed": true,
+      "category": "checkin",
+      "duration": 0.07083209999836981,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_api_functional.py::TestCheckInWorkflow::test_list_my_checkins",
+      "name": "test_list_my_checkins",
+      "file": "test_api_functional.py",
+      "max_points": 2,
+      "earned_points": 2,
+      "passed": true,
+      "category": "checkin",
+      "duration": 0.055323800072073936,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_api_functional.py::TestDeviceManagement::test_list_my_devices",
+      "name": "test_list_my_devices",
+      "file": "test_api_functional.py",
+      "max_points": 2,
+      "earned_points": 2,
+      "passed": true,
+      "category": "devices",
+      "duration": 0.014697699923999608,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_frontend_dashboard.py::TestFrontendAuthContract::test_login_response_format",
+      "name": "test_login_response_format",
+      "file": "test_frontend_dashboard.py",
+      "max_points": 1,
+      "earned_points": 1,
+      "passed": true,
+      "category": "frontend_contract",
+      "duration": 0.391529000014998,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_frontend_dashboard.py::TestFrontendAuthContract::test_token_refresh_format",
+      "name": "test_token_refresh_format",
+      "file": "test_frontend_dashboard.py",
+      "max_points": 1,
+      "earned_points": 1,
+      "passed": true,
+      "category": "frontend_contract",
+      "duration": 0.4043144000461325,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_frontend_dashboard.py::TestFrontendCheckinContract::test_checkin_request_format",
+      "name": "test_checkin_request_format",
+      "file": "test_frontend_dashboard.py",
+      "max_points": 1,
+      "earned_points": 1,
+      "passed": true,
+      "category": "frontend_contract",
+      "duration": 0.03941560001112521,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_frontend_dashboard.py::TestFrontendCheckinContract::test_checkin_response_format",
+      "name": "test_checkin_response_format",
+      "file": "test_frontend_dashboard.py",
+      "max_points": 1,
+      "earned_points": 1,
+      "passed": true,
+      "category": "frontend_contract",
+      "duration": 0.02846750000026077,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_frontend_dashboard.py::TestDashboardSessionContract::test_active_sessions_format",
+      "name": "test_active_sessions_format",
+      "file": "test_frontend_dashboard.py",
+      "max_points": 1,
+      "earned_points": 1,
+      "passed": true,
+      "category": "dashboard_contract",
+      "duration": 0.07428639999125153,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_frontend_dashboard.py::TestDashboardSessionContract::test_session_details_format",
+      "name": "test_session_details_format",
+      "file": "test_frontend_dashboard.py",
+      "max_points": 1,
+      "earned_points": 1,
+      "passed": true,
+      "category": "dashboard_contract",
+      "duration": 0.019353899988345802,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_frontend_dashboard.py::TestDashboardMetricsContract::test_courses_list_format",
+      "name": "test_courses_list_format",
+      "file": "test_frontend_dashboard.py",
+      "max_points": 1,
+      "earned_points": 1,
+      "passed": true,
+      "category": "dashboard_contract",
+      "duration": 0.021201999974437058,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_frontend_dashboard.py::TestDashboardMetricsContract::test_user_profile_format",
+      "name": "test_user_profile_format",
+      "file": "test_frontend_dashboard.py",
+      "max_points": 1,
+      "earned_points": 1,
+      "passed": true,
+      "category": "dashboard_contract",
+      "duration": 0.008930300013162196,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_integration.py::TestEndToEndCheckIn::test_complete_student_checkin_flow",
+      "name": "test_complete_student_checkin_flow",
+      "file": "test_integration.py",
+      "max_points": 2,
+      "earned_points": 2,
+      "passed": true,
+      "category": "integration",
+      "duration": 1.2289564000675455,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_integration.py::TestBasicPerformance::test_auth_endpoint_latency",
+      "name": "test_auth_endpoint_latency",
+      "file": "test_integration.py",
+      "max_points": 1,
+      "earned_points": 1,
+      "passed": true,
+      "category": "performance",
+      "duration": 0.37619330000597984,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_integration.py::TestBasicPerformance::test_concurrent_logins",
+      "name": "test_concurrent_logins",
+      "file": "test_integration.py",
+      "max_points": 1,
+      "earned_points": 1,
+      "passed": true,
+      "category": "performance",
+      "duration": 0.8867812999524176,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_observability.py::TestStatsEndpoints::test_stats_overview",
+      "name": "test_stats_overview",
+      "file": "test_observability.py",
+      "max_points": 1,
+      "earned_points": 1,
+      "passed": true,
+      "category": "observability_bonus",
+      "duration": 0.02073220000602305,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_observability.py::TestStatsEndpoints::test_stats_session",
+      "name": "test_stats_session",
+      "file": "test_observability.py",
+      "max_points": 1,
+      "earned_points": 1,
+      "passed": true,
+      "category": "observability_bonus",
+      "duration": 0.017557899933308363,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_observability.py::TestStatsEndpoints::test_stats_course",
+      "name": "test_stats_course",
+      "file": "test_observability.py",
+      "max_points": 1,
+      "earned_points": 1,
+      "passed": true,
+      "category": "observability_bonus",
+      "duration": 0.02166389999911189,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_observability.py::TestStatsEndpoints::test_stats_student",
+      "name": "test_stats_student",
+      "file": "test_observability.py",
+      "max_points": 1,
+      "earned_points": 1,
+      "passed": true,
+      "category": "observability_bonus",
+      "duration": 0.022121399990282953,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_observability.py::TestSessionManagement::test_list_sessions_with_filters",
+      "name": "test_list_sessions_with_filters",
+      "file": "test_observability.py",
+      "max_points": 1,
+      "earned_points": 1,
+      "passed": true,
+      "category": "observability_bonus",
+      "duration": 0.047201900044456124,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_observability.py::TestSessionManagement::test_create_session",
+      "name": "test_create_session",
+      "file": "test_observability.py",
+      "max_points": 1,
+      "earned_points": 1,
+      "passed": true,
+      "category": "observability_bonus",
+      "duration": 0.03329910000320524,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_observability.py::TestSessionManagement::test_update_session",
+      "name": "test_update_session",
+      "file": "test_observability.py",
+      "max_points": 1,
+      "earned_points": 1,
+      "passed": true,
+      "category": "observability_bonus",
+      "duration": 0.08316009992267936,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_observability.py::TestEnrollmentManagement::test_list_course_enrollments",
+      "name": "test_list_course_enrollments",
+      "file": "test_observability.py",
+      "max_points": 1,
+      "earned_points": 1,
+      "passed": true,
+      "category": "observability_bonus",
+      "duration": 0.014689500094391406,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_observability.py::TestEnrollmentManagement::test_my_enrollments",
+      "name": "test_my_enrollments",
+      "file": "test_observability.py",
+      "max_points": 1,
+      "earned_points": 1,
+      "passed": true,
+      "category": "observability_bonus",
+      "duration": 0.016984299989417195,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_observability.py::TestCheckinFiltering::test_list_all_checkins",
+      "name": "test_list_all_checkins",
+      "file": "test_observability.py",
+      "max_points": 1,
+      "earned_points": 1,
+      "passed": true,
+      "category": "observability_bonus",
+      "duration": 0.02182440005708486,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_observability.py::TestCheckinFiltering::test_flagged_checkins_queue",
+      "name": "test_flagged_checkins_queue",
+      "file": "test_observability.py",
+      "max_points": 1,
+      "earned_points": 1,
+      "passed": true,
+      "category": "observability_bonus",
+      "duration": 0.019928600057028234,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_observability.py::TestExportEndpoints::test_export_session_attendance_json",
+      "name": "test_export_session_attendance_json",
+      "file": "test_observability.py",
+      "max_points": 1,
+      "earned_points": 1,
+      "passed": true,
+      "category": "observability_bonus",
+      "duration": 0.028123299940489233,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_performance.py::TestResponseLatency::test_auth_endpoint_latency",
+      "name": "test_auth_endpoint_latency",
+      "file": "test_performance.py",
+      "max_points": 1,
+      "earned_points": 1,
+      "passed": true,
+      "category": "latency",
+      "duration": 0.401554899988696,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_performance.py::TestResponseLatency::test_checkin_endpoint_latency",
+      "name": "test_checkin_endpoint_latency",
+      "file": "test_performance.py",
+      "max_points": 1,
+      "earned_points": 1,
+      "passed": true,
+      "category": "latency",
+      "duration": 0.044002599897794425,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_performance.py::TestResponseLatency::test_list_endpoint_latency",
+      "name": "test_list_endpoint_latency",
+      "file": "test_performance.py",
+      "max_points": 0.5,
+      "earned_points": 0.5,
+      "passed": true,
+      "category": "latency",
+      "duration": 0.02451310004107654,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_performance.py::TestResponseLatency::test_health_check_latency",
+      "name": "test_health_check_latency",
+      "file": "test_performance.py",
+      "max_points": 0.5,
+      "earned_points": 0.5,
+      "passed": true,
+      "category": "latency",
+      "duration": 0.004021400003693998,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_performance.py::TestConcurrentUsers::test_concurrent_logins",
+      "name": "test_concurrent_logins",
+      "file": "test_performance.py",
+      "max_points": 1,
+      "earned_points": 1,
+      "passed": true,
+      "category": "concurrency",
+      "duration": 0.4861603999743238,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_performance.py::TestDatabaseOptimization::test_no_n_plus_one_queries",
+      "name": "test_no_n_plus_one_queries",
+      "file": "test_performance.py",
+      "max_points": 0.5,
+      "earned_points": 0.5,
+      "passed": true,
+      "category": "db_optimization",
+      "duration": 0.02216609998140484,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_performance.py::TestDatabaseOptimization::test_pagination_support",
+      "name": "test_pagination_support",
+      "file": "test_performance.py",
+      "max_points": 0.5,
+      "earned_points": 0.5,
+      "passed": true,
+      "category": "db_optimization",
+      "duration": 0.02491619996726513,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_privacy_basic.py::TestConsentManagement::test_camera_consent_required",
+      "name": "test_camera_consent_required",
+      "file": "test_privacy_basic.py",
+      "max_points": 1,
+      "earned_points": 1,
+      "passed": true,
+      "category": "consent",
+      "duration": 0.012019500019960105,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_privacy_basic.py::TestConsentManagement::test_geolocation_consent_required",
+      "name": "test_geolocation_consent_required",
+      "file": "test_privacy_basic.py",
+      "max_points": 1,
+      "earned_points": 1,
+      "passed": true,
+      "category": "consent",
+      "duration": 0.012993999989703298,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_privacy_basic.py::TestConsentManagement::test_consent_can_be_updated",
+      "name": "test_consent_can_be_updated",
+      "file": "test_privacy_basic.py",
+      "max_points": 1,
+      "earned_points": 1,
+      "passed": true,
+      "category": "consent",
+      "duration": 0.01270780002232641,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_privacy_basic.py::TestDataMinimization::test_no_raw_face_images_in_checkin_response",
+      "name": "test_no_raw_face_images_in_checkin_response",
+      "file": "test_privacy_basic.py",
+      "max_points": 1,
+      "earned_points": 1,
+      "passed": true,
+      "category": "data_minimization",
+      "duration": 0.04918189998716116,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_privacy_basic.py::TestDataMinimization::test_only_face_embedding_hash_stored",
+      "name": "test_only_face_embedding_hash_stored",
+      "file": "test_privacy_basic.py",
+      "max_points": 1,
+      "earned_points": 1,
+      "passed": true,
+      "category": "data_minimization",
+      "duration": 0.026670999941416085,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_privacy_basic.py::TestDataMinimization::test_passwords_not_in_user_response",
+      "name": "test_passwords_not_in_user_response",
+      "file": "test_privacy_basic.py",
+      "max_points": 1,
+      "earned_points": 1,
+      "passed": true,
+      "category": "data_minimization",
+      "duration": 0.00889850000385195,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_privacy_basic.py::TestDataRetention::test_user_has_scheduled_deletion_field",
+      "name": "test_user_has_scheduled_deletion_field",
+      "file": "test_privacy_basic.py",
+      "max_points": 1,
+      "earned_points": 1,
+      "passed": true,
+      "category": "data_retention",
+      "duration": 0.012025699950754642,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_privacy_basic.py::TestDataRetention::test_audit_log_endpoint_exists",
+      "name": "test_audit_log_endpoint_exists",
+      "file": "test_privacy_basic.py",
+      "max_points": 1,
+      "earned_points": 1,
+      "passed": true,
+      "category": "data_retention",
+      "duration": 0.03319580003153533,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_security_basic.py::TestAuthenticationSecurity::test_weak_password_rejected",
+      "name": "test_weak_password_rejected",
+      "file": "test_security_basic.py",
+      "max_points": 1,
+      "earned_points": 1,
+      "passed": true,
+      "category": "auth_security",
+      "duration": 0.052835999988019466,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_security_basic.py::TestAuthenticationSecurity::test_password_not_in_response",
+      "name": "test_password_not_in_response",
+      "file": "test_security_basic.py",
+      "max_points": 1,
+      "earned_points": 1,
+      "passed": true,
+      "category": "auth_security",
+      "duration": 0.39214540005195886,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_security_basic.py::TestAuthenticationSecurity::test_invalid_token_rejected",
+      "name": "test_invalid_token_rejected",
+      "file": "test_security_basic.py",
+      "max_points": 1,
+      "earned_points": 1,
+      "passed": true,
+      "category": "auth_security",
+      "duration": 0.005448700045235455,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_security_basic.py::TestAuthenticationSecurity::test_expired_token_rejected",
+      "name": "test_expired_token_rejected",
+      "file": "test_security_basic.py",
+      "max_points": 1,
+      "earned_points": 1,
+      "passed": true,
+      "category": "auth_security",
+      "duration": 0.005808999994769692,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_security_basic.py::TestAuthorizationControls::test_student_cannot_access_instructor_endpoints",
+      "name": "test_student_cannot_access_instructor_endpoints",
+      "file": "test_security_basic.py",
+      "max_points": 1,
+      "earned_points": 1,
+      "passed": true,
+      "category": "authorization",
+      "duration": 0.010143799940124154,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_security_basic.py::TestAuthorizationControls::test_instructor_can_view_session_checkins",
+      "name": "test_instructor_can_view_session_checkins",
+      "file": "test_security_basic.py",
+      "max_points": 1,
+      "earned_points": 1,
+      "passed": true,
+      "category": "authorization",
+      "duration": 0.017310499912127852,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_security_basic.py::TestAuthorizationControls::test_non_admin_cannot_access_audit_logs",
+      "name": "test_non_admin_cannot_access_audit_logs",
+      "file": "test_security_basic.py",
+      "max_points": 1,
+      "earned_points": 1,
+      "passed": true,
+      "category": "authorization",
+      "duration": 0.008998899953439832,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_security_basic.py::TestAuthorizationControls::test_inactive_user_cannot_login",
+      "name": "test_inactive_user_cannot_login",
+      "file": "test_security_basic.py",
+      "max_points": 1,
+      "earned_points": 1,
+      "passed": true,
+      "category": "authorization",
+      "duration": 0.435221099993214,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_security_basic.py::TestInputValidation::test_invalid_email_rejected",
+      "name": "test_invalid_email_rejected",
+      "file": "test_security_basic.py",
+      "max_points": 1,
+      "earned_points": 1,
+      "passed": true,
+      "category": "input_validation",
+      "duration": 0.004865500028245151,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_security_basic.py::TestInputValidation::test_sql_injection_prevented",
+      "name": "test_sql_injection_prevented",
+      "file": "test_security_basic.py",
+      "max_points": 1,
+      "earned_points": 1,
+      "passed": true,
+      "category": "input_validation",
+      "duration": 0.008456500014290214,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_security_basic.py::TestInputValidation::test_xss_payload_sanitized",
+      "name": "test_xss_payload_sanitized",
+      "file": "test_security_basic.py",
+      "max_points": 1,
+      "earned_points": 1,
+      "passed": true,
+      "category": "input_validation",
+      "duration": 0.021539799985475838,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_security_basic.py::TestRateLimiting::test_login_rate_limiting",
+      "name": "test_login_rate_limiting",
+      "file": "test_security_basic.py",
+      "max_points": 1,
+      "earned_points": 1,
+      "passed": true,
+      "category": "rate_limiting",
+      "duration": 7.894951700000092,
+      "error": null
+    }
+  ]
+}
