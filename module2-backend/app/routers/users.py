@@ -9,7 +9,8 @@ from app.db.models.course import Course
 from app.db.models.enrollment import Enrollment
 from app.db.models.user import User
 from app.schemas.common import Page
-from app.schemas.user import UserAdminUpdate, UserResponse, UserUpdateRequest
+from app.schemas.user import FaceEnrollRequest, FaceEnrollResponse, UserAdminUpdate, UserResponse, UserUpdateRequest
+from app.services import face_client
 from app.services.audit import log_event
 from app.services.sanitize import sanitize_text
 
@@ -37,6 +38,42 @@ def update_me(
     db.commit()
     db.refresh(current_user)
     return current_user
+
+
+@router.post("/me/face/enroll", response_model=FaceEnrollResponse)
+def enroll_face(
+    payload: FaceEnrollRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if not current_user.camera_consent:
+        raise APIError(
+            status.HTTP_400_BAD_REQUEST, "Camera consent required before face enrollment",
+            ErrorCode.CAMERA_CONSENT_REQUIRED,
+        )
+
+    result = face_client.enroll_face(current_user.id, payload.image, current_user.camera_consent)
+    if result is None:
+        # Module 3 timed out / errored / is a 501 stub (see KNOWN-ISSUES.md) -
+        # degrade to a real 503, not a crash or a fake success.
+        raise APIError(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "Face recognition service unavailable",
+            ErrorCode.FACE_SERVICE_UNAVAILABLE,
+        )
+    if not result.get("enrollment_successful", False):
+        raise APIError(status.HTTP_400_BAD_REQUEST, "No face detected in image", ErrorCode.NO_FACE_DETECTED)
+
+    current_user.face_embedding_hash = result.get("face_template_hash")
+    current_user.face_enrolled = True
+    log_event(db, "face_enrolled", user_id=current_user.id, resource_type="user", resource_id=current_user.id)
+    db.commit()
+
+    return FaceEnrollResponse(
+        success=True,
+        message="Face enrolled successfully",
+        face_enrolled=True,
+        quality_score=result.get("quality_score", 0.0),
+    )
 
 
 @router.get("/", response_model=Page[UserResponse])

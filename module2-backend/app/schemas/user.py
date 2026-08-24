@@ -33,3 +33,16 @@ class UserAdminUpdate(BaseModel):
 
     role: Optional[Role] = None
     is_active: Optional[bool] = None
+
+
+class FaceEnrollRequest(BaseModel):
+    """POST /users/me/face/enroll. image: base64 PNG/JPEG, no data URL prefix."""
+
+    image: str = Field(min_length=1)
+
+
+class FaceEnrollResponse(BaseModel):
+    success: bool
+    message: str
+    face_enrolled: bool
+    quality_score: float
