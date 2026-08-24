@@ -7,10 +7,11 @@ Observability test category.
 Every route here requires admin role (401 on bad/missing token via
 get_current_user, 403 on a valid non-admin token via require_role).
 """
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_db, require_role
+from app.core.errors import APIError, ErrorCode
 from app.core.security import get_password_hash
 from app.db.models.course import Course
 from app.db.models.enrollment import Enrollment
@@ -36,7 +37,7 @@ router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(requir
 def deactivate_user(user_id: str, db: Session = Depends(get_db)):
     user = db.get(User, user_id)
     if user is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        raise APIError(status.HTTP_404_NOT_FOUND, "User not found", ErrorCode.USER_NOT_FOUND)
 
     user.is_active = False
     log_event(db, "user_updated", user_id=user.id, resource_type="user", resource_id=user.id,
@@ -52,7 +53,7 @@ def deactivate_user(user_id: str, db: Session = Depends(get_db)):
 def activate_user(user_id: str, db: Session = Depends(get_db)):
     user = db.get(User, user_id)
     if user is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        raise APIError(status.HTTP_404_NOT_FOUND, "User not found", ErrorCode.USER_NOT_FOUND)
 
     user.is_active = True
     log_event(db, "user_updated", user_id=user.id, resource_type="user", resource_id=user.id,
@@ -106,7 +107,7 @@ def update_session_status(
 ):
     session_obj = db.get(ClassSession, session_id)
     if session_obj is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+        raise APIError(status.HTTP_404_NOT_FOUND, "Session not found", ErrorCode.SESSION_NOT_FOUND)
 
     old_status = session_obj.status
     session_obj.status = payload.status
@@ -128,9 +129,9 @@ def update_session_status(
 @router.post("/enrollments/", response_model=EnrollmentResponse, status_code=status.HTTP_201_CREATED)
 def admin_create_enrollment(payload: EnrollmentCreate, db: Session = Depends(get_db)):
     if db.get(User, payload.student_id) is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Student not found")
+        raise APIError(status.HTTP_404_NOT_FOUND, "Student not found", ErrorCode.STUDENT_NOT_FOUND)
     if db.get(Course, payload.course_id) is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Course not found")
+        raise APIError(status.HTTP_404_NOT_FOUND, "Course not found", ErrorCode.COURSE_NOT_FOUND)
 
     existing = (
         db.query(Enrollment)
@@ -138,7 +139,7 @@ def admin_create_enrollment(payload: EnrollmentCreate, db: Session = Depends(get
         .first()
     )
     if existing is not None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Student already enrolled")
+        raise APIError(status.HTTP_400_BAD_REQUEST, "Student already enrolled", ErrorCode.ALREADY_ENROLLED)
 
     enrollment = Enrollment(student_id=payload.student_id, course_id=payload.course_id)
     db.add(enrollment)

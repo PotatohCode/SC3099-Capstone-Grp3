@@ -33,7 +33,7 @@ class CheckIn(Base):
 
     face_match_passed = Column(Boolean, nullable=True)
     face_match_score = Column(Float, nullable=True)
-    face_embedding_hash = Column(String(64), nullable=True)  # SHA-256 only, never raw
+    face_embedding_hash = Column(String(64), nullable=True)  # SimHash, never raw - see users.face_embedding_hash
 
     risk_score = Column(Float, nullable=False, default=0.0, index=True)
     risk_factors = Column(Text, nullable=True)  # JSON array, serialized

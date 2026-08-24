@@ -19,7 +19,11 @@ class User(Base):
     camera_consent = Column(Boolean, nullable=False, default=False)
     geolocation_consent = Column(Boolean, nullable=False, default=False)
 
-    # Privacy: SHA-256 hash only, NEVER a raw embedding/image.
+    # Privacy: SimHash (256-hyperplane locality-sensitive hash, 64 hex
+    # chars) only, NEVER a raw embedding/image. Team decision: SimHash, not
+    # the SHA-256 shown in API-SPECIFICATION.md/SECURITY-REQUIREMENTS.md -
+    # see IMPLEMENTATION-PLAN.md's "Team decisions" section. Backend stores
+    # this as an opaque string regardless; Module 3 computes it.
     face_embedding_hash = Column(String(64), nullable=True)
     face_enrolled = Column(Boolean, nullable=False, default=False)
 

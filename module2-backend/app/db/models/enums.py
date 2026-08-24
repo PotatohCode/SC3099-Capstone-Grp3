@@ -93,3 +93,9 @@ class AuditAction(str, enum.Enum):
     # requires that aren't in the API-SPEC's 18-item list
     DATA_EXPORTED = "data_exported"
     SECURITY_VIOLATION = "security_violation"
+    # Course CRUD isn't in the API-SPEC's 18-item list either (an apparent
+    # oversight - session_created/updated/deleted are, courses aren't) but
+    # course changes are just as security-relevant, so tracked the same way.
+    COURSE_CREATED = "course_created"
+    COURSE_UPDATED = "course_updated"
+    COURSE_DELETED = "course_deleted"

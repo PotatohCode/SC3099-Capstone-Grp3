@@ -1,10 +1,11 @@
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Request, status
 from jose import JWTError
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_db
+from app.core.errors import APIError, ErrorCode
 from app.core.security import (
     create_access_token,
     create_refresh_token,
@@ -29,7 +30,7 @@ def _client_ip(request: Request) -> str | None:
 def register(payload: RegisterRequest, request: Request, db: Session = Depends(get_db)):
     existing = db.query(User).filter(User.email == payload.email).first()
     if existing is not None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered")
+        raise APIError(status.HTTP_400_BAD_REQUEST, "Email already registered", ErrorCode.EMAIL_ALREADY_REGISTERED)
 
     user = User(
         email=payload.email,
@@ -65,7 +66,7 @@ def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)
             success=False, details={"email": payload.email},
         )
         db.commit()
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect email or password")
+        raise APIError(status.HTTP_401_UNAUTHORIZED, "Incorrect email or password", ErrorCode.INVALID_CREDENTIALS)
 
     if not user.is_active:
         log_event(
@@ -73,7 +74,7 @@ def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)
             success=False, details={"reason": "account_disabled"},
         )
         db.commit()
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account disabled")
+        raise APIError(status.HTTP_403_FORBIDDEN, "Account disabled", ErrorCode.ACCOUNT_DISABLED)
 
     user.last_login_at = datetime.now(timezone.utc)
     log_event(db, "login_success", user_id=user.id, ip_address=ip, user_agent=ua)
@@ -89,7 +90,7 @@ def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)
 
 @router.post("/refresh", response_model=RefreshResponse)
 def refresh(payload: RefreshRequest, db: Session = Depends(get_db)):
-    invalid = HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired refresh token")
+    invalid = APIError(status.HTTP_401_UNAUTHORIZED, "Invalid or expired refresh token", ErrorCode.INVALID_REFRESH_TOKEN)
 
     try:
         token_payload = decode_token(payload.refresh_token)
