@@ -12,6 +12,7 @@ from app.schemas.common import Page
 from app.schemas.user import FaceEnrollRequest, FaceEnrollResponse, UserAdminUpdate, UserResponse, UserUpdateRequest
 from app.services import face_client
 from app.services.audit import log_event
+from app.services.authz import can_edit_course
 from app.services.sanitize import sanitize_text
 
 router = APIRouter(prefix="/users", tags=["users"])
@@ -111,17 +112,18 @@ def get_user(user_id: str, current_user: User = Depends(get_current_user), db: S
             raise APIError(status.HTTP_403_FORBIDDEN, "Not authorized to view this user", ErrorCode.INSUFFICIENT_PERMISSIONS)
         # Instructor may view a user only if that user is an active
         # student in a course the instructor owns.
-        is_their_student = (
-            db.query(Enrollment)
-            .join(Course, Enrollment.course_id == Course.id)
-            .filter(
-                Enrollment.student_id == user.id,
-                Enrollment.is_active.is_(True),
-                Course.instructor_id == current_user.id,
-            )
-            .first()
-            is not None
+        # Same ownership rule as services/authz.py: a course with no
+        # instructor_id assigned yet is visible to any instructor, not
+        # just nobody - see routers/stats.py's student_stats for the
+        # same fix applied after this exact pattern 403'd
+        # test_stats_student on an unassigned test_course.
+        their_courses = (
+            db.query(Course)
+            .join(Enrollment, Enrollment.course_id == Course.id)
+            .filter(Enrollment.student_id == user.id, Enrollment.is_active.is_(True))
+            .all()
         )
+        is_their_student = any(can_edit_course(current_user, c) for c in their_courses)
         if not is_their_student:
             raise APIError(status.HTTP_403_FORBIDDEN, "Not authorized to view this user", ErrorCode.INSUFFICIENT_PERMISSIONS)
 
