@@ -274,6 +274,10 @@ def create_checkin(
         risk_score=assessment.risk_score,
         risk_factors=json.dumps(assessment.risk_factors),
         qr_code_verified=False,  # QR flow not implemented in Phase 6 - see KNOWN-ISSUES.md
+        # Phase 7e: PII retention (SECURITY-REQUIREMENTS.md - 30 days for
+        # check-in records). Set at creation time since this is a blanket
+        # window, not tied to any later action - see services/retention.py.
+        scheduled_deletion_at=now + timedelta(days=settings.PII_RETENTION_DAYS),
     )
     db.add(checkin)
     db.flush()

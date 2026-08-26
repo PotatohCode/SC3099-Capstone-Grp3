@@ -51,3 +51,9 @@ class AdminSessionStatusResponse(BaseModel):
     name: str
     status: str
     message: str
+
+
+class RetentionSweepResponse(BaseModel):
+    users_anonymized: int
+    checkins_anonymized: int
+    message: str

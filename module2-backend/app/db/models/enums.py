@@ -104,3 +104,6 @@ class AuditAction(str, enum.Enum):
     # security-relevant (device trust changes, device revocation).
     DEVICE_UPDATED = "device_updated"
     DEVICE_REMOVED = "device_removed"
+    # Phase 7e: the retention sweep's own audit entry (one row per sweep
+    # run, not per anonymized record - see services/retention.py).
+    RETENTION_SWEEP_RUN = "retention_sweep_run"

@@ -29,8 +29,10 @@ from app.schemas.admin import (
     AdminUserBulkResponse,
     AdminUserBulkResultItem,
     AdminUserStatusResponse,
+    RetentionSweepResponse,
 )
 from app.schemas.enrollment import EnrollmentCreate, EnrollmentResponse
+from app.services import retention
 from app.services.audit import log_event
 from app.services.sanitize import sanitize_text
 
@@ -167,3 +169,23 @@ def admin_create_enrollment(
     db.commit()
     db.refresh(enrollment)
     return enrollment
+
+
+@router.post("/retention/run", response_model=RetentionSweepResponse)
+def run_retention_sweep(current_user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
+    """Phase 7e: anonymizes every user/check-in whose `scheduled_deletion_at`
+    has passed (see services/retention.py for why anonymize rather than
+    delete). Admin-triggered rather than an in-process scheduler - no
+    worker/cron service exists in docker-compose.yml, and an HTTP-callable
+    sweep is directly testable the same way every other admin endpoint
+    here is, without waiting out a real 30-day window."""
+    result = retention.run_retention_sweep(db)
+    log_event(
+        db, "retention_sweep_run", user_id=current_user.id, resource_type="retention",
+        details=result,
+    )
+    db.commit()
+    return RetentionSweepResponse(
+        **result,
+        message=f"Anonymized {result['users_anonymized']} user(s) and {result['checkins_anonymized']} check-in(s)",
+    )
