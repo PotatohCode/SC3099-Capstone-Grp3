@@ -17,8 +17,10 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, Query, Request, status
 from sqlalchemy.orm import Session, joinedload
 
+from app.core.config import get_settings
 from app.core.deps import get_current_user, get_db, require_role
 from app.core.errors import APIError, ErrorCode
+from app.core.metrics import checkin_attempts_total, checkin_success_total, checkins_flagged_total, risk_score_histogram
 from app.db.models.checkin import CheckIn
 from app.db.models.device import Device
 from app.db.models.enrollment import Enrollment
@@ -43,8 +45,10 @@ from app.schemas.common import Page
 from app.services import face_client, geofencing, risk_scoring
 from app.services.audit import log_event
 from app.services.authz import can_manage_session, require_manage_session
+from app.services.rate_limit import enforce_rate_limit
 
 router = APIRouter(prefix="/checkins", tags=["checkins"])
+settings = get_settings()
 
 APPEAL_WINDOW_DAYS = 7
 
@@ -120,6 +124,9 @@ def create_checkin(
     current_user: User = Depends(require_role("student")),
     db: Session = Depends(get_db),
 ):
+    enforce_rate_limit(f"rate_limit:{current_user.id}:checkin", settings.RATE_LIMIT_CHECKIN_PER_MINUTE, 60)
+    checkin_attempts_total.inc()
+
     session_obj = (
         db.query(ClassSession).options(joinedload(ClassSession.course)).filter(ClassSession.id == payload.session_id).first()
     )
@@ -281,6 +288,12 @@ def create_checkin(
     if device is not None:
         device.total_checkins = (device.total_checkins or 0) + 1
         device.last_seen_at = now
+
+    risk_score_histogram.observe(assessment.risk_score)
+    if assessment.status == "approved":
+        checkin_success_total.inc()
+    elif assessment.status == "flagged":
+        checkins_flagged_total.inc()
 
     outcome_action = {"approved": "checkin_approved", "flagged": "checkin_flagged", "rejected": "checkin_rejected"}[
         assessment.status

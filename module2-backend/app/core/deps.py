@@ -12,10 +12,12 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.core.errors import APIError, ErrorCode
 from app.core.security import decode_token
 from app.db.base import SessionLocal
 from app.db.models.user import User
+from app.services.rate_limit import enforce_rate_limit
 
 # auto_error=False so a missing Authorization header reaches our own 401
 # handling below, instead of HTTPBearer's default (which raises 403 for a
@@ -60,6 +62,12 @@ def get_current_user(
     user = db.get(User, user_id)
     if user is None or not user.is_active:
         raise unauthorized
+
+    # API-wide rate limit (1000/hour per user, Task 2.6) - enforced here
+    # since nearly every protected route already depends on get_current_user,
+    # rather than wiring it into each router individually.
+    settings = get_settings()
+    enforce_rate_limit(f"rate_limit:{user.id}:api", settings.RATE_LIMIT_API_PER_HOUR, 3600)
 
     return user
 

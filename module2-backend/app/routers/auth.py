@@ -4,8 +4,10 @@ from fastapi import APIRouter, Depends, Request, status
 from jose import JWTError
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.core.deps import get_db
 from app.core.errors import APIError, ErrorCode
+from app.core.metrics import login_failed_total
 from app.core.security import (
     create_access_token,
     create_refresh_token,
@@ -17,9 +19,11 @@ from app.db.models.user import User
 from app.schemas.auth import LoginRequest, LoginResponse, RefreshRequest, RefreshResponse, RegisterRequest
 from app.schemas.user import UserResponse
 from app.services.audit import log_event
+from app.services.rate_limit import enforce_rate_limit, peek_rate_limit, record_hit
 from app.services.sanitize import sanitize_text
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+settings = get_settings()
 
 
 def _client_ip(request: Request) -> str | None:
@@ -28,6 +32,10 @@ def _client_ip(request: Request) -> str | None:
 
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 def register(payload: RegisterRequest, request: Request, db: Session = Depends(get_db)):
+    ip = _client_ip(request)
+    if ip:
+        enforce_rate_limit(f"rate_limit:{ip}:register", settings.RATE_LIMIT_REGISTRATION_PER_HOUR, 3600)
+
     existing = db.query(User).filter(User.email == payload.email).first()
     if existing is not None:
         raise APIError(status.HTTP_400_BAD_REQUEST, "Email already registered", ErrorCode.EMAIL_ALREADY_REGISTERED)
@@ -58,9 +66,25 @@ def register(payload: RegisterRequest, request: Request, db: Session = Depends(g
 @router.post("/login", response_model=LoginResponse)
 def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)):
     ip, ua = _client_ip(request), request.headers.get("user-agent")
+    login_key = f"rate_limit:{ip}:login"
+    if ip:
+        # Peek, don't count yet - only failed attempts count toward this
+        # limit (see services/rate_limit.py's peek_rate_limit docstring
+        # for why: it's a brute-force guard, not a "many legit logins from
+        # one IP" guard).
+        allowed, retry_after = peek_rate_limit(login_key, settings.RATE_LIMIT_LOGIN_PER_HOUR)
+        if not allowed:
+            raise APIError(
+                status.HTTP_429_TOO_MANY_REQUESTS, "Too many failed login attempts", ErrorCode.RATE_LIMITED,
+                headers={"Retry-After": str(retry_after)},
+            )
+
     user = db.query(User).filter(User.email == payload.email).first()
 
     if user is None or not verify_password(payload.password, user.hashed_password):
+        login_failed_total.inc()
+        if ip:
+            record_hit(login_key, 3600)
         log_event(
             db, "login_failed", user_id=user.id if user else None, ip_address=ip, user_agent=ua,
             success=False, details={"email": payload.email},
@@ -69,6 +93,9 @@ def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)
         raise APIError(status.HTTP_401_UNAUTHORIZED, "Incorrect email or password", ErrorCode.INVALID_CREDENTIALS)
 
     if not user.is_active:
+        login_failed_total.inc()
+        if ip:
+            record_hit(login_key, 3600)
         log_event(
             db, "login_failed", user_id=user.id, ip_address=ip, user_agent=ua,
             success=False, details={"reason": "account_disabled"},
