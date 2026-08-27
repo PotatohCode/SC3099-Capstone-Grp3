@@ -54,6 +54,11 @@ services:
       SECRET_KEY: your-secret-key-change-in-production
       FACE_SERVICE_URL: http://face-recognition:8001
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      # CORS_ORIGINS overrides app/core/config.py's Settings.CORS_ORIGINS default
+      # (pydantic-settings reads this as a JSON list) - needed because the frontend
+      # is reached over the host's LAN IP, not literal "localhost", so the browser's
+      # Origin header won't match the http://localhost:3000-only default.
+      CORS_ORIGINS: '["http://localhost:3000","http://192.168.64.4:3000","http://localhost:8501"]'
     depends_on:
       postgres:
         condition: service_healthy
@@ -82,12 +87,18 @@ services:
     build:
       context: ./module1-frontend
       dockerfile: Dockerfile
+      args:
+        # Baked into the client JS bundle at build time (Next.js NEXT_PUBLIC_* rule -
+        # see module1-frontend/Dockerfile). Set to the host's LAN IP, not "localhost",
+        # because this is what resolves correctly from a browser on another device.
+        NEXT_PUBLIC_API_URL: http://192.168.64.4:8000
+        NEXT_PUBLIC_FACE_SERVICE_URL: http://192.168.64.4:8001
     container_name: saiv-frontend
     ports:
       - "3000:3000"
     environment:
-      NEXT_PUBLIC_API_URL: http://localhost:8000
-      NEXT_PUBLIC_FACE_SERVICE_URL: http://localhost:8001
+      NEXT_PUBLIC_API_URL: http://192.168.64.4:8000
+      NEXT_PUBLIC_FACE_SERVICE_URL: http://192.168.64.4:8001
     depends_on:
       - backend
     networks:

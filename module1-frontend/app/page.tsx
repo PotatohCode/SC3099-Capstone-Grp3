@@ -1,79 +1,50 @@
+'use client'
+
 /**
- * SAIV Student Frontend - Module 1
- *
- * This is the skeleton implementation for the Student Frontend PWA.
- * Students must implement the check-in interface with camera access,
- * geolocation, and device binding.
+ * Task 1.10: "Ensure root route responds 200 OK" - kept as a simple, always-renderable
+ * landing page (no auth-gated data fetching) so health checks never fail.
  */
 
+import Link from 'next/link'
+import { useEffect } from 'react'
+import { useRouter } from 'next/navigation'
+import { useAuth } from '@/lib/hooks/useAuth'
+
 export default function Home() {
+  const { isAuthenticated, isLoading } = useAuth()
+  const router = useRouter()
+
+  useEffect(() => {
+    if (!isLoading && isAuthenticated) {
+      router.replace('/dashboard')
+    }
+  }, [isLoading, isAuthenticated, router])
+
   return (
-    <main className="min-h-screen p-8">
-      <h1 className="text-3xl font-bold mb-4">
-        SAIV - Secure Attendance System
-      </h1>
-      <p className="text-gray-600 mb-8">
-        Student Check-in Interface
-      </p>
+    <main className="flex min-h-screen flex-col items-center justify-center gap-8 p-8 text-center">
+      <div>
+        <h1 className="text-3xl font-bold text-gray-900 sm:text-4xl">
+          SAIV - Secure Attendance System
+        </h1>
+        <p className="mt-3 text-gray-600">
+          Student check-in with liveness detection, geolocation, and device binding.
+        </p>
+      </div>
 
-      {/* ================================================================== */}
-      {/* TODO: Implement the following features                             */}
-      {/* ================================================================== */}
-
-      {/* ------------------------------------------------------------------ */}
-      {/* Authentication                                                     */}
-      {/* ------------------------------------------------------------------ */}
-      {/* - Login form with email/password                                   */}
-      {/* - Registration form                                                */}
-      {/* - JWT token storage (secure, HttpOnly where possible)              */}
-      {/* - Auto-refresh token logic                                         */}
-
-      {/* ------------------------------------------------------------------ */}
-      {/* Camera Access                                                      */}
-      {/* ------------------------------------------------------------------ */}
-      {/* - WebRTC camera stream                                             */}
-      {/* - Liveness challenge UI (blink, head turn prompts)                 */}
-      {/* - Frame capture for face verification                              */}
-      {/* - Consent flow before camera access                                */}
-
-      {/* ------------------------------------------------------------------ */}
-      {/* Geolocation                                                        */}
-      {/* ------------------------------------------------------------------ */}
-      {/* - Geolocation API integration                                      */}
-      {/* - Explicit consent before location access                          */}
-      {/* - GPS coordinates sent with check-in                               */}
-      {/* - Error handling for denied permissions                            */}
-
-      {/* ------------------------------------------------------------------ */}
-      {/* Device Binding                                                     */}
-      {/* ------------------------------------------------------------------ */}
-      {/* - ECDSA key pair generation (Web Crypto API)                       */}
-      {/* - Public key rotation on each session                              */}
-      {/* - Device fingerprinting                                            */}
-      {/* - Secure key storage                                               */}
-
-      {/* ------------------------------------------------------------------ */}
-      {/* PWA Features                                                       */}
-      {/* ------------------------------------------------------------------ */}
-      {/* - Service worker for offline support                               */}
-      {/* - PWA manifest                                                     */}
-      {/* - Offline check-in queue with sync                                 */}
-      {/* - LocalForage for persistent storage                               */}
-
-      {/* ------------------------------------------------------------------ */}
-      {/* Check-in Flow                                                      */}
-      {/* ------------------------------------------------------------------ */}
-      {/* 1. Select active session                                           */}
-      {/* 2. Grant camera permission (with consent)                          */}
-      {/* 3. Complete liveness challenge                                     */}
-      {/* 4. Grant location permission (with consent)                        */}
-      {/* 5. Submit check-in to backend                                      */}
-      {/* 6. Display success/failure with risk score                         */}
-
-      <div className="bg-yellow-100 border-l-4 border-yellow-500 p-4 mt-8">
-        <p className="font-bold">Skeleton Implementation</p>
-        <p>Please implement the required features as described above.</p>
+      <div className="flex w-full max-w-xs flex-col gap-3 sm:flex-row sm:max-w-none sm:justify-center">
+        <Link
+          href="/auth/login"
+          className="flex min-h-[44px] items-center justify-center rounded-md bg-blue-700 px-6 py-2 font-medium text-white hover:bg-blue-800"
+        >
+          Log in
+        </Link>
+        <Link
+          href="/auth/register"
+          className="flex min-h-[44px] items-center justify-center rounded-md border border-blue-700 px-6 py-2 font-medium text-blue-700 hover:bg-blue-50"
+        >
+          Create account
+        </Link>
       </div>
     </main>
-  );
+  )
 }
