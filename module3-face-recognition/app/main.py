@@ -86,7 +86,13 @@ class LivenessRequest(BaseModel):
 
 class LivenessResponse(BaseModel):
     """Response model for liveness check."""
-    liveness_passed: bool
+    # Optional[bool], not bool: module2-backend/api-docs/API-FOR-FACE-
+    # RECOGNITION.md wants None (not False) for "couldn't assess" cases
+    # (no face detected, undecodable image) - an explicit False triggers a
+    # hard-reject override on their end regardless of score, and is meant
+    # to be reserved for cases where liveness was actually determined to
+    # have failed. See check_liveness for where None vs False is decided.
+    liveness_passed: Optional[bool]
     liveness_score: float  # 0.0 to 1.0
     liveness_threshold: float  # Default: 0.60
     face_embedding_hash: str
@@ -459,19 +465,25 @@ async def check_liveness(request: LivenessRequest):
     genuinely implemented against a single image. challenge_type is
     accepted but otherwise unused.
 
-    "No face detected" and image-decode failure both return
-    liveness_passed=False (this docstring's own step 3 already says
-    "return with", not "raise" - no HTTPException here, matching
-    module2's graceful-degrade pattern), since failing to find any face
-    in a liveness photo is an actual determination, not an ambiguous
-    edge case - it just means there's nothing to hash either, so
-    face_embedding_hash is "" in that case.
+    "No face detected" and image-decode failure both return with no
+    HTTPException raised (this docstring's own step 3 already says
+    "return with", matching module2's graceful-degrade pattern) - but
+    liveness_passed=None, not False, for both. Corrected from an earlier
+    version that used False here: module2-backend/api-docs/API-FOR-FACE-
+    RECOGNITION.md is explicit that False is reserved for an actually
+    *determined* liveness failure (e.g. depth analysis positively
+    indicating a flat/printed photo), and triggers a hard-reject override
+    on their end regardless of score - "couldn't even find a face to
+    assess" is an unattempted check, not a determination, and forcing it
+    to False would trigger that override incorrectly (e.g. for a merely
+    blurry or badly-angled photo, not necessarily a spoofing attempt).
+    There's nothing to hash either way, so face_embedding_hash is "".
     """
     try:
         image_array = decode_base64_image(request.challenge_response)
     except ValueError:
         return LivenessResponse(
-            liveness_passed=False,
+            liveness_passed=None,
             liveness_score=0.0,
             liveness_threshold=0.60,
             face_embedding_hash="",
@@ -481,7 +493,7 @@ async def check_liveness(request: LivenessRequest):
     detection = detect_face(image_array)
     if detection is None:
         return LivenessResponse(
-            liveness_passed=False,
+            liveness_passed=None,
             liveness_score=0.0,
             liveness_threshold=0.60,
             face_embedding_hash="",
