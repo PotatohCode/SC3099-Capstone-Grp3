@@ -33,11 +33,12 @@ geopy==2.4.1
 # From module3-face-recognition/requirements.txt
 # ============================================
 # Face recognition & CV
-mediapipe>=0.10.9
+mediapipe==0.10.18  # pinned - newer versions removed mp.solutions
 opencv-python>=4.9.0.80
 numpy>=1.24.3
 pillow>=10.2.0
-# face-recognition==1.3.0  # Optional - has Python 3.12 compatibility issues
+face-recognition==1.3.0  # identity matching - builds dlib from source
+setuptools<81  # face-recognition-models needs pkg_resources (removed in newer setuptools)
 
 # ============================================
 # From module4-observability/requirements.txt
