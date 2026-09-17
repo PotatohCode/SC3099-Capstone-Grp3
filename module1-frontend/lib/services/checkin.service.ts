@@ -21,6 +21,11 @@ export async function submitCheckIn(payload: CheckInRequest): Promise<CheckInRes
   return response.data
 }
 
+export async function getCheckIn(checkinId: string): Promise<CheckInResponse> {
+  const response = await httpClient.get<CheckInResponse>(`/checkins/${checkinId}`)
+  return response.data
+}
+
 export interface MyCheckInsParams {
   course_id?: string
   limit?: number

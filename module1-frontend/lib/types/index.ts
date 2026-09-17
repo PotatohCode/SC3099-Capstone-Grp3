@@ -96,15 +96,27 @@ export interface CheckInResponse {
   id: string
   session_id: string
   student_id: string
+  device_id?: string | null
   status: CheckInStatus
   checked_in_at: string
+  verified_at?: string | null
   latitude?: number
   longitude?: number
+  location_accuracy_meters?: number
   distance_from_venue_meters?: number
   liveness_passed?: boolean | null
   liveness_score?: number | null
+  face_match_passed?: boolean | null
+  face_match_score?: number | null
+  face_embedding_hash?: string | null
   risk_score?: number
   risk_factors?: RiskFactor[]
+  qr_code_verified?: boolean
+  reviewed_by_id?: string | null
+  reviewed_at?: string | null
+  review_notes?: string | null
+  appeal_reason?: string | null
+  appealed_at?: string | null
 }
 
 export interface CheckInHistoryItem {
