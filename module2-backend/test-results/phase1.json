@@ -1,0 +1,194 @@
+{
+  "timestamp": "2026-08-23T20:29:21.620481",
+  "summary": {
+    "total_points": 8.5,
+    "earned_points": 0.5,
+    "percentage": 5.88235294117647,
+    "letter_grade": "F",
+    "tests_passed": 1,
+    "tests_failed": 9,
+    "tests_total": 10
+  },
+  "by_file": {
+    "test_api_functional.py": {
+      "max_points": 2,
+      "earned_points": 0,
+      "passed": 0,
+      "failed": 2
+    },
+    "test_integration.py": {
+      "max_points": 1,
+      "earned_points": 0,
+      "passed": 0,
+      "failed": 1
+    },
+    "test_performance.py": {
+      "max_points": 1.5,
+      "earned_points": 0.5,
+      "passed": 1,
+      "failed": 2
+    },
+    "test_security_basic.py": {
+      "max_points": 4,
+      "earned_points": 0,
+      "passed": 0,
+      "failed": 4
+    }
+  },
+  "by_category": {
+    "authentication": {
+      "max_points": 1,
+      "earned_points": 0,
+      "passed": 0,
+      "failed": 1
+    },
+    "user_management": {
+      "max_points": 1,
+      "earned_points": 0,
+      "passed": 0,
+      "failed": 1
+    },
+    "performance": {
+      "max_points": 1,
+      "earned_points": 0,
+      "passed": 0,
+      "failed": 1
+    },
+    "latency": {
+      "max_points": 1.0,
+      "earned_points": 0.5,
+      "passed": 1,
+      "failed": 1
+    },
+    "db_optimization": {
+      "max_points": 0.5,
+      "earned_points": 0,
+      "passed": 0,
+      "failed": 1
+    },
+    "auth_security": {
+      "max_points": 3,
+      "earned_points": 0,
+      "passed": 0,
+      "failed": 3
+    },
+    "input_validation": {
+      "max_points": 1,
+      "earned_points": 0,
+      "passed": 0,
+      "failed": 1
+    }
+  },
+  "tests": [
+    {
+      "node_id": "tests/public/test_api_functional.py::TestAuthentication::test_user_registration",
+      "name": "test_user_registration",
+      "file": "test_api_functional.py",
+      "max_points": 1,
+      "earned_points": 0,
+      "passed": false,
+      "category": "authentication",
+      "duration": 0.0030937999254092574,
+      "error": "self = <test_api_functional.TestAuthentication object at 0x000001BA551556D0>\nclient = <httpx.Client object at 0x000001BA552EE510>\nunique_email = <function unique_email.<locals>._generate at 0x000001BA"
+    },
+    {
+      "node_id": "tests/public/test_api_functional.py::TestUserManagement::test_unauthorized_access_fails",
+      "name": "test_unauthorized_access_fails",
+      "file": "test_api_functional.py",
+      "max_points": 1,
+      "earned_points": 0,
+      "passed": false,
+      "category": "user_management",
+      "duration": 0.027014999999664724,
+      "error": "self = <test_api_functional.TestUserManagement object at 0x000001BA5506BA80>\nclient = <httpx.Client object at 0x000001BA552EE510>\n\n    @pytest.mark.points(1, category=\"user_management\")\n    def test_u"
+    },
+    {
+      "node_id": "tests/public/test_integration.py::TestBasicPerformance::test_concurrent_logins",
+      "name": "test_concurrent_logins",
+      "file": "test_integration.py",
+      "max_points": 1,
+      "earned_points": 0,
+      "passed": false,
+      "category": "performance",
+      "duration": 0.11815869994461536,
+      "error": "self = <test_integration.TestBasicPerformance object at 0x000001BA551E2210>\nclient = <httpx.Client object at 0x000001BA552EE510>\n\n    @pytest.mark.points(1, category=\"performance\")\n    def test_concur"
+    },
+    {
+      "node_id": "tests/public/test_performance.py::TestResponseLatency::test_list_endpoint_latency",
+      "name": "test_list_endpoint_latency",
+      "file": "test_performance.py",
+      "max_points": 0.5,
+      "earned_points": 0,
+      "passed": false,
+      "category": "latency",
+      "duration": 0.005636399961076677,
+      "error": "self = <test_performance.TestResponseLatency object at 0x000001BA5515AEA0>\nclient = <httpx.Client object at 0x000001BA552EE510>\n\n    @pytest.mark.points(0.5, category=\"latency\")\n    def test_list_endp"
+    },
+    {
+      "node_id": "tests/public/test_performance.py::TestResponseLatency::test_health_check_latency",
+      "name": "test_health_check_latency",
+      "file": "test_performance.py",
+      "max_points": 0.5,
+      "earned_points": 0.5,
+      "passed": true,
+      "category": "latency",
+      "duration": 0.0034965999657288194,
+      "error": null
+    },
+    {
+      "node_id": "tests/public/test_performance.py::TestDatabaseOptimization::test_pagination_support",
+      "name": "test_pagination_support",
+      "file": "test_performance.py",
+      "max_points": 0.5,
+      "earned_points": 0,
+      "passed": false,
+      "category": "db_optimization",
+      "duration": 0.00497680006083101,
+      "error": "self = <test_performance.TestDatabaseOptimization object at 0x000001BA552B8050>\nclient = <httpx.Client object at 0x000001BA552EE510>\n\n    @pytest.mark.points(0.5, category=\"db_optimization\")\n    def t"
+    },
+    {
+      "node_id": "tests/public/test_security_basic.py::TestAuthenticationSecurity::test_weak_password_rejected",
+      "name": "test_weak_password_rejected",
+      "file": "test_security_basic.py",
+      "max_points": 1,
+      "earned_points": 0,
+      "passed": false,
+      "category": "auth_security",
+      "duration": 0.007386600016616285,
+      "error": "self = <test_security_basic.TestAuthenticationSecurity object at 0x000001BA552B8B90>\nclient = <httpx.Client object at 0x000001BA552EE510>\nunique_email = <function unique_email.<locals>._generate at 0x"
+    },
+    {
+      "node_id": "tests/public/test_security_basic.py::TestAuthenticationSecurity::test_invalid_token_rejected",
+      "name": "test_invalid_token_rejected",
+      "file": "test_security_basic.py",
+      "max_points": 1,
+      "earned_points": 0,
+      "passed": false,
+      "category": "auth_security",
+      "duration": 0.005355700035579503,
+      "error": "self = <test_security_basic.TestAuthenticationSecurity object at 0x000001BA5515B490>\nclient = <httpx.Client object at 0x000001BA552EE510>\n\n    @pytest.mark.points(1, category=\"auth_security\")\n    def "
+    },
+    {
+      "node_id": "tests/public/test_security_basic.py::TestAuthenticationSecurity::test_expired_token_rejected",
+      "name": "test_expired_token_rejected",
+      "file": "test_security_basic.py",
+      "max_points": 1,
+      "earned_points": 0,
+      "passed": false,
+      "category": "auth_security",
+      "duration": 0.004361999919638038,
+      "error": "self = <test_security_basic.TestAuthenticationSecurity object at 0x000001BA5515B5C0>\nclient = <httpx.Client object at 0x000001BA552EE510>\n\n    @pytest.mark.points(1, category=\"auth_security\")\n    def "
+    },
+    {
+      "node_id": "tests/public/test_security_basic.py::TestInputValidation::test_invalid_email_rejected",
+      "name": "test_invalid_email_rejected",
+      "file": "test_security_basic.py",
+      "max_points": 1,
+      "earned_points": 0,
+      "passed": false,
+      "category": "input_validation",
+      "duration": 0.005378899979405105,
+      "error": "self = <test_security_basic.TestInputValidation object at 0x000001BA552B9090>\nclient = <httpx.Client object at 0x000001BA552EE510>\n\n    @pytest.mark.points(1, category=\"input_validation\")\n    def test"
+    }
+  ]
+}
