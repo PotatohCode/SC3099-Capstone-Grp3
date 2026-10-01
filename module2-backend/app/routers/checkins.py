@@ -10,6 +10,9 @@ regardless of score) is not a pure `risk_score < threshold` comparison,
 and Module 3 is currently a 501 stub so the degrade-gracefully paths are
 what actually run end-to-end today.
 """
+import base64
+import binascii
+import hashlib
 import json
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
@@ -63,6 +66,19 @@ APPEAL_WINDOW_DAYS = 7
 
 def _now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _image_hash(image_b64: str) -> str:
+    """SHA-256 of the decoded image bytes (data-URL prefix and whitespace
+    ignored), so the same photo re-encoded with different padding or line
+    breaks still matches. Falls back to hashing the raw string if it isn't
+    valid base64."""
+    data = image_b64.split(",", 1)[1] if image_b64.startswith("data:") else image_b64
+    try:
+        raw = base64.b64decode("".join(data.split()), validate=True)
+    except (binascii.Error, ValueError):
+        raw = image_b64.encode()
+    return hashlib.sha256(raw).hexdigest()
 
 
 def _parse_risk_factors(raw: Optional[str]) -> List[RiskFactorItem]:
@@ -214,6 +230,18 @@ def create_checkin(
         else None
     )
 
+    # --- Replay check: same student re-submitting a previously used photo --
+    liveness_image_hash: Optional[str] = None
+    replay_suspected = False
+    if payload.liveness_challenge_response:
+        liveness_image_hash = _image_hash(payload.liveness_challenge_response)
+        replay_suspected = (
+            db.query(CheckIn.id)
+            .filter(CheckIn.student_id == current_user.id, CheckIn.liveness_image_hash == liveness_image_hash)
+            .first()
+            is not None
+        )
+
     # --- Liveness + face match (defensive: 5s timeout, degrade on failure) --
     liveness_passed: Optional[bool] = None
     liveness_score = 0.0
@@ -291,6 +319,7 @@ def create_checkin(
         face_match_passed=face_match_passed,
         require_liveness=bool(session_obj.require_liveness_check),
         require_face_match=bool(session_obj.require_face_match or course.require_face_recognition),
+        replay_suspected=replay_suspected,
     )
 
     log_event(
@@ -316,6 +345,7 @@ def create_checkin(
         face_match_passed=face_match_passed,
         face_match_score=face_match_score,
         face_embedding_hash=current_face_hash,
+        liveness_image_hash=liveness_image_hash,
         risk_score=assessment.risk_score,
         risk_factors=json.dumps(assessment.risk_factors),
         qr_code_verified=False,  # QR flow not implemented in Phase 6 - see KNOWN-ISSUES.md

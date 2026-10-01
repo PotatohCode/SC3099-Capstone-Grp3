@@ -67,6 +67,7 @@ _IMPOSSIBLE_TRAVEL_KMH = 250.0  # faster than this between two check-ins = impos
 _LIVENESS_FAILED_WEIGHT = 0.25
 _VIOLATION_SIGNALS = {"impossible_travel"}
 _FACE_MATCH_FAILED_WEIGHT = 0.25
+_REPLAY_WEIGHT = 0.30
 
 
 @dataclass
@@ -140,6 +141,7 @@ def assess(
     face_match_passed: Optional[bool] = None,
     require_liveness: bool = False,
     require_face_match: bool = False,
+    replay_suspected: bool = False,
 ) -> RiskAssessment:
     """require_liveness / require_face_match come from the session (and the
     course's require_face_recognition). When a requirement is set:
@@ -200,6 +202,12 @@ def assess(
         elif face_match_passed is None:
             signals.append(RiskSignal("face_match_unverified", "high", weight=0.0))
             needs_review = True
+
+    if replay_suspected:
+        # The same student submitted byte-identical image data before - a
+        # real camera never produces the same bytes twice.
+        signals.append(RiskSignal("replay_suspected", "critical", weight=_REPLAY_WEIGHT))
+        hard_reject = True
 
     score = base_risk_score + sum(s.weight for s in signals)
     score = round(min(max(score, 0.0), 1.0), 4)
