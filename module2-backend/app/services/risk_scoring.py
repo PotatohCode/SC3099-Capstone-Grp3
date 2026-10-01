@@ -26,6 +26,25 @@ from typing import Any, Optional
 # under the - always <= 0.5 - threshold is already "approved").
 CRITICAL_THRESHOLD = 0.7
 
+# Signal severity rule: "critical" is reserved for signals that hard-reject
+# the check-in on their own (liveness failed, GPS > 2x geofence, face
+# mismatch on a face-required session, replay). Everything else is
+# high/medium/low and only moves the score - so a severity can be read the
+# same way as the CRITICAL risk band.
+
+
+def risk_level(score: float) -> str:
+    """SECURITY-REQUIREMENTS.md "Risk Levels" / API-SPECIFICATION.md
+    /risk/assess mapping. Fixed bands; the per-course risk_threshold only
+    moves the approved/flagged boundary, not these labels."""
+    if score < 0.3:
+        return "LOW"
+    if score < 0.5:
+        return "MEDIUM"
+    if score < CRITICAL_THRESHOLD:
+        return "HIGH"
+    return "CRITICAL"
+
 # Weights for the fallback formula, used only when Module 3 is
 # unreachable. Full weights per SECURITY-REQUIREMENTS.md are Liveness 25%,
 # Face Match 25%, Device 20%, Network 15%, Geolocation 15% - without
@@ -63,6 +82,10 @@ class RiskAssessment:
     risk_score: float
     status: str  # approved | flagged | rejected
     signals: list[RiskSignal] = field(default_factory=list)
+
+    @property
+    def risk_level(self) -> str:
+        return risk_level(self.risk_score)
 
     @property
     def risk_factors(self) -> list[dict[str, Any]]:
@@ -150,7 +173,7 @@ def assess(
         implied_kmh = (previous_distance_meters / 1000.0) / elapsed_hours
         if implied_kmh > _IMPOSSIBLE_TRAVEL_KMH:
             signals.append(RiskSignal(
-                "impossible_travel", "critical", weight=_IMPOSSIBLE_TRAVEL_WEIGHT,
+                "impossible_travel", "high", weight=_IMPOSSIBLE_TRAVEL_WEIGHT,
                 details={"implied_speed_kmh": round(implied_kmh, 1)},
             ))
 

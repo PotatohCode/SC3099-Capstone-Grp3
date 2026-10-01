@@ -345,7 +345,9 @@ def create_checkin(
     ]
     log_event(
         db, outcome_action, user_id=current_user.id, resource_type="checkin", resource_id=checkin.id,
-        details={"risk_score": assessment.risk_score, "status": assessment.status},
+        # risk_level makes "MEDIUM: auto-approve with logging" visible in the
+        # audit trail without re-deriving bands from the score.
+        details={"risk_score": assessment.risk_score, "risk_level": assessment.risk_level, "status": assessment.status},
     )
 
     db.commit()
