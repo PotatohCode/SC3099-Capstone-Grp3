@@ -236,15 +236,20 @@ def create_checkin(
     # geo signal is already computed independently via geofencing above.
     remote_risk = None
     if payload.liveness_challenge_response:
-        remote_risk = face_client.assess_risk({
+        risk_request = {
             "liveness_score": liveness_score,
             "face_match_score": face_match_score,
             "user_agent": request.headers.get("user-agent"),
             "ip_address": get_client_ip(request),
-            "geolocation": {
+        }
+        # Module 3 requires geolocation.accuracy to be a number (422 otherwise),
+        # and location_accuracy_meters is optional for us - without it, leave
+        # geolocation out; our own geofence check above still applies.
+        if payload.location_accuracy_meters is not None:
+            risk_request["geolocation"] = {
                 "latitude": payload.latitude, "longitude": payload.longitude, "accuracy": payload.location_accuracy_meters,
-            },
-        })
+            }
+        remote_risk = face_client.assess_risk(risk_request)
     if remote_risk is not None and "risk_score" in remote_risk:
         base_score = float(remote_risk["risk_score"])
     else:
