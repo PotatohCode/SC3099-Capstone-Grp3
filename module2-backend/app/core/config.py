@@ -42,22 +42,30 @@ class Settings(BaseSettings):
     # name (e.g. RATE_LIMIT_REGISTRATION_PER_HOUR=10 in docker-compose.yml's
     # backend.environment block, or a .env file) - this is the one place to
     # look if a value here ever needs to change, in either direction.
-    RATE_LIMIT_LOGIN_PER_HOUR: int = 60  # only failed attempts count - see services/rate_limit.py
-    RATE_LIMIT_API_PER_HOUR: int = 1000
-    RATE_LIMIT_CHECKIN_PER_MINUTE: int = 10
-    # DEVIATION from SECURITY-REQUIREMENTS.md's literal "10" - see
-    # KNOWN-ISSUES.md §1/§4 and IMPLEMENTATION-PLAN.md's "Team decisions"
-    # section for the full reasoning. Measured: a full tests/public/ run
-    # makes 125 registrations from one shared IP (every fixture creates a
-    # fresh user); 10/hour breaks ~60 tests outright, and would do the same
-    # during actual grading since it runs the identical suite against the
-    # identical docker-compose deployment - this isn't a local-only
-    # workaround. 300 comfortably covers a couple of dev-loop runs within
-    # the same rolling hour while still blocking a real mass-signup bot,
-    # which would attempt far more than this in the same window. Revert to
-    # the literal 10 by changing just this line (or an env var override)
-    # if new information changes the call - nothing else needs touching.
-    RATE_LIMIT_REGISTRATION_PER_HOUR: int = 300
+    #
+    # Per-IP limits (login, registration) are set to 100,000/hour per the
+    # course's follow-up clarification email: "If you have implemented
+    # per-IP rate limiting ... please increase the limit values to a large
+    # number (e.g., 100,000 per hour)." - the graders run the whole suite
+    # from one shared IP. This supersedes the earlier 60 (login) / 300
+    # (registration, itself a deviation from SECURITY-REQUIREMENTS.md's
+    # "10") values. Brute-force protection now comes from the per-ACCOUNT
+    # lockout below, not from these.
+    RATE_LIMIT_LOGIN_PER_HOUR: int = 100_000  # per IP; only failed attempts count - see services/rate_limit.py
+    RATE_LIMIT_API_PER_HOUR: int = 1000  # per user
+    RATE_LIMIT_CHECKIN_PER_MINUTE: int = 10  # per user
+    RATE_LIMIT_REGISTRATION_PER_HOUR: int = 100_000  # per IP
+
+    # --- Account lockout (per account, DB-backed) ----------------------------
+    # Course email: "after 10 consecutive failed password attempts on the
+    # same account, that account must be blocked and further login attempts
+    # must return HTTP 429." Stored on the users row rather than in Redis
+    # because services/rate_limit.py fails open on RedisError - a graded
+    # security control shouldn't silently switch off during a Redis blip.
+    # Timed lock (team decision 2026-10-01); an admin can clear it early via
+    # PATCH /admin/users/{id}/activate.
+    MAX_FAILED_LOGIN_ATTEMPTS: int = 10
+    ACCOUNT_LOCKOUT_MINUTES: int = 15
 
     # --- CORS ----------------------------------------------------------------
     CORS_ORIGINS: list[str] = [

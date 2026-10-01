@@ -62,6 +62,10 @@ def activate_user(user_id: str, current_user: User = Depends(require_role("admin
         raise APIError(status.HTTP_404_NOT_FOUND, "User not found", ErrorCode.USER_NOT_FOUND)
 
     user.is_active = True
+    # Activation doubles as the admin "unlock" for the per-account login
+    # lockout (see config.MAX_FAILED_LOGIN_ATTEMPTS).
+    user.failed_login_attempts = 0
+    user.locked_until = None
     log_event(db, "user_updated", user_id=current_user.id, resource_type="user", resource_id=user.id,
               details={"is_active": True})
     db.commit()

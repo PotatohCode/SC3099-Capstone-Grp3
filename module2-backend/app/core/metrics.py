@@ -15,6 +15,7 @@ http_request_duration_seconds = Histogram(
 checkin_attempts_total = Counter("checkin_attempts_total", "Total check-in submissions")
 checkin_success_total = Counter("checkin_success_total", "Check-ins that resolved to approved")
 login_failed_total = Counter("login_failed_total", "Failed login attempts")
+account_lockouts_total = Counter("account_lockouts_total", "Accounts locked after too many consecutive failed logins")
 checkins_flagged_total = Counter("checkins_flagged_total", "Check-ins that resolved to flagged")
 risk_score_histogram = Histogram(
     "risk_score", "Distribution of computed check-in risk scores",
