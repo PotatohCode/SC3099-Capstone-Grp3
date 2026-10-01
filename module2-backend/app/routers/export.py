@@ -29,6 +29,7 @@ from app.db.models.session import ClassSession
 from app.db.models.user import User
 from app.schemas.export import ExportRecord, SessionExportResponse, SessionExportSummary
 from app.services.audit import log_event
+from app.services.client_ip import get_client_ip
 from app.services.authz import require_export_course, require_manage_session
 
 router = APIRouter(prefix="/export", tags=["export"])
@@ -38,10 +39,6 @@ CSV_COLUMNS = [
     "status", "checked_in_at", "risk_score",
 ]
 NON_ATTENDANCE_STATUSES = {"rejected"}  # same convention as routers/stats.py
-
-
-def _client_ip(request: Request) -> Optional[str]:
-    return request.client.host if request.client else None
 
 
 def _checkins_to_records(checkins: List[CheckIn]) -> List[ExportRecord]:
@@ -104,7 +101,7 @@ def export_course_attendance(
 
     log_event(
         db, "data_exported", user_id=current_user.id, resource_type="course", resource_id=course.id,
-        ip_address=_client_ip(request), details={"format": format, "record_count": len(records)},
+        ip_address=get_client_ip(request), details={"format": format, "record_count": len(records)},
     )
     db.commit()
 
@@ -142,7 +139,7 @@ def export_session_attendance(
 
     log_event(
         db, "data_exported", user_id=current_user.id, resource_type="session", resource_id=session_obj.id,
-        ip_address=_client_ip(request), details={"format": format, "record_count": len(records)},
+        ip_address=get_client_ip(request), details={"format": format, "record_count": len(records)},
     )
     db.commit()
 

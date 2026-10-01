@@ -6,6 +6,7 @@ security-relevant default below (bcrypt cost, JWT TTLs, rate limits, risk
 thresholds). Do not change these defaults without checking that doc first.
 """
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -66,6 +67,10 @@ class Settings(BaseSettings):
     # PATCH /admin/users/{id}/activate.
     MAX_FAILED_LOGIN_ATTEMPTS: int = 10
     ACCOUNT_LOCKOUT_MINUTES: int = 15
+
+    # --- Singapore-only check-ins (see services/singapore_check.py) ---------
+    # Bundled DB-IP "IP to Country Lite" database (CC BY 4.0).
+    GEOIP_DB_PATH: str = str(Path(__file__).resolve().parents[1] / "data" / "dbip-country-lite.mmdb")
 
     # --- CORS ----------------------------------------------------------------
     CORS_ORIGINS: list[str] = [

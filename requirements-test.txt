@@ -30,6 +30,7 @@ bcrypt==4.2.1
 
 # Geolocation
 geopy==2.4.1
+maxminddb==2.6.2
 
 # ============================================
 # From module3-face-recognition/requirements.txt

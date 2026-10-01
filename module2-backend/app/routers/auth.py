@@ -21,15 +21,12 @@ from app.db.models.user import User
 from app.schemas.auth import LoginRequest, LoginResponse, RefreshRequest, RefreshResponse, RegisterRequest
 from app.schemas.user import UserResponse
 from app.services.audit import log_event
+from app.services.client_ip import get_client_ip
 from app.services.rate_limit import enforce_rate_limit, peek_rate_limit, record_hit
 from app.services.sanitize import sanitize_text
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 settings = get_settings()
-
-
-def _client_ip(request: Request) -> str | None:
-    return request.client.host if request.client else None
 
 
 def _utcnow_naive() -> datetime:
@@ -40,7 +37,7 @@ def _utcnow_naive() -> datetime:
 
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 def register(payload: RegisterRequest, request: Request, db: Session = Depends(get_db)):
-    ip = _client_ip(request)
+    ip = get_client_ip(request)
     if ip:
         enforce_rate_limit(f"rate_limit:{ip}:register", settings.RATE_LIMIT_REGISTRATION_PER_HOUR, 3600)
 
@@ -63,7 +60,7 @@ def register(payload: RegisterRequest, request: Request, db: Session = Depends(g
         user_id=user.id,
         resource_type="user",
         resource_id=user.id,
-        ip_address=_client_ip(request),
+        ip_address=get_client_ip(request),
         user_agent=request.headers.get("user-agent"),
     )
     db.commit()
@@ -73,7 +70,7 @@ def register(payload: RegisterRequest, request: Request, db: Session = Depends(g
 
 @router.post("/login", response_model=LoginResponse)
 def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)):
-    ip, ua = _client_ip(request), request.headers.get("user-agent")
+    ip, ua = get_client_ip(request), request.headers.get("user-agent")
     login_key = f"rate_limit:{ip}:login"
     if ip:
         # Peek, don't count yet - only failed attempts count toward this
