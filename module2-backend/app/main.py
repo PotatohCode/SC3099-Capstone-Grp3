@@ -9,6 +9,7 @@ Error format: see IMPLEMENTATION-PLAN.md's "Team decisions that deviate
 from the written docs" - every non-422 error body includes a `code` field
 alongside `detail`, via the exception handlers registered below.
 """
+import asyncio
 import logging
 import re
 import time
@@ -25,6 +26,7 @@ from app.core.config import get_settings
 from app.core.errors import DEFAULT_CODE_BY_STATUS, APIError, ErrorCode
 from app.core.metrics import http_request_duration_seconds
 from app.routers import admin, audit, auth, checkins, courses, devices, enrollments, export, sessions, stats, users
+from app.services.retention_scheduler import retention_loop
 
 settings = get_settings()
 logger = logging.getLogger("saiv.errors")
@@ -115,6 +117,19 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
         status_code=500, content={"detail": "Internal server error", "code": ErrorCode.INTERNAL_ERROR},
         headers={"X-Request-ID": request_id} if request_id else None,
     )
+
+
+@app.on_event("startup")
+async def start_retention_sweep() -> None:
+    if settings.RETENTION_SWEEP_INTERVAL_MINUTES > 0:
+        app.state.retention_task = asyncio.create_task(retention_loop())
+
+
+@app.on_event("shutdown")
+async def stop_retention_sweep() -> None:
+    task = getattr(app.state, "retention_task", None)
+    if task is not None:
+        task.cancel()
 
 
 @app.get("/health")

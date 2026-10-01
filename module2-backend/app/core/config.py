@@ -36,6 +36,9 @@ class Settings(BaseSettings):
 
     # --- Data retention ------------------------------------------------------
     PII_RETENTION_DAYS: int = 30
+    # Automatic sweep (services/retention_scheduler.py). 0 disables it.
+    RETENTION_SWEEP_INTERVAL_MINUTES: int = 60
+    RETENTION_SWEEP_INITIAL_DELAY_SECONDS: int = 15
 
     # --- Rate limiting (Redis-based; see SECURITY-REQUIREMENTS.md) ---------
     # All four of these are plain pydantic-settings fields, so every one is
