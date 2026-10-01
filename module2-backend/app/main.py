@@ -15,6 +15,7 @@ import re
 import time
 import uuid
 
+import anyio.to_thread
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
@@ -117,6 +118,12 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
         status_code=500, content={"detail": "Internal server error", "code": ErrorCode.INTERNAL_ERROR},
         headers={"X-Request-ID": request_id} if request_id else None,
     )
+
+
+@app.on_event("startup")
+async def size_thread_pool() -> None:
+    # See THREADPOOL_SIZE in core/config.py for why the default 40 deadlocks.
+    anyio.to_thread.current_default_thread_limiter().total_tokens = settings.THREADPOOL_SIZE
 
 
 @app.on_event("startup")

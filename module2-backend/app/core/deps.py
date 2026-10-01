@@ -5,7 +5,7 @@ Shared FastAPI dependencies: DB session, current-user resolution, RBAC.
 expired token -> 401 via get_current_user; valid token but wrong role -> 403
 via require_role(). Never rely on the frontend to have hidden a button.
 """
-from typing import Generator, Optional
+from typing import AsyncGenerator, Optional
 
 from fastapi import Depends, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -26,7 +26,15 @@ from app.services.rate_limit import enforce_rate_limit
 bearer_scheme = HTTPBearer(auto_error=False)
 
 
-def get_db() -> Generator[Session, None, None]:
+async def get_db() -> AsyncGenerator[Session, None]:
+    """Async on purpose, even though the session is sync: a *sync*
+    generator dependency's teardown would need a worker thread to run
+    `db.close()`, so under a burst where every worker thread is blocked
+    waiting for a DB connection, finished requests could never hand theirs
+    back. As an async generator, setup/teardown run on the event loop;
+    creating a Session opens no connection (that happens on first query)
+    and close() just returns it to the pool. See also THREADPOOL_SIZE in
+    core/config.py - the main fix for the same deadlock."""
     db = SessionLocal()
     try:
         yield db

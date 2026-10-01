@@ -75,6 +75,18 @@ class Settings(BaseSettings):
     # Bundled DB-IP "IP to Country Lite" database (CC BY 4.0).
     GEOIP_DB_PATH: str = str(Path(__file__).resolve().parents[1] / "data" / "dbip-country-lite.mmdb")
 
+    # --- Concurrency ---------------------------------------------------------
+    # Worker threads for sync endpoints AND their response validation
+    # (FastAPI runs both in anyio's thread pool; the default is 40). With
+    # 40 threads and 30 DB connections (pool 10 + overflow 20), a burst of
+    # ~100 requests deadlocked: every thread waited for a connection while
+    # the 30 requests holding connections had finished their endpoint but
+    # couldn't get a thread to validate their response, so never released
+    # them - until the 30 s pool timeout turned ~30% of them into 500s.
+    # Measured with 100 concurrent logins/registrations. Keep this well
+    # above the expected burst size (hidden stress tests: 100 users).
+    THREADPOOL_SIZE: int = 200
+
     # --- CORS ----------------------------------------------------------------
     CORS_ORIGINS: list[str] = [
         "http://localhost:3000",  # Frontend
