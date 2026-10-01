@@ -39,6 +39,9 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # Lets browser code read Retry-After on 429s (account lockout, rate
+    # limits) - cross-origin JS can only see headers listed here.
+    expose_headers=["Retry-After"],
 )
 
 

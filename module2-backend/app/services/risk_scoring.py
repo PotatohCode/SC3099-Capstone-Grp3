@@ -46,6 +46,7 @@ _DEVICE_UNTRUSTED_WEIGHT = 0.05
 _IMPOSSIBLE_TRAVEL_WEIGHT = 0.30
 _IMPOSSIBLE_TRAVEL_KMH = 250.0  # faster than this between two check-ins = impossible
 _LIVENESS_FAILED_WEIGHT = 0.25
+_FACE_MATCH_FAILED_WEIGHT = 0.25
 
 
 @dataclass
@@ -104,9 +105,22 @@ def assess(
     previous_distance_meters: Optional[float],
     current_checkin_at: datetime,
     risk_threshold: float,
+    face_match_passed: Optional[bool] = None,
+    require_liveness: bool = False,
+    require_face_match: bool = False,
 ) -> RiskAssessment:
+    """require_liveness / require_face_match come from the session (and the
+    course's require_face_recognition). When a requirement is set:
+    - a definite failure (face_match_passed is False) hard-rejects, same as
+      a failed liveness check;
+    - no usable result (no image, no enrolled face, Module 3 unreachable)
+      can't be auto-approved and is flagged for review instead. These
+      "unverified" signals carry weight 0: they cap the outcome at flagged
+      without moving the score, so an unverifiable check-in is never
+      rejected outright just because a service was down."""
     signals: list[RiskSignal] = []
     hard_reject = False
+    needs_review = False
 
     if distance_meters is not None and geofence_radius > 0 and distance_meters > geofence_radius:
         severity = "critical" if distance_meters > 2 * geofence_radius else "high"
@@ -143,13 +157,24 @@ def assess(
     if liveness_passed is False:
         signals.append(RiskSignal("liveness_failed", "critical", weight=_LIVENESS_FAILED_WEIGHT))
         hard_reject = True
+    elif require_liveness and liveness_passed is None:
+        signals.append(RiskSignal("liveness_unverified", "high", weight=0.0))
+        needs_review = True
+
+    if require_face_match:
+        if face_match_passed is False:
+            signals.append(RiskSignal("face_match_failed", "critical", weight=_FACE_MATCH_FAILED_WEIGHT))
+            hard_reject = True
+        elif face_match_passed is None:
+            signals.append(RiskSignal("face_match_unverified", "high", weight=0.0))
+            needs_review = True
 
     score = base_risk_score + sum(s.weight for s in signals)
     score = round(min(max(score, 0.0), 1.0), 4)
 
     if hard_reject or score >= CRITICAL_THRESHOLD:
         status = "rejected"
-    elif score >= risk_threshold:
+    elif score >= risk_threshold or needs_review:
         status = "flagged"
     else:
         status = "approved"

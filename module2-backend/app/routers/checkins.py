@@ -278,6 +278,9 @@ def create_checkin(
         previous_distance_meters=previous_distance_meters,
         current_checkin_at=now,
         risk_threshold=effective_threshold,
+        face_match_passed=face_match_passed,
+        require_liveness=bool(session_obj.require_liveness_check),
+        require_face_match=bool(session_obj.require_face_match or course.require_face_recognition),
     )
 
     log_event(

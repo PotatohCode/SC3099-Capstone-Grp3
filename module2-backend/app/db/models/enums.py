@@ -62,11 +62,13 @@ class RiskSignalType(str, enum.Enum):
     # Liveness
     LIVENESS_FAILED = "liveness_failed"
     LIVENESS_LOW_CONFIDENCE = "liveness_low_confidence"
+    LIVENESS_UNVERIFIED = "liveness_unverified"  # required by the session, but no usable result
     DEEPFAKE_SUSPECTED = "deepfake_suspected"
     REPLAY_SUSPECTED = "replay_suspected"
     # Face
     FACE_MATCH_FAILED = "face_match_failed"
     FACE_MATCH_LOW_CONFIDENCE = "face_match_low_confidence"
+    FACE_MATCH_UNVERIFIED = "face_match_unverified"  # required by the session, but no usable result
 
 
 class AuditAction(str, enum.Enum):
