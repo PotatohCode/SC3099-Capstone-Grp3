@@ -26,7 +26,11 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
     # --- Password hashing (bcrypt, cost >= 10) ------------------------------
-    BCRYPT_ROUNDS: int = 12
+    # 10 = SECURITY-REQUIREMENTS.md's minimum and its documented default
+    # (~4x cheaper than 12). Every login/registration pays this cost, so it
+    # dominates latency under the 100-user stress tests. Existing hashes keep
+    # their own cost (it's stored in the hash), so they still verify.
+    BCRYPT_ROUNDS: int = 10
 
     # --- Risk scoring defaults (overridable per course/session) ------------
     RISK_SCORE_THRESHOLD: float = 0.5
