@@ -58,6 +58,7 @@ from app.services.client_ip import get_client_ip
 from app.services.authz import can_manage_session, require_manage_session
 from app.services.rate_limit import enforce_rate_limit
 from app.services.sanitize import sanitize_text
+from app.services.uploads import require_image_size
 
 router = APIRouter(prefix="/checkins", tags=["checkins"])
 settings = get_settings()
@@ -146,6 +147,7 @@ def create_checkin(
     db: Session = Depends(get_db),
 ):
     enforce_rate_limit(f"rate_limit:{current_user.id}:checkin", settings.RATE_LIMIT_CHECKIN_PER_MINUTE, 60)
+    require_image_size(payload.liveness_challenge_response)
     checkin_attempts_total.inc()
 
     session_obj = (

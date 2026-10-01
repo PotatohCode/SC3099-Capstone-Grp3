@@ -95,6 +95,14 @@ class Settings(BaseSettings):
     # above the expected burst size (hidden stress tests: 100 users).
     THREADPOOL_SIZE: int = 200
 
+    # --- Upload limits ---------------------------------------------------------
+    # The course's sample photos are <= ~0.8 MB of base64; a phone camera
+    # JPEG is typically 0.1-2 MB. 10 M chars (~7.5 MB image) leaves room for
+    # real attack photos while stopping abuse. Whole-request cap is a bit
+    # above that, checked from Content-Length before the body is read.
+    MAX_IMAGE_BASE64_CHARS: int = 10_000_000
+    MAX_REQUEST_BODY_BYTES: int = 15_000_000
+
     # --- CORS ----------------------------------------------------------------
     CORS_ORIGINS: list[str] = [
         "http://localhost:3000",  # Frontend

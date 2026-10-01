@@ -41,6 +41,24 @@ app = FastAPI(
     version="1.0.0",
 )
 
+class BodySizeLimitMiddleware(BaseHTTPMiddleware):
+    """Rejects requests whose declared Content-Length exceeds
+    MAX_REQUEST_BODY_BYTES before the body is read. Registered before
+    CORSMiddleware, so CORS wraps it and a browser still sees a readable
+    413 rather than an opaque CORS failure."""
+
+    async def dispatch(self, request: Request, call_next):
+        length = request.headers.get("content-length")
+        if length and length.isdigit() and int(length) > settings.MAX_REQUEST_BODY_BYTES:
+            return JSONResponse(
+                status_code=413,
+                content={"detail": "Request body too large", "code": ErrorCode.REQUEST_TOO_LARGE},
+            )
+        return await call_next(request)
+
+
+app.add_middleware(BodySizeLimitMiddleware)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,

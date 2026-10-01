@@ -14,6 +14,7 @@ from app.services import face_client
 from app.services.audit import log_event
 from app.services.authz import can_edit_course
 from app.services.sanitize import sanitize_text
+from app.services.uploads import require_image_size
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -53,6 +54,7 @@ def enroll_face(
             ErrorCode.CAMERA_CONSENT_REQUIRED,
         )
 
+    require_image_size(payload.image)
     result = face_client.enroll_face(current_user.id, payload.image, current_user.camera_consent)
     if result is None:
         # Module 3 timed out / errored / is a 501 stub (see KNOWN-ISSUES.md) -
