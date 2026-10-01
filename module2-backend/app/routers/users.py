@@ -8,7 +8,7 @@ from app.core.errors import APIError, ErrorCode
 from app.db.models.course import Course
 from app.db.models.enrollment import Enrollment
 from app.db.models.user import User
-from app.schemas.common import Page
+from app.schemas.common import Page, page_limit
 from app.schemas.user import FaceEnrollRequest, FaceEnrollResponse, UserAdminUpdate, UserResponse, UserUpdateRequest
 from app.services import face_client
 from app.services.audit import log_event
@@ -82,11 +82,12 @@ def list_users(
     role: Optional[str] = None,
     is_active: Optional[bool] = None,
     search: Optional[str] = None,
-    limit: int = Query(default=50, ge=1, le=100),
+    limit: int = Query(default=50, ge=1),
     offset: int = Query(default=0, ge=0),
     current_user: User = Depends(require_role("admin")),
     db: Session = Depends(get_db),
 ):
+    limit = page_limit(limit)
     query = db.query(User)
     if role:
         query = query.filter(User.role == role)

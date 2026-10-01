@@ -13,6 +13,16 @@ T = TypeVar("T")
 Role = Literal["student", "instructor", "ta", "admin"]
 
 
+# API-SPECIFICATION.md "Pagination": max 100 per page. Larger requests are
+# capped rather than rejected, so a client asking for more still gets a
+# valid page (the response's `limit` shows the size actually used).
+MAX_PAGE_SIZE = 100
+
+
+def page_limit(limit: int) -> int:
+    return min(limit, MAX_PAGE_SIZE)
+
+
 class Page(BaseModel, Generic[T]):
     """Standard list-endpoint envelope per API-SPECIFICATION.md's Task 2.1:
     { "items": [...], "total": N, "limit": N, "offset": N }"""

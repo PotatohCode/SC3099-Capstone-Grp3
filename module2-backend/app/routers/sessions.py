@@ -15,7 +15,7 @@ from app.db.models.course import Course
 from app.db.models.enrollment import Enrollment
 from app.db.models.session import ClassSession
 from app.db.models.user import User
-from app.schemas.common import Page
+from app.schemas.common import Page, page_limit
 from app.schemas.session import SessionCreate, SessionResponse, SessionUpdate
 from app.services.audit import log_event
 from app.services.authz import require_edit_course, require_manage_session
@@ -83,11 +83,12 @@ def list_sessions(
     instructor_id: Optional[str] = None,
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
-    limit: int = Query(default=50, ge=1, le=200),
+    limit: int = Query(default=50, ge=1),
     offset: int = Query(default=0, ge=0),
     current_user: User = Depends(require_role("instructor", "ta", "admin")),
     db: Session = Depends(get_db),
 ):
+    limit = page_limit(limit)
     query = db.query(ClassSession).options(joinedload(ClassSession.course))
     if status_filter:
         query = query.filter(ClassSession.status == status_filter)
@@ -125,10 +126,11 @@ def list_active_sessions(db: Session = Depends(get_db)):
 def list_my_sessions(
     status_filter: Optional[str] = Query(default=None, alias="status"),
     upcoming: bool = False,
-    limit: int = Query(default=50, ge=1, le=200),
+    limit: int = Query(default=50, ge=1),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    limit = page_limit(limit)
     query = db.query(ClassSession).options(joinedload(ClassSession.course))
 
     if current_user.role == "student":

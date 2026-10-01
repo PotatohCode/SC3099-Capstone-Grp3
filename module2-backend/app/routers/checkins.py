@@ -47,7 +47,7 @@ from app.schemas.checkin import (
     RiskFactorItem,
     SessionCheckinItem,
 )
-from app.schemas.common import Page
+from app.schemas.common import Page, page_limit
 from app.services import face_client, geofencing, risk_scoring, singapore_check
 from app.services.audit import log_event
 from app.services.client_ip import get_client_ip
@@ -367,11 +367,12 @@ def list_checkins(
     max_risk_score: Optional[float] = None,
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
-    limit: int = Query(default=50, ge=1, le=200),
+    limit: int = Query(default=50, ge=1),
     offset: int = Query(default=0, ge=0),
     current_user: User = Depends(require_role("instructor", "ta", "admin")),
     db: Session = Depends(get_db),
 ):
+    limit = page_limit(limit)
     query = (
         db.query(CheckIn)
         .join(ClassSession, CheckIn.session_id == ClassSession.id)
@@ -419,10 +420,11 @@ def list_checkins(
 @router.get("/my-checkins", response_model=List[MyCheckinItem])
 def my_checkins(
     course_id: Optional[str] = None,
-    limit: int = Query(default=50, ge=1, le=200),
+    limit: int = Query(default=50, ge=1),
     current_user: User = Depends(require_role("student")),
     db: Session = Depends(get_db),
 ):
+    limit = page_limit(limit)
     query = (
         db.query(CheckIn)
         .join(ClassSession, CheckIn.session_id == ClassSession.id)
@@ -483,11 +485,12 @@ def session_checkins(
 def flagged_checkins(
     course_id: Optional[str] = None,
     session_id: Optional[str] = None,
-    limit: int = Query(default=50, ge=1, le=200),
+    limit: int = Query(default=50, ge=1),
     offset: int = Query(default=0, ge=0),
     current_user: User = Depends(require_role("instructor", "ta", "admin")),
     db: Session = Depends(get_db),
 ):
+    limit = page_limit(limit)
     query = (
         db.query(CheckIn)
         .join(ClassSession, CheckIn.session_id == ClassSession.id)
