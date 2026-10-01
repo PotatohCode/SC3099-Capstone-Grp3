@@ -183,6 +183,14 @@ def create_checkin(
     if existing is not None:
         raise APIError(status.HTTP_400_BAD_REQUEST, "Already checked in for this session", ErrorCode.ALREADY_CHECKED_IN)
 
+    # --- Consent (config CONSENT_ENFORCEMENT; off by default) ----------------
+    consent_ok = bool(current_user.camera_consent and current_user.geolocation_consent)
+    if settings.CONSENT_ENFORCEMENT == "reject" and not consent_ok:
+        raise APIError(
+            status.HTTP_403_FORBIDDEN, "Camera and location consent are required before checking in",
+            ErrorCode.CONSENT_REQUIRED,
+        )
+
     # --- Singapore-only rule (graded; see services/singapore_check.py) -------
     # After the session/enrollment/window/duplicate guards so their status
     # codes are unchanged, and before any Module 3 round-trips. 403 rather
@@ -338,6 +346,10 @@ def create_checkin(
         replay_suspected=replay_suspected,
         other_students_on_device=other_students_on_device,
         minutes_after_start=minutes_after_start,
+        consent_missing=settings.CONSENT_ENFORCEMENT == "flag" and not consent_ok,
+        device_unbound=(
+            settings.DEVICE_BINDING_ENFORCEMENT == "flag" and bool(course.require_device_binding) and not device_known
+        ),
     )
 
     log_event(

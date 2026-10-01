@@ -7,6 +7,7 @@ thresholds). Do not change these defaults without checking that doc first.
 """
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -93,6 +94,29 @@ class Settings(BaseSettings):
     # --- Singapore-only check-ins (see services/singapore_check.py) ---------
     # Bundled DB-IP "IP to Country Lite" database (CC BY 4.0).
     GEOIP_DB_PATH: str = str(Path(__file__).resolve().parents[1] / "data" / "dbip-country-lite.mmdb")
+
+    # --- Check-in enforcement switches (Phase 4) -----------------------------
+    # Built and tested, but OFF by default: each depends on a Module 1 change.
+    # Turn on per environment (env var of the same name) once that ships.
+    #
+    # CONSENT_ENFORCEMENT - Briefing: camera + geolocation consent "must be
+    # TRUE before check-in". Needs the frontend to send
+    # PUT /users/me {camera_consent, geolocation_consent} when the student
+    # grants permission (it doesn't yet).
+    #   off    - not checked (current behaviour)
+    #   flag   - missing consent -> consent_missing, at most "flagged"
+    #   reject - missing consent -> 403 CONSENT_REQUIRED. NOT for grading:
+    #            the course's test_student checks in without consent and
+    #            expects 201.
+    CONSENT_ENFORCEMENT: Literal["off", "flag", "reject"] = "off"
+    # DEVICE_BINDING_ENFORCEMENT - Briefing: "check-ins from unknown devices
+    # flagged". Applies when the course has require_device_binding (default
+    # true). Needs the frontend's per-install random fingerprint first;
+    # today students on the same phone model share one fingerprint.
+    #   off  - not checked (current behaviour; unknown devices only add risk)
+    #   flag - device not registered to this student -> device_unbound,
+    #          at most "flagged"
+    DEVICE_BINDING_ENFORCEMENT: Literal["off", "flag"] = "off"
 
     # --- Concurrency ---------------------------------------------------------
     # Worker threads for sync endpoints AND their response validation
