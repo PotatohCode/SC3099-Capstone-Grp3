@@ -1,3 +1,5 @@
+from typing import Optional
+
 from pydantic import BaseModel, EmailStr, Field
 
 from app.schemas.common import Role
@@ -20,6 +22,12 @@ class RegisterRequest(BaseModel):
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
+
+
+class LogoutRequest(BaseModel):
+    """Body is optional; the access token in the Authorization header (if
+    any) is revoked too."""
+    refresh_token: Optional[str] = None
 
 
 class RefreshRequest(BaseModel):

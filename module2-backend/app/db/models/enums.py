@@ -53,6 +53,8 @@ class RiskSignalType(str, enum.Enum):
     SUSPICIOUS_IP = "suspicious_ip"
     # Device
     DEVICE_UNKNOWN = "device_unknown"
+    DEVICE_UNBOUND = "device_unbound"  # DEVICE_BINDING_ENFORCEMENT=flag, device not registered to this student
+    CONSENT_MISSING = "consent_missing"  # CONSENT_ENFORCEMENT=flag
     DEVICE_EMULATOR = "device_emulator"
     DEVICE_ROOTED = "device_rooted"
     ATTESTATION_FAILED = "attestation_failed"

@@ -7,6 +7,7 @@ can reject an access token used where a refresh token is expected, and vice
 versa - the spec doesn't forbid extra claims, and tokens never carry anything
 sensitive beyond what's already in the public API responses.
 """
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
@@ -41,6 +42,9 @@ def _create_token(
         "type": token_type,
         "iat": int(now.timestamp()),
         "exp": int((now + expires_delta).timestamp()),
+        # Unique id so a specific token can be revoked (logout); see
+        # services/token_revocation.py.
+        "jti": uuid.uuid4().hex,
     }
     return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
 

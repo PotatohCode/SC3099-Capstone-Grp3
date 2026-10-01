@@ -58,6 +58,7 @@ from app.services.client_ip import get_client_ip
 from app.services.authz import can_manage_session, require_manage_session
 from app.services.rate_limit import enforce_rate_limit
 from app.services.sanitize import sanitize_text
+from app.services.uploads import require_image_size
 
 router = APIRouter(prefix="/checkins", tags=["checkins"])
 settings = get_settings()
@@ -146,6 +147,7 @@ def create_checkin(
     db: Session = Depends(get_db),
 ):
     enforce_rate_limit(f"rate_limit:{current_user.id}:checkin", settings.RATE_LIMIT_CHECKIN_PER_MINUTE, 60)
+    require_image_size(payload.liveness_challenge_response)
     checkin_attempts_total.inc()
 
     session_obj = (
@@ -180,6 +182,14 @@ def create_checkin(
     )
     if existing is not None:
         raise APIError(status.HTTP_400_BAD_REQUEST, "Already checked in for this session", ErrorCode.ALREADY_CHECKED_IN)
+
+    # --- Consent (config CONSENT_ENFORCEMENT; off by default) ----------------
+    consent_ok = bool(current_user.camera_consent and current_user.geolocation_consent)
+    if settings.CONSENT_ENFORCEMENT == "reject" and not consent_ok:
+        raise APIError(
+            status.HTTP_403_FORBIDDEN, "Camera and location consent are required before checking in",
+            ErrorCode.CONSENT_REQUIRED,
+        )
 
     # --- Singapore-only rule (graded; see services/singapore_check.py) -------
     # After the session/enrollment/window/duplicate guards so their status
@@ -336,6 +346,10 @@ def create_checkin(
         replay_suspected=replay_suspected,
         other_students_on_device=other_students_on_device,
         minutes_after_start=minutes_after_start,
+        consent_missing=settings.CONSENT_ENFORCEMENT == "flag" and not consent_ok,
+        device_unbound=(
+            settings.DEVICE_BINDING_ENFORCEMENT == "flag" and bool(course.require_device_binding) and not device_known
+        ),
     )
 
     log_event(

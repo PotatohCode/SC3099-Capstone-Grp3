@@ -1,76 +1,76 @@
-# Module 2 Backend API — For Module 4 (Data Analytics Dashboard)
+# Module 2 Backend API — For Module 4 (Observability Dashboard)
 
 Read [API-CONVENTIONS.md](API-CONVENTIONS.md) first (auth, error format,
-pagination). This covers everything your module needs: the `/stats/*`
-analytics endpoints, `/export/*` data export, `/audit/*` compliance
-logging, and `/metrics` for Prometheus/Grafana.
+pagination). For **what changed and what you need to do**, see
+[CHANGES-2026-10-01.md](CHANGES-2026-10-01.md) §1 and the Module 4 guide in
+§4. Last updated 2026-10-01.
 
-All endpoints below require **instructor, ta, or admin** — nothing here is
-student-accessible, and most narrow further per-endpoint (noted below).
+This covers the `/stats/*` analytics, `/export/*` data export, `/audit/*`
+compliance log, and `/metrics` for Prometheus/Grafana. Everything here needs
+**instructor, ta or admin**, and most endpoints narrow further (noted
+below). Check-in lists and the review queue are in
+[API-FOR-FRONTEND.md](API-FOR-FRONTEND.md) §7. The dashboard can use them
+the same way (e.g. `GET /checkins/flagged` + `POST /checkins/{id}/review`
+for a review screen).
 
 ---
 
 ## 1. Stats (`/api/v1/stats/*`)
 
-**Read this before you build against field names**: every one of these
-four endpoints has fields that exist under **two different names for the
-same value** — one matching the written project spec's examples, one
-matching what the actual graded test suite asserts. Both are populated in
-every response on purpose, not a bug — pick whichever name reads better in
-your code, they're always equal.
+**Read this before building against field names:** several fields appear
+**under two names for the same value**, one matching the written spec and
+one matching what the graded tests assert. Both are always present and
+always equal, so use whichever you prefer.
 
 ### `GET /stats/overview` — instructor/ta/admin
-Query: `course_id` (optional — omit for your full scope), `days` (1–365,
-default 7, controls the trend window only).
-
+Query: `course_id` (optional), `days` (1–365, default 7; controls the trend
+window only).
 ```json
 {
   "total_sessions": 0, "active_sessions": 0, "total_courses": 0, "total_students": 0,
   "today_checkins": 0, "flagged_pending": 0, "approval_rate": 0.0,
-
   "total_checkins_today": 0,        // == today_checkins
   "total_checkins_week": 0,
   "average_attendance_rate": 0.0,
   "flagged_pending_review": 0,      // == flagged_pending
   "average_risk_score": 0.0,
-  "high_risk_checkins_today": 0,
+  "high_risk_checkins_today": 0,    // risk_score >= 0.5
   "trends": {
-    "checkins_by_day": [{ "date": "2026-08-20", "count": 0 }],
-    "attendance_rate_by_day": [{ "date": "2026-08-20", "rate": 0.0 }]
+    "checkins_by_day": [{ "date": "2026-10-01", "count": 0 }],
+    "attendance_rate_by_day": [{ "date": "2026-10-01", "rate": 0.0 }]
   }
 }
 ```
-Scope is automatic: an instructor/ta sees only courses they own, teach a
-session in, or are TA-assigned to (via an active enrollment) — admin sees
-everything. `approval_rate`/`average_attendance_rate` are computed over
-**all-time** check-ins, not just the `days` window — only `trends` is
-windowed.
+- **Scope is automatic:** instructors/TAs see courses they own, teach a
+  session in, or are TA-assigned to; admins see everything.
+- **Windowing:** `approval_rate` / `average_attendance_rate` are all-time;
+  only `trends` uses `days`.
 
-**Attendance rate definition, everywhere in this file**: a `rejected`
-check-in (caught spoofing/GPS fraud) is excluded from every
-"attendance"/"attended" calculation — it represents a blocked fraud
-attempt, not genuine attendance. Raw counts (anything literally named
-`checked_in`/`checked_in_count`) count every row regardless of status,
-including rejected ones. Know which one you're graphing.
+**Attendance rate, everywhere in this file:** `rejected` check-ins
+(blocked fraud) are excluded from every "attendance"/"attended" figure.
+Raw counts (`checked_in`, `checked_in_count`) include every row, rejected
+ones too. Know which one you're graphing.
 
-### `GET /stats/sessions/{session_id}` — instructor/ta/admin who manages this session
+### `GET /stats/sessions/{session_id}` — staff who manage the session
 ```json
 {
   "session_id", "session_name", "course_code", "scheduled_start", "status",
   "total_enrolled": 0,
-  "checked_in": 0, "checked_in_count": 0,     // same value, two names
+  "checked_in": 0, "checked_in_count": 0,     // same value
   "approved_count": 0, "flagged_count": 0,
   "attendance_rate": 0.0,
   "by_status": { "approved": 0, "flagged": 0, "rejected": 0, "pending": 0, "appealed": 0 },
   "average_risk_score": 0.0,
-  "average_distance_meters": 0.0,   // null if no checkins have a distance recorded
-  "average_checkin_time_minutes": 0.0,  // null if no checkins
-  "risk_distribution": { "low": 0, "medium": 0, "high": 0 },   // low <0.3, medium <0.5, high >=0.5
-  "checkin_timeline": [{ "minute": 0, "count": 0 }]  // 5-minute buckets from checkin_opens_at
+  "average_distance_meters": 0.0,       // null if no distances
+  "average_checkin_time_minutes": 0.0,  // null if no check-ins
+  "risk_distribution": { "low": 0, "medium": 0, "high": 0 },
+  "checkin_timeline": [{ "minute": 0, "count": 0 }]   // 5-minute buckets from checkin_opens_at
 }
 ```
-Good source for a single-session dashboard widget (attendance funnel, risk
-histogram, arrival-time timeline).
+`risk_distribution` uses the spec's **three** buckets: low < 0.3, medium
+< 0.5, high ≥ 0.5. Individual check-ins carry the **four**-band
+`risk_level` (LOW / MEDIUM / HIGH / CRITICAL, where CRITICAL ≥ 0.7 =
+auto-rejected). So "high" here means HIGH + CRITICAL.
 
 ### `GET /stats/courses/{course_id}` — instructor/admin who owns the course
 ```json
@@ -84,91 +84,103 @@ histogram, arrival-time timeline).
   "low_attendance_alerts": [{ "student_id", "student_name", "attendance_rate": 0.0, "sessions_missed": 0 }]
 }
 ```
-Optional `start_date`/`end_date` query params filter which check-ins count
-toward the per-session breakdown. `low_attendance_alerts` uses a **0.75
-attendance-rate threshold** — this is our own reasoned default (no spec
-value exists for it), flag it to us if your dashboard design needs a
-different/configurable threshold.
+- `start_date`/`end_date` (optional) filter which check-ins count toward the
+  per-session breakdown.
+- `low_attendance_alerts` uses a **0.75** attendance-rate threshold. That's
+  our own default (the spec doesn't give one); ask if you need it
+  configurable.
 
-### `GET /stats/students/{student_id}` — instructor/admin (instructor only if this student is enrolled in a course they teach)
+### `GET /stats/students/{student_id}` — instructor (of one of the student's courses) or admin
 ```json
 {
   "student_id", "student_name", "student_email",
   "total_enrolled_courses": 0, "total_sessions": 0, "attended_sessions": 0, "attendance_rate": 0.0,
   "courses": [{ "course_id", "course_code", "attendance_rate": 0.0, "sessions_attended": 0, "total_sessions": 0, "average_risk_score": 0.0 }],
-  "recent_sessions": [...], "recent_checkins": [...]   // identical content, two names, last 10 checkins
+  "recent_sessions": [...], "recent_checkins": [...]   // same content, last 10 check-ins
 }
 ```
 Each recent item: `{ "session_name", "course_code", "checked_in_at", "status" }`.
+
+**Not in stats:** check-ins rejected for being **outside Singapore** (`403`)
+create **no check-in row**, so they never appear in `/stats/*` or exports.
+They're only visible through the audit log (`checkin_rejected_geo`,
+`security_violation`) and metrics (`checkin_rejected_geo_total`).
 
 ---
 
 ## 2. Export (`/api/v1/export/*`)
 
-Both endpoints accept `?format=csv` (default) or `?format=json`.
+Both endpoints accept `?format=csv` (default) or `?format=json`. Every
+call writes a `data_exported` audit entry (user, IP, record count).
 
 ### `GET /export/attendance/{course_id}?format=csv|json`
-Requires: admin, the course's exact assigned instructor, or an instructor
-who owns at least one session under it — **note this is stricter than the
-general "unassigned course = any instructor" leniency used elsewhere in
-this API** (a deliberate fix for a real PII-disclosure bug — see
-`KNOWN-ISSUES.md` if you need the history). Optional `start_date`/
-`end_date` filter which check-ins are included.
-
-- `format=csv` → a downloadable file, `Content-Disposition: attachment`,
-  columns: `student_id, student_name, student_email, session_date,
+- **Who:** admin; the course's assigned instructor; or an instructor who
+  owns at least one session in it. This is stricter than elsewhere: an
+  unrelated instructor gets `403` even for an unassigned course, to avoid
+  exposing student data.
+- **Filters:** optional `start_date` / `end_date`.
+- **`format=csv`:** a download (`Content-Disposition: attachment`) with
+  columns `student_id, student_name, student_email, session_date,
   session_name, status, checked_in_at, risk_score`.
-- `format=json` → a **flat array** of the same row shape (not wrapped in
-  an envelope).
+- **`format=json`:** a flat array of the same rows.
 
 ### `GET /export/session/{session_id}?format=csv|json`
-Requires the same "manages this session" check as everything else
-session-scoped.
+Same "manages this session" check as other session-scoped endpoints.
+- **`format=csv`:** same columns, one session's rows.
+- **`format=json`:** an **object**, not an array:
+  ```json
+  { "session_id", "session_name",
+    "summary": { "total_enrolled": 0, "checked_in_count": 0, "attendance_rate": 0.0,
+                 "approved_count": 0, "flagged_count": 0, "average_risk_score": 0.0 },
+    "records": [ /* same rows as the course export */ ] }
+  ```
 
-- `format=csv` → same columns as above, one session's rows.
-- `format=json` → **not** a flat array — an object:
-```json
-{
-  "session_id", "session_name",
-  "summary": { "total_enrolled": 0, "checked_in_count": 0, "attendance_rate": 0.0,
-               "approved_count": 0, "flagged_count": 0, "average_risk_score": 0.0 },
-  "records": [ /* same row shape as course export */ ]
-}
-```
-This shape isn't in the original written spec at all (it only says
-"returns a downloadable file") — it was built to match the one hidden test
-that actually exercises this endpoint's JSON mode, so treat this as the
-real contract.
-
-Both endpoints log a `data_exported` audit entry (see below) every time
-they're called, including your IP and the record count — useful if your
-dashboard needs to show "who exported what, when" itself.
+**CSV safety:** text cells starting with `= + - @` (or a tab or carriage
+return) are prefixed with `'`, so spreadsheets show them as text instead of
+running them as formulas. Example: `'=HYPERLINK(...)`. JSON values are
+unchanged. Names and other free text are HTML-escaped when stored
+(`&lt;`, `&quot;`), so render them as text.
 
 ---
 
-## 3. Audit (`/api/v1/audit/*`) — **admin only**, both endpoints
+## 3. Audit (`/api/v1/audit/*`) — **admin only**
 
 ### `GET /audit/`
-Query: `user_id`, `action`, `resource_type`, `resource_id`, `success`
-(bool), `start_date`, `end_date`, `limit` (≤1000, default 100), `offset`.
-→ paginated:
+Query: `user_id`, `action`, `resource_type`, `resource_id`, `success` (bool),
+`start_date`, `end_date`, `limit` (≤ 1000, default 100), `offset`. →
+paginated:
 ```json
 { "items": [{ "id", "user_id", "user_email", "action", "resource_type",
   "resource_id", "ip_address", "user_agent", "device_id", "details": {},
   "success": true, "timestamp": "..." }], "total", "limit", "offset" }
 ```
-`action` values you'll see include (not exhaustive):
-`login_success`/`login_failed`/`logout`, `user_created`/`user_updated`,
-`checkin_attempted`/`checkin_approved`/`checkin_flagged`/
-`checkin_rejected`/`checkin_appealed`/`checkin_reviewed`,
-`session_created`/`updated`/`deleted`, `enrollment_added`/`removed`,
-`device_registered`/`updated`/`removed`, `face_enrolled`,
-`course_created`/`updated`/`deleted`, `data_exported`,
-`retention_sweep_run`, `security_violation`, and *(new 2026-10-01)*
-`account_locked` and `checkin_rejected_geo`. Their `details` are described in
-[CHANGES-2026-10-01.md](CHANGES-2026-10-01.md). This table is append-only —
-no row is ever edited or removed, so it's safe to treat as a permanent
-event log for any "activity feed" style widget.
+**Actions you'll see:**
+- **Auth/users:** `login_success`, `login_failed`, `logout`, `account_locked`,
+  `user_created`, `user_updated`, `user_deletion_requested`, `face_enrolled`
+- **Check-ins:** `checkin_attempted`, `checkin_approved`, `checkin_flagged`,
+  `checkin_rejected`, `checkin_rejected_geo`, `checkin_appealed`,
+  `checkin_reviewed`
+- **Admin data:** `session_created/updated/deleted`,
+  `enrollment_added/removed`, `device_registered/updated/removed`,
+  `course_created/updated/deleted`, `data_exported`, `retention_sweep_run`
+- **Security:** `security_violation`
+
+Useful `details` fields:
+
+| Action | `details` |
+|---|---|
+| `checkin_approved` / `_flagged` / `_rejected` | `risk_score`, **`risk_level`** (LOW/MEDIUM/HIGH/CRITICAL), `status` |
+| `security_violation` | **`violation_type`**: `account_lockout`, `outside_singapore`, `geo_out_of_bounds`, `liveness_failed`, `face_match_failed`, `replay_suspected`, `impossible_travel`, `gps_spoof_suspected`, `rapid_succession` |
+| `checkin_rejected_geo` | `reason` (`ip`/`gps`/`gps_and_ip`), `gps_in_singapore`, `ip_country` (no coordinates) |
+| `account_locked` | `failed_attempts`, `lockout_minutes` |
+| `login_failed` | `email`, or `reason: "account_locked"` |
+| `retention_sweep_run` | `users_anonymized`, `checkins_anonymized`, `trigger: "scheduled"` (hourly, no user) |
+
+- **Append-only, enforced by the database.** No row can be edited or
+  deleted, even with SQL, so it's safe as a permanent activity feed. Don't
+  build anything that modifies it.
+- **`ip_address`** = the client's first `X-Forwarded-For` address, or the
+  connection address.
 
 ### `GET /audit/summary`
 Query: `days` (1–365, default 30).
@@ -176,34 +188,47 @@ Query: `days` (1–365, default 30).
 { "period_days": 30, "total_logs": 0, "success_count": 0, "failed_count": 0,
   "by_action": { "login_success": 0, "checkin_attempted": 0, "...": 0 } }
 ```
-Good for a compliance/security-overview widget — `by_action` gives you a
-ready-made breakdown without paginating through raw log rows yourself.
+`by_action` gives a ready-made breakdown (e.g. `security_violation` count
+for a security overview).
 
 ---
 
 ## 4. Prometheus metrics (`GET /metrics`)
 
-**Root-level, not under `/api/v1`** — `http://<backend-host>:8000/metrics`
-directly, matching `module4-observability/prometheus.yml`'s scrape config
-if that's already how your side is wired up. Standard Prometheus text
-exposition format, not JSON.
-
-Exact metric names (don't rename on your end without checking with us —
-these are the literal names Grafana panels would query via PromQL):
+**Root level, not under `/api/v1`**: `http://<backend-host>:8000/metrics`,
+matching `module4-observability/prometheus.yml`. Standard Prometheus text
+format. The names are literal; ask before relying on a rename.
 
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
-| `http_request_duration_seconds` | Histogram | `method`, `path`, `status_code` | Every request's latency |
-| `checkin_attempts_total` | Counter | — | Every `POST /checkins/` call |
-| `checkin_success_total` | Counter | — | Check-ins that resolved `approved` |
-| `checkins_flagged_total` | Counter | — | Check-ins that resolved `flagged` |
-| `login_failed_total` | Counter | — | Failed login attempts (including attempts blocked by an account lockout) |
-| `account_lockouts_total` | Counter | — | Accounts locked after 10 consecutive failed logins *(new 2026-10-01)* |
-| `checkin_rejected_geo_total` | Counter | `reason` = `ip`\|`gps`\|`gps_and_ip` | Check-ins rejected as outside Singapore *(new 2026-10-01; series appear on first occurrence)* |
-| `risk_score` | Histogram | — | Distribution of computed risk scores, buckets at 0.1 increments |
+| `http_request_duration_seconds` | Histogram | `method`, `path`, `status_code` | Request latency |
+| `checkin_attempts_total` | Counter | — | Every `POST /checkins/` (including rejected ones) |
+| `checkin_success_total` | Counter | — | Check-ins resolved `approved` |
+| `checkins_flagged_total` | Counter | — | Check-ins resolved `flagged` |
+| `risk_score` | Histogram | — | Risk score distribution (0.1 buckets) |
+| `login_failed_total` | Counter | — | Failed logins, **including** attempts blocked by a lockout |
+| `account_lockouts_total` | Counter | — | Accounts locked after 10 consecutive failures |
+| `checkin_rejected_geo_total` | Counter | `reason` = `ip`/`gps`/`gps_and_ip` | Check-ins refused as outside Singapore |
+| `security_violations_total` | Counter | `violation_type` (as in the audit table) | Every `security_violation` event |
 
-If your dashboard is built as Grafana panels against Prometheus rather
-than a custom app calling our REST endpoints directly, this is the only
-section of this file you need — everything above (`/stats`, `/export`,
-`/audit`) is for a custom analytics app/API layer instead, use whichever
-matches your actual architecture.
+Labelled series only appear after their first occurrence; treat "no data"
+as 0 (`or vector(0)`).
+
+```promql
+sum by (violation_type) (increase(security_violations_total[1h]))   # suspicious activity
+increase(account_lockouts_total[1h])                                 # brute-force attempts
+sum(increase(checkin_rejected_geo_total[1h])) / sum(increase(checkin_attempts_total[1h]))
+```
+
+**Alert ideas** (Module 4 design deck): a high flagged ratio
+(`checkins_flagged_total` / `checkin_attempts_total`), and many failed logins
+(`login_failed_total`, `account_lockouts_total`).
+
+If your dashboard is Grafana panels on Prometheus, this section is all you
+need. Sections 1–3 are for a custom app calling the REST API (the Streamlit
+dashboard).
+
+**Health:** `GET /health` (root level) → `200 healthy`, `200 degraded`
+(Redis down) or `503 unhealthy` (database down), with per-component
+`database`/`redis` fields. The backend container's Docker healthcheck uses
+it, and the dashboard container waits for it.

@@ -1,21 +1,56 @@
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.core.deps import get_current_user, get_db, require_role
 from app.core.errors import APIError, ErrorCode
+from app.core.security import verify_password
 from app.db.models.course import Course
 from app.db.models.enrollment import Enrollment
 from app.db.models.user import User
 from app.schemas.common import Page, page_limit
-from app.schemas.user import FaceEnrollRequest, FaceEnrollResponse, UserAdminUpdate, UserResponse, UserUpdateRequest
+from app.schemas.user import (
+    AccountDeletionRequest,
+    AccountDeletionResponse,
+    FaceEnrollRequest,
+    FaceEnrollResponse,
+    UserAdminUpdate,
+    UserResponse,
+    UserUpdateRequest,
+)
 from app.services import face_client
 from app.services.audit import log_event
 from app.services.authz import can_edit_course
 from app.services.sanitize import sanitize_text
+from app.services.uploads import require_image_size
 
 router = APIRouter(prefix="/users", tags=["users"])
+settings = get_settings()
+
+
+def _schedule_deletion(db: Session, user: User, actor_id: str) -> AccountDeletionResponse:
+    """Right to deletion (Briefing p.27). SECURITY-REQUIREMENTS "User PII:
+    30 days after deletion, scheduled cleanup job": deactivate now (every
+    existing token stops working - get_current_user and /auth/refresh both
+    require is_active), and let the automatic retention sweep anonymise the
+    row once scheduled_deletion_at passes. Idempotent: a repeat keeps the
+    original date. Admin PATCH .../activate cancels a pending deletion."""
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    if user.scheduled_deletion_at is None:
+        user.scheduled_deletion_at = now + timedelta(days=settings.PII_RETENTION_DAYS)
+    user.is_active = False
+    log_event(
+        db, "user_deletion_requested", user_id=actor_id, resource_type="user", resource_id=user.id,
+        details={"scheduled_deletion_at": user.scheduled_deletion_at.isoformat()},
+    )
+    db.commit()
+    return AccountDeletionResponse(
+        message="Account deactivated; personal data will be removed on the scheduled date",
+        scheduled_deletion_at=user.scheduled_deletion_at,
+    )
 
 
 @router.get("/me", response_model=UserResponse)
@@ -41,6 +76,17 @@ def update_me(
     return current_user
 
 
+@router.delete("/me", response_model=AccountDeletionResponse, status_code=status.HTTP_202_ACCEPTED)
+def delete_me(
+    payload: AccountDeletionRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if not verify_password(payload.password, current_user.hashed_password):
+        raise APIError(status.HTTP_403_FORBIDDEN, "Password is incorrect", ErrorCode.PASSWORD_INCORRECT)
+    return _schedule_deletion(db, current_user, actor_id=current_user.id)
+
+
 @router.post("/me/face/enroll", response_model=FaceEnrollResponse)
 def enroll_face(
     payload: FaceEnrollRequest,
@@ -53,6 +99,7 @@ def enroll_face(
             ErrorCode.CAMERA_CONSENT_REQUIRED,
         )
 
+    require_image_size(payload.image)
     result = face_client.enroll_face(current_user.id, payload.image, current_user.camera_consent)
     if result is None:
         # Module 3 timed out / errored / is a 501 stub (see KNOWN-ISSUES.md) -
@@ -150,3 +197,12 @@ def update_user(
     db.commit()
     db.refresh(user)
     return user
+
+
+@router.delete("/{user_id}", response_model=AccountDeletionResponse, status_code=status.HTTP_202_ACCEPTED)
+def delete_user(user_id: str, current_user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
+    """Admin version of DELETE /users/me (no password; the admin is recorded as the actor)."""
+    user = db.get(User, user_id)
+    if user is None:
+        raise APIError(status.HTTP_404_NOT_FOUND, "User not found", ErrorCode.USER_NOT_FOUND)
+    return _schedule_deletion(db, user, actor_id=current_user.id)

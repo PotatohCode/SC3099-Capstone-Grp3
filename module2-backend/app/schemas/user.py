@@ -46,3 +46,14 @@ class FaceEnrollResponse(BaseModel):
     message: str
     face_enrolled: bool
     quality_score: float
+
+
+class AccountDeletionRequest(BaseModel):
+    """DELETE /users/me: the current password, so a stolen access token
+    alone can't delete an account."""
+    password: str = Field(min_length=1)
+
+
+class AccountDeletionResponse(BaseModel):
+    message: str
+    scheduled_deletion_at: datetime

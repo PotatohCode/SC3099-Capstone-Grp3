@@ -153,6 +153,8 @@ def assess(
     replay_suspected: bool = False,
     other_students_on_device: int = 0,
     minutes_after_start: Optional[float] = None,
+    consent_missing: bool = False,
+    device_unbound: bool = False,
 ) -> RiskAssessment:
     """require_liveness / require_face_match come from the session (and the
     course's require_face_recognition). When a requirement is set:
@@ -234,6 +236,15 @@ def assess(
         signals.append(RiskSignal(
             "unusual_time", "low", weight=0.0, details={"minutes_after_start": round(minutes_after_start, 1)},
         ))
+
+    # Phase 4 switches (config CONSENT_ENFORCEMENT / DEVICE_BINDING_ENFORCEMENT
+    # = "flag"): weight 0, review only - same pattern as the *_unverified signals.
+    if consent_missing:
+        signals.append(RiskSignal("consent_missing", "medium", weight=0.0))
+        needs_review = True
+    if device_unbound:
+        signals.append(RiskSignal("device_unbound", "medium", weight=0.0))
+        needs_review = True
 
     if replay_suspected:
         # The same student submitted byte-identical image data before - a

@@ -7,6 +7,7 @@ thresholds). Do not change these defaults without checking that doc first.
 """
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -24,6 +25,11 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+    # Single-use refresh tokens: each /auth/refresh revokes the token it was
+    # given. Off by default - a client that reuses a refresh token (or two
+    # tabs refreshing at once) would otherwise be logged out. Turn on only
+    # once every client stores the new refresh token each time.
+    REFRESH_TOKEN_ROTATION: bool = False
 
     # --- Password hashing (bcrypt, cost >= 10) ------------------------------
     # 10 = SECURITY-REQUIREMENTS.md's minimum and its documented default
@@ -44,6 +50,12 @@ class Settings(BaseSettings):
     # limited precision". Checks use the full-precision fix; only the stored
     # (and returned) coordinates are rounded. 4 dp is about 11 m.
     LOCATION_STORAGE_DECIMALS: int = 4
+
+    # --- Sessions --------------------------------------------------------------
+    # API-SPECIFICATION POST /sessions/: "scheduled_start must be in the
+    # future". A short grace window keeps "create a session starting now"
+    # (and small client/server clock skew) working.
+    SESSION_START_GRACE_MINUTES: int = 5
     # Automatic sweep (services/retention_scheduler.py). 0 disables it.
     RETENTION_SWEEP_INTERVAL_MINUTES: int = 60
     RETENTION_SWEEP_INITIAL_DELAY_SECONDS: int = 15
@@ -83,6 +95,29 @@ class Settings(BaseSettings):
     # Bundled DB-IP "IP to Country Lite" database (CC BY 4.0).
     GEOIP_DB_PATH: str = str(Path(__file__).resolve().parents[1] / "data" / "dbip-country-lite.mmdb")
 
+    # --- Check-in enforcement switches (Phase 4) -----------------------------
+    # Built and tested, but OFF by default: each depends on a Module 1 change.
+    # Turn on per environment (env var of the same name) once that ships.
+    #
+    # CONSENT_ENFORCEMENT - Briefing: camera + geolocation consent "must be
+    # TRUE before check-in". Needs the frontend to send
+    # PUT /users/me {camera_consent, geolocation_consent} when the student
+    # grants permission (it doesn't yet).
+    #   off    - not checked (current behaviour)
+    #   flag   - missing consent -> consent_missing, at most "flagged"
+    #   reject - missing consent -> 403 CONSENT_REQUIRED. NOT for grading:
+    #            the course's test_student checks in without consent and
+    #            expects 201.
+    CONSENT_ENFORCEMENT: Literal["off", "flag", "reject"] = "off"
+    # DEVICE_BINDING_ENFORCEMENT - Briefing: "check-ins from unknown devices
+    # flagged". Applies when the course has require_device_binding (default
+    # true). Needs the frontend's per-install random fingerprint first;
+    # today students on the same phone model share one fingerprint.
+    #   off  - not checked (current behaviour; unknown devices only add risk)
+    #   flag - device not registered to this student -> device_unbound,
+    #          at most "flagged"
+    DEVICE_BINDING_ENFORCEMENT: Literal["off", "flag"] = "off"
+
     # --- Concurrency ---------------------------------------------------------
     # Worker threads for sync endpoints AND their response validation
     # (FastAPI runs both in anyio's thread pool; the default is 40). With
@@ -94,6 +129,14 @@ class Settings(BaseSettings):
     # Measured with 100 concurrent logins/registrations. Keep this well
     # above the expected burst size (hidden stress tests: 100 users).
     THREADPOOL_SIZE: int = 200
+
+    # --- Upload limits ---------------------------------------------------------
+    # The course's sample photos are <= ~0.8 MB of base64; a phone camera
+    # JPEG is typically 0.1-2 MB. 10 M chars (~7.5 MB image) leaves room for
+    # real attack photos while stopping abuse. Whole-request cap is a bit
+    # above that, checked from Content-Length before the body is read.
+    MAX_IMAGE_BASE64_CHARS: int = 10_000_000
+    MAX_REQUEST_BODY_BYTES: int = 15_000_000
 
     # --- CORS ----------------------------------------------------------------
     CORS_ORIGINS: list[str] = [
