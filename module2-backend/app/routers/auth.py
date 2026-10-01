@@ -20,7 +20,7 @@ from app.core.security import (
 from app.db.models.user import User
 from app.schemas.auth import LoginRequest, LoginResponse, RefreshRequest, RefreshResponse, RegisterRequest
 from app.schemas.user import UserResponse
-from app.services.audit import log_event
+from app.services.audit import log_event, log_security_violation
 from app.services.client_ip import get_client_ip
 from app.services.rate_limit import enforce_rate_limit, peek_rate_limit, record_hit
 from app.services.sanitize import sanitize_text
@@ -131,6 +131,10 @@ def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)
                     db, "account_locked", user_id=user.id, resource_type="user", resource_id=user.id,
                     ip_address=ip, user_agent=ua, success=False,
                     details={"failed_attempts": attempts, "lockout_minutes": settings.ACCOUNT_LOCKOUT_MINUTES},
+                )
+                log_security_violation(
+                    db, "account_lockout", user_id=user.id, resource_type="user", resource_id=user.id,
+                    ip_address=ip, user_agent=ua, details={"failed_attempts": attempts},
                 )
         log_event(
             db, "login_failed", user_id=user.id if user else None, ip_address=ip, user_agent=ua,

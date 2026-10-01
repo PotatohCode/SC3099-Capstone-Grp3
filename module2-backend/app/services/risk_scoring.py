@@ -65,6 +65,7 @@ _DEVICE_UNTRUSTED_WEIGHT = 0.05
 _IMPOSSIBLE_TRAVEL_WEIGHT = 0.30
 _IMPOSSIBLE_TRAVEL_KMH = 250.0  # faster than this between two check-ins = impossible
 _LIVENESS_FAILED_WEIGHT = 0.25
+_VIOLATION_SIGNALS = {"impossible_travel"}
 _FACE_MATCH_FAILED_WEIGHT = 0.25
 
 
@@ -86,6 +87,14 @@ class RiskAssessment:
     @property
     def risk_level(self) -> str:
         return risk_level(self.risk_score)
+
+    @property
+    def violation_types(self) -> list[str]:
+        """Signals worth a security_violation audit event: every hard-reject
+        ("critical") signal, plus impossible travel (a GPS-spoofing tell
+        even though it only adds score)."""
+        return sorted({s.signal_type for s in self.signals
+                       if s.severity == "critical" or s.signal_type in _VIOLATION_SIGNALS})
 
     @property
     def risk_factors(self) -> list[dict[str, Any]]:

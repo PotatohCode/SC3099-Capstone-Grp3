@@ -49,7 +49,7 @@ from app.schemas.checkin import (
 )
 from app.schemas.common import Page, page_limit
 from app.services import face_client, geofencing, risk_scoring, singapore_check
-from app.services.audit import log_event
+from app.services.audit import log_event, log_security_violation
 from app.services.client_ip import get_client_ip
 from app.services.authz import can_manage_session, require_manage_session
 from app.services.rate_limit import enforce_rate_limit
@@ -187,6 +187,10 @@ def create_checkin(
                 "gps_in_singapore": gps_ok,
                 "ip_country": None if ip_ok else singapore_check.ip_country(client_ip),
             },
+        )
+        log_security_violation(
+            db, "outside_singapore", user_id=current_user.id, resource_type="session", resource_id=session_obj.id,
+            ip_address=client_ip, user_agent=request.headers.get("user-agent"), details={"reason": reason},
         )
         db.commit()
         raise APIError(
@@ -349,6 +353,12 @@ def create_checkin(
         # audit trail without re-deriving bands from the score.
         details={"risk_score": assessment.risk_score, "risk_level": assessment.risk_level, "status": assessment.status},
     )
+    for violation in assessment.violation_types:
+        log_security_violation(
+            db, violation, user_id=current_user.id, resource_type="checkin", resource_id=checkin.id,
+            ip_address=get_client_ip(request), user_agent=request.headers.get("user-agent"),
+            details={"session_id": session_obj.id, "status": assessment.status},
+        )
 
     db.commit()
     db.refresh(checkin)
