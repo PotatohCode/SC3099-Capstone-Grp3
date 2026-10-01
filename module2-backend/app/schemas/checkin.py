@@ -1,7 +1,20 @@
 from datetime import datetime
 from typing import Any, List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, computed_field, Field
+
+from app.services.risk_scoring import risk_level as _risk_level
+
+
+class _RiskLevelMixin(BaseModel):
+    """Adds `risk_level` (LOW/MEDIUM/HIGH/CRITICAL, SECURITY-REQUIREMENTS
+    bands) derived from risk_score with the same function the backend uses
+    to decide outcomes, so the two can never disagree."""
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def risk_level(self) -> str:
+        return _risk_level(self.risk_score)
 
 
 class CheckinCreate(BaseModel):
@@ -19,7 +32,7 @@ class RiskFactorItem(BaseModel):
     weight: float
 
 
-class CheckinResponse(BaseModel):
+class CheckinResponse(_RiskLevelMixin):
     """POST /checkins/ (201) and GET /checkins/{id} - full detail."""
 
     id: str
@@ -48,7 +61,7 @@ class CheckinResponse(BaseModel):
     appealed_at: Optional[datetime] = None
 
 
-class CheckinListItem(BaseModel):
+class CheckinListItem(_RiskLevelMixin):
     """GET /checkins/ paginated item."""
 
     id: str
@@ -64,7 +77,7 @@ class CheckinListItem(BaseModel):
     liveness_passed: Optional[bool] = None
 
 
-class MyCheckinItem(BaseModel):
+class MyCheckinItem(_RiskLevelMixin):
     """GET /checkins/my-checkins item."""
 
     id: str
@@ -76,7 +89,7 @@ class MyCheckinItem(BaseModel):
     risk_score: float
 
 
-class SessionCheckinItem(BaseModel):
+class SessionCheckinItem(_RiskLevelMixin):
     """GET /checkins/session/{id} item."""
 
     id: str
@@ -98,7 +111,7 @@ class FlaggedCheckinRiskFactor(BaseModel):
     weight: float
 
 
-class FlaggedCheckinItem(BaseModel):
+class FlaggedCheckinItem(_RiskLevelMixin):
     """GET /checkins/flagged item."""
 
     id: str
