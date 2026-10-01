@@ -40,6 +40,10 @@ class Settings(BaseSettings):
 
     # --- Data retention ------------------------------------------------------
     PII_RETENTION_DAYS: int = 30
+    # Briefing: location is "only used for geofence check; stored with
+    # limited precision". Checks use the full-precision fix; only the stored
+    # (and returned) coordinates are rounded. 4 dp is about 11 m.
+    LOCATION_STORAGE_DECIMALS: int = 4
     # Automatic sweep (services/retention_scheduler.py). 0 disables it.
     RETENTION_SWEEP_INTERVAL_MINUTES: int = 60
     RETENTION_SWEEP_INITIAL_DELAY_SECONDS: int = 15
