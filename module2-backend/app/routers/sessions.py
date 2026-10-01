@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
+from app.core.config import get_settings
 from app.core.deps import get_current_user, get_db, require_role
 from app.core.errors import APIError, ErrorCode
 from app.db.models.checkin import CheckIn
@@ -23,6 +24,7 @@ from app.services.authz import require_edit_course, require_manage_session
 from app.services.sanitize import sanitize_text
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
+settings = get_settings()
 
 
 def _now() -> datetime:
@@ -106,6 +108,10 @@ def _to_responses(db: Session, sessions: List[ClassSession]) -> List[SessionResp
         )
         for s in sessions
     ]
+
+
+def _as_naive_utc(dt: datetime) -> datetime:
+    return dt.astimezone(timezone.utc).replace(tzinfo=None) if dt.tzinfo else dt
 
 
 def _validate_schedule(scheduled_start: datetime, scheduled_end: datetime, opens: datetime, closes: datetime) -> None:
@@ -225,6 +231,11 @@ def create_session(
         raise APIError(status.HTTP_404_NOT_FOUND, "Course not found", ErrorCode.COURSE_NOT_FOUND)
     require_edit_course(current_user, course)
 
+    grace = timedelta(minutes=settings.SESSION_START_GRACE_MINUTES)
+    if _as_naive_utc(payload.scheduled_start) < _now() - grace:
+        raise APIError(
+            status.HTTP_400_BAD_REQUEST, "scheduled_start must be in the future", ErrorCode.INVALID_SCHEDULE
+        )
     checkin_opens_at = payload.checkin_opens_at or (payload.scheduled_start - timedelta(minutes=15))
     checkin_closes_at = payload.checkin_closes_at or (payload.scheduled_start + timedelta(minutes=30))
     _validate_schedule(payload.scheduled_start, payload.scheduled_end, checkin_opens_at, checkin_closes_at)

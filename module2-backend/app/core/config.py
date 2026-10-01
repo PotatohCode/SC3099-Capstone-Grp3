@@ -44,6 +44,12 @@ class Settings(BaseSettings):
     # limited precision". Checks use the full-precision fix; only the stored
     # (and returned) coordinates are rounded. 4 dp is about 11 m.
     LOCATION_STORAGE_DECIMALS: int = 4
+
+    # --- Sessions --------------------------------------------------------------
+    # API-SPECIFICATION POST /sessions/: "scheduled_start must be in the
+    # future". A short grace window keeps "create a session starting now"
+    # (and small client/server clock skew) working.
+    SESSION_START_GRACE_MINUTES: int = 5
     # Automatic sweep (services/retention_scheduler.py). 0 disables it.
     RETENTION_SWEEP_INTERVAL_MINUTES: int = 60
     RETENTION_SWEEP_INITIAL_DELAY_SECONDS: int = 15
