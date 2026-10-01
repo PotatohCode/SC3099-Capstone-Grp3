@@ -143,6 +143,11 @@ we skip this call entirely and use our own local fallback formula):
 ```json
 { "risk_score": 0.0 }
 ```
+`ip_address` is the first `X-Forwarded-For` address when present, otherwise
+the connection address *(changed 2026-10-01; see
+[CHANGES-2026-10-01.md](CHANGES-2026-10-01.md))*. Check-ins from outside
+Singapore are rejected before we call you at all.
+
 We only look for the `risk_score` key — if present, we use it as-is
 (0.0–1.0). If absent, or the call fails/times out, we compute an
 equivalent score ourselves from `liveness_score`/geofence

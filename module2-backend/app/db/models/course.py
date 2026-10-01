@@ -16,12 +16,14 @@ class Course(Base):
     semester = Column(String(20), nullable=False, index=True)
     is_active = Column(Boolean, nullable=False, default=True, index=True)
 
-    # DEVIATION from DATABASE-SCHEMA.md: that doc's courses table has no
-    # instructor_id column, but API-SPECIFICATION.md's course request/response
-    # bodies do ("instructor_id", "instructor_name"), and several endpoints'
-    # access rules ("admin or course instructor") need a direct owner rather
-    # than deriving it transitively through sessions. Kept nullable since a
-    # course can exist before an instructor is assigned.
+    # Optional extension, explicitly allowed by the re-released docs:
+    # DATABASE-SCHEMA.md / API-SPECIFICATION.md now say courses have no
+    # instructor_id by design, but "you may add a course-level instructor_id
+    # in your own design; the tests do not check for it". Kept because the
+    # instructor self-service access rules (enrollments, sessions, stats via
+    # authz.can_edit_course) need a direct owner rather than deriving it
+    # through sessions. Clients may ignore instructor_id / instructor_name.
+    # Nullable since a course can exist before an instructor is assigned.
     instructor_id = Column(String(36), ForeignKey("users.id"), nullable=True, index=True)
 
     venue_latitude = Column(Float, nullable=True)

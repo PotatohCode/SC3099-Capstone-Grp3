@@ -20,7 +20,13 @@ from sqlalchemy.orm import Session, joinedload
 from app.core.config import get_settings
 from app.core.deps import get_current_user, get_db, require_role
 from app.core.errors import APIError, ErrorCode
-from app.core.metrics import checkin_attempts_total, checkin_success_total, checkins_flagged_total, risk_score_histogram
+from app.core.metrics import (
+    checkin_attempts_total,
+    checkin_rejected_geo_total,
+    checkin_success_total,
+    checkins_flagged_total,
+    risk_score_histogram,
+)
 from app.db.models.checkin import CheckIn
 from app.db.models.device import Device
 from app.db.models.enrollment import Enrollment
@@ -42,8 +48,9 @@ from app.schemas.checkin import (
     SessionCheckinItem,
 )
 from app.schemas.common import Page
-from app.services import face_client, geofencing, risk_scoring
+from app.services import face_client, geofencing, risk_scoring, singapore_check
 from app.services.audit import log_event
+from app.services.client_ip import get_client_ip
 from app.services.authz import can_manage_session, require_manage_session
 from app.services.rate_limit import enforce_rate_limit
 
@@ -55,10 +62,6 @@ APPEAL_WINDOW_DAYS = 7
 
 def _now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
-
-
-def _client_ip(request: Request) -> Optional[str]:
-    return request.client.host if request.client else None
 
 
 def _parse_risk_factors(raw: Optional[str]) -> List[RiskFactorItem]:
@@ -160,6 +163,35 @@ def create_checkin(
     if existing is not None:
         raise APIError(status.HTTP_400_BAD_REQUEST, "Already checked in for this session", ErrorCode.ALREADY_CHECKED_IN)
 
+    # --- Singapore-only rule (graded; see services/singapore_check.py) -------
+    # After the session/enrollment/window/duplicate guards so their status
+    # codes are unchanged, and before any Module 3 round-trips. 403 rather
+    # than a stored "rejected" row: a stored row would trip the
+    # ALREADY_CHECKED_IN guard above and stop the student retrying once
+    # they're genuinely back in Singapore (e.g. VPN switched off).
+    client_ip = get_client_ip(request)
+    gps_ok = singapore_check.coords_in_singapore(payload.latitude, payload.longitude)
+    ip_ok = singapore_check.ip_allowed(client_ip)
+    if not (gps_ok and ip_ok):
+        reason = "gps_and_ip" if not (gps_ok or ip_ok) else ("gps" if not gps_ok else "ip")
+        checkin_rejected_geo_total.labels(reason=reason).inc()
+        log_event(
+            db, "checkin_rejected_geo", user_id=current_user.id, resource_type="session",
+            resource_id=session_obj.id, ip_address=client_ip, user_agent=request.headers.get("user-agent"),
+            success=False,
+            # No raw coordinates here - audit logs aren't covered by the
+            # check-in PII retention sweep, so only record the verdicts.
+            details={
+                "reason": reason,
+                "gps_in_singapore": gps_ok,
+                "ip_country": None if ip_ok else singapore_check.ip_country(client_ip),
+            },
+        )
+        db.commit()
+        raise APIError(
+            status.HTTP_403_FORBIDDEN, "Check-in only allowed from within Singapore", ErrorCode.OUTSIDE_SINGAPORE
+        )
+
     # --- Device resolution -------------------------------------------------
     device = (
         db.query(Device)
@@ -208,7 +240,7 @@ def create_checkin(
             "liveness_score": liveness_score,
             "face_match_score": face_match_score,
             "user_agent": request.headers.get("user-agent"),
-            "ip_address": _client_ip(request),
+            "ip_address": get_client_ip(request),
             "geolocation": {
                 "latitude": payload.latitude, "longitude": payload.longitude, "accuracy": payload.location_accuracy_meters,
             },
@@ -246,11 +278,14 @@ def create_checkin(
         previous_distance_meters=previous_distance_meters,
         current_checkin_at=now,
         risk_threshold=effective_threshold,
+        face_match_passed=face_match_passed,
+        require_liveness=bool(session_obj.require_liveness_check),
+        require_face_match=bool(session_obj.require_face_match or course.require_face_recognition),
     )
 
     log_event(
         db, "checkin_attempted", user_id=current_user.id, resource_type="session", resource_id=session_obj.id,
-        ip_address=_client_ip(request), user_agent=request.headers.get("user-agent"),
+        ip_address=get_client_ip(request), user_agent=request.headers.get("user-agent"),
         details={"session_id": session_obj.id, "device_fingerprint": payload.device_fingerprint},
     )
 

@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, String
+from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, String
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
@@ -30,6 +30,12 @@ class User(Base):
     created_at = Column(DateTime, nullable=False, server_default=func.now())
     updated_at = Column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now())
     last_login_at = Column(DateTime, nullable=True)
+
+    # Per-account login lockout (see config.MAX_FAILED_LOGIN_ATTEMPTS):
+    # consecutive wrong-password count, reset on successful login; once it
+    # hits the max, locked_until (naive UTC) blocks login with 429.
+    failed_login_attempts = Column(Integer, nullable=False, default=0, server_default="0")
+    locked_until = Column(DateTime, nullable=True)
     scheduled_deletion_at = Column(DateTime, nullable=True)
 
     # Relationships

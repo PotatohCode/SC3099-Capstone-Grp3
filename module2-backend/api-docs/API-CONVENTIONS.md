@@ -6,6 +6,10 @@ Read this first, then whichever of these applies to you:
 - [API-FOR-FACE-RECOGNITION.md](API-FOR-FACE-RECOGNITION.md) — Module 3
 - [API-FOR-DASHBOARD.md](API-FOR-DASHBOARD.md) — Module 4
 
+> **Changed 2026-10-01:** account lockout, Singapore-only check-ins,
+> `X-Forwarded-For` client IP, and admin-only `PUT /courses/{id}`. See
+> [CHANGES-2026-10-01.md](CHANGES-2026-10-01.md) for what each module needs to do.
+
 This describes the **actual implemented behavior** of the Module 2 backend as of
 **2026-08-26** (all phases complete, 77/77 scored public test points, 81/81
 non-skipped tests passing). Where the written project spec and the actual

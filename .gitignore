@@ -20,14 +20,12 @@ out/
 .DS_Store
 Thumbs.db
 
-# --- Claude Code local tool config (permissions allowlist, session-local) ------
-.claude/
-
 # --- Local dev artifacts --------------------------------------------------------
 *.log
 
-# --- Local-only planning/progress docs (Claude-authored, not pushed) -----------
-module2-backend/IMPLEMENTATION-PLAN.md
-module2-backend/PROGRESS.md
-module2-backend/WALKTHROUGH.md
-module2-backend/KNOWN-ISSUES.md
+# --- Local notes (not pushed) ---------------------------------------------------
+module2-backend/notes/
+
+# Module 4 Python cache files
+module4-observability/**/__pycache__/
+module4-observability/**/*.pyc

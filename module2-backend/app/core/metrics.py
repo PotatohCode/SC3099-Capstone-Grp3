@@ -15,7 +15,11 @@ http_request_duration_seconds = Histogram(
 checkin_attempts_total = Counter("checkin_attempts_total", "Total check-in submissions")
 checkin_success_total = Counter("checkin_success_total", "Check-ins that resolved to approved")
 login_failed_total = Counter("login_failed_total", "Failed login attempts")
+account_lockouts_total = Counter("account_lockouts_total", "Accounts locked after too many consecutive failed logins")
 checkins_flagged_total = Counter("checkins_flagged_total", "Check-ins that resolved to flagged")
+checkin_rejected_geo_total = Counter(
+    "checkin_rejected_geo_total", "Check-ins rejected for originating outside Singapore (IP or GPS)", ["reason"],
+)
 risk_score_histogram = Histogram(
     "risk_score", "Distribution of computed check-in risk scores",
     buckets=[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],

@@ -164,7 +164,9 @@ Query: `user_id`, `action`, `resource_type`, `resource_id`, `success`
 `session_created`/`updated`/`deleted`, `enrollment_added`/`removed`,
 `device_registered`/`updated`/`removed`, `face_enrolled`,
 `course_created`/`updated`/`deleted`, `data_exported`,
-`retention_sweep_run`, `security_violation`. This table is append-only —
+`retention_sweep_run`, `security_violation`, and *(new 2026-10-01)*
+`account_locked` and `checkin_rejected_geo`. Their `details` are described in
+[CHANGES-2026-10-01.md](CHANGES-2026-10-01.md). This table is append-only —
 no row is ever edited or removed, so it's safe to treat as a permanent
 event log for any "activity feed" style widget.
 
@@ -195,7 +197,9 @@ these are the literal names Grafana panels would query via PromQL):
 | `checkin_attempts_total` | Counter | — | Every `POST /checkins/` call |
 | `checkin_success_total` | Counter | — | Check-ins that resolved `approved` |
 | `checkins_flagged_total` | Counter | — | Check-ins that resolved `flagged` |
-| `login_failed_total` | Counter | — | Failed login attempts |
+| `login_failed_total` | Counter | — | Failed login attempts (including attempts blocked by an account lockout) |
+| `account_lockouts_total` | Counter | — | Accounts locked after 10 consecutive failed logins *(new 2026-10-01)* |
+| `checkin_rejected_geo_total` | Counter | `reason` = `ip`\|`gps`\|`gps_and_ip` | Check-ins rejected as outside Singapore *(new 2026-10-01; series appear on first occurrence)* |
 | `risk_score` | Histogram | — | Distribution of computed risk scores, buckets at 0.1 increments |
 
 If your dashboard is built as Grafana panels against Prometheus rather
