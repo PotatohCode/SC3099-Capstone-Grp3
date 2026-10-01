@@ -14,7 +14,6 @@ from app.db.models.user import User
 from app.schemas.common import Page
 from app.schemas.course import CourseCreate, CourseResponse, CourseUpdate
 from app.services.audit import log_event
-from app.services.authz import require_edit_course
 from app.services.sanitize import sanitize_text
 
 router = APIRouter(prefix="/courses", tags=["courses"])
@@ -114,13 +113,16 @@ def create_course(
 def update_course(
     course_id: str,
     payload: CourseUpdate,
-    current_user: User = Depends(get_current_user),
+    # Admin only per the re-released API-SPECIFICATION.md (was "admin or
+    # course instructor"). Deliberately NOT done by tightening
+    # authz.can_edit_course - that still gates instructor self-service for
+    # enrollments, session creation and course stats.
+    current_user: User = Depends(require_role("admin")),
     db: Session = Depends(get_db),
 ):
     course = db.query(Course).options(joinedload(Course.instructor)).filter(Course.id == course_id).first()
     if course is None:
         raise APIError(status.HTTP_404_NOT_FOUND, "Course not found", ErrorCode.COURSE_NOT_FOUND)
-    require_edit_course(current_user, course)
 
     updates = payload.model_dump(exclude_unset=True)
     if "description" in updates:
