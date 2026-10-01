@@ -9,8 +9,8 @@ As of this writing module3-face-recognition is an unimplemented stub (every
 endpoint 501s - see KNOWN-ISSUES.md), so in practice every call here
 currently returns None. That's the exact scenario this pattern exists for.
 
-Circuit breaker: a failure (of any kind, including a DNS lookup failure
-for an unresolvable host - measured at ~2.5s in this environment, and
+Circuit breaker: a failure (timeout, connection error or 5xx, including a
+DNS lookup failure for an unresolvable host - measured at ~2.5s in this environment, and
 notably NOT something httpx's own connect-timeout can shorten, since the
 delay is inside the OS's blocking getaddrinfo() call, not httpx's request
 loop) opens the breaker for that path for COOLDOWN_SECONDS. Calls made
@@ -20,6 +20,8 @@ pay the full failure cost, and test_performance.py's
 test_checkin_endpoint_latency (< 2s) could never pass while Module 3 is
 unreachable. This is also just good production behavior, not only a test
 accommodation - don't keep hammering a dependency that's already down.
+A 4xx does NOT open the breaker: the service is up and answered about that
+one request, so only that call degrades.
 """
 import logging
 import time
@@ -50,6 +52,15 @@ def _post(path: str, payload: dict) -> Optional[dict[str, Any]]:
             response.raise_for_status()
             _circuit_open_until.pop(path, None)  # a success clears any prior cooldown
             return response.json()
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code < 500:
+            # A 4xx is a definite answer from a healthy service about *this*
+            # request (e.g. a 422 on its payload). Degrade this call only -
+            # opening the breaker here would make every other student's
+            # request skip Module 3 for the cooldown because of one bad call.
+            logger.warning("Face service rejected request to %s: %s", path, exc)
+            return None
+        logger.warning("Face service error calling %s: %s", path, exc)
     except httpx.TimeoutException:
         logger.warning("Face service timeout calling %s", path)
     except httpx.HTTPError as exc:
