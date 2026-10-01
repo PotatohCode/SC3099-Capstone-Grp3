@@ -60,12 +60,18 @@ _FALLBACK_WEIGHT_SUM = sum(_FALLBACK_WEIGHTS.values())  # 0.60
 _GEO_OUT_OF_BOUNDS_WEIGHT = 0.15
 _GEO_ACCURACY_LOW_WEIGHT = 0.05
 _GEO_ACCURACY_LOW_METERS = 100.0  # accuracy worse than this = "low"
+# Real phone GPS reports a few metres at best; mock-location tools commonly
+# report 0. Flag for review rather than reject - accuracy alone isn't proof.
+# Weight 0 (like the *_unverified signals): it forces review but never moves
+# the score, so a no-photo check-in (~0.68) isn't pushed into CRITICAL.
+_GEO_ACCURACY_SUSPICIOUS_METERS = 1.0
+_GPS_SPOOF_WEIGHT = 0.0
 _DEVICE_UNKNOWN_WEIGHT = 0.10
 _DEVICE_UNTRUSTED_WEIGHT = 0.05
 _IMPOSSIBLE_TRAVEL_WEIGHT = 0.30
 _IMPOSSIBLE_TRAVEL_KMH = 250.0  # faster than this between two check-ins = impossible
 _LIVENESS_FAILED_WEIGHT = 0.25
-_VIOLATION_SIGNALS = {"impossible_travel"}
+_VIOLATION_SIGNALS = {"impossible_travel", "gps_spoof_suspected"}
 _FACE_MATCH_FAILED_WEIGHT = 0.25
 _REPLAY_WEIGHT = 0.30
 
@@ -92,8 +98,8 @@ class RiskAssessment:
     @property
     def violation_types(self) -> list[str]:
         """Signals worth a security_violation audit event: every hard-reject
-        ("critical") signal, plus impossible travel (a GPS-spoofing tell
-        even though it only adds score)."""
+        ("critical") signal, plus impossible travel and gps_spoof_suspected (GPS-spoofing tells
+        even though they only add score)."""
         return sorted({s.signal_type for s in self.signals
                        if s.severity == "critical" or s.signal_type in _VIOLATION_SIGNALS})
 
@@ -164,6 +170,13 @@ def assess(
         ))
         if distance_meters > 2 * geofence_radius:
             hard_reject = True
+
+    if location_accuracy_meters is not None and location_accuracy_meters < _GEO_ACCURACY_SUSPICIOUS_METERS:
+        signals.append(RiskSignal(
+            "gps_spoof_suspected", "medium", weight=_GPS_SPOOF_WEIGHT,
+            details={"reason": "implausibly_precise_fix", "accuracy_meters": location_accuracy_meters},
+        ))
+        needs_review = True
 
     if location_accuracy_meters is not None and location_accuracy_meters > _GEO_ACCURACY_LOW_METERS:
         signals.append(RiskSignal(

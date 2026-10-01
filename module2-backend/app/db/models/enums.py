@@ -45,6 +45,7 @@ class RiskSignalType(str, enum.Enum):
     GEO_OUT_OF_BOUNDS = "geo_out_of_bounds"
     IMPOSSIBLE_TRAVEL = "impossible_travel"
     GEO_ACCURACY_LOW = "geo_accuracy_low"
+    GPS_SPOOF_SUSPECTED = "gps_spoof_suspected"  # e.g. an implausibly precise (< 1 m) fix
     # Network
     VPN_DETECTED = "vpn_detected"
     PROXY_DETECTED = "proxy_detected"
