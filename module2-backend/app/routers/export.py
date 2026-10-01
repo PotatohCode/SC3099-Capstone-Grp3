@@ -52,15 +52,29 @@ def _checkins_to_records(checkins: List[CheckIn]) -> List[ExportRecord]:
     ]
 
 
+_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _csv_safe(value):
+    """CSV/formula injection guard (OWASP): a text cell starting with one of
+    these characters is executed as a formula by Excel/Sheets, so a student
+    named "=HYPERLINK(...)" could run something on the instructor's machine.
+    Prefixing a single quote makes spreadsheets show it as plain text.
+    Applies to CSV only; the JSON export returns values unchanged."""
+    if isinstance(value, str) and value.startswith(_FORMULA_PREFIXES):
+        return "'" + value
+    return value
+
+
 def _to_csv(records: List[ExportRecord]) -> str:
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(CSV_COLUMNS)
     for r in records:
-        writer.writerow([
+        writer.writerow([_csv_safe(v) for v in (
             r.student_id, r.student_name, r.student_email, r.session_date, r.session_name,
             r.status, r.checked_in_at.isoformat() if r.checked_in_at else "", r.risk_score,
-        ])
+        )])
     return buf.getvalue()
 
 
