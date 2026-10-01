@@ -18,6 +18,9 @@ engine = create_engine(
     pool_size=10,
     max_overflow=20,
     pool_pre_ping=True,
+    # Fail fast if Postgres is unreachable (e.g. /health while the DB is
+    # down) instead of hanging on the OS default TCP connect timeout.
+    connect_args={"connect_timeout": 3},
 )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

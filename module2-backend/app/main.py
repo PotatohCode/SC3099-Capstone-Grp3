@@ -19,6 +19,7 @@ import anyio.to_thread
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
+from sqlalchemy import text
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -27,6 +28,8 @@ from app.core.config import get_settings
 from app.core.errors import DEFAULT_CODE_BY_STATUS, APIError, ErrorCode
 from app.core.metrics import http_request_duration_seconds
 from app.routers import admin, audit, auth, checkins, courses, devices, enrollments, export, sessions, stats, users
+from app.db.base import SessionLocal
+from app.services.rate_limit import _get_client as _redis_client
 from app.services.retention_scheduler import retention_loop
 
 settings = get_settings()
@@ -140,9 +143,33 @@ async def stop_retention_sweep() -> None:
 
 
 @app.get("/health")
-async def health_check():
-    """Basic health check endpoint."""
-    return {"status": "healthy", "service": "backend"}
+def health_check():
+    """Readiness, not just liveness: checks Postgres and Redis.
+    - database unreachable -> 503 "unhealthy" (nothing works without it)
+    - redis unreachable    -> 200 "degraded" (the backend keeps working:
+      rate limiting fails open by design)
+    Used by docker-compose's backend healthcheck, so the frontend and
+    dashboard only start once the backend can actually serve requests.
+    (The course's backend health test accepts 200 or 503.)"""
+    checks = {}
+    db = SessionLocal()
+    try:
+        db.execute(text("SELECT 1"))
+        checks["database"] = "ok"
+    except Exception:
+        checks["database"] = "unavailable"
+    finally:
+        db.close()
+    try:
+        _redis_client().ping()
+        checks["redis"] = "ok"
+    except Exception:
+        checks["redis"] = "unavailable"
+
+    if checks["database"] != "ok":
+        return JSONResponse(status_code=503, content={"status": "unhealthy", "service": "backend", **checks})
+    status_text = "healthy" if checks["redis"] == "ok" else "degraded"
+    return {"status": status_text, "service": "backend", **checks}
 
 
 @app.get("/")

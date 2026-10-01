@@ -64,6 +64,14 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    # Healthy = /health returns 200 (database reachable). start_period
+    # covers the startup migrations (alembic upgrade head).
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     networks:
       - saiv-network
 
@@ -100,7 +108,8 @@ services:
       NEXT_PUBLIC_API_URL: http://192.168.64.4:8000
       NEXT_PUBLIC_FACE_SERVICE_URL: http://192.168.64.4:8001
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     networks:
       - saiv-network
 
@@ -116,8 +125,10 @@ services:
       BACKEND_URL: http://backend:8000
       PROMETHEUS_URL: http://prometheus:9090
     depends_on:
-      - backend
-      - prometheus
+      backend:
+        condition: service_healthy
+      prometheus:
+        condition: service_started
     networks:
       - saiv-network
 
