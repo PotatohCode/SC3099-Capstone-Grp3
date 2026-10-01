@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Query, status
+from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.deps import get_current_user, get_db, require_role
@@ -28,17 +29,24 @@ def _now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
-def _to_response(db: Session, session_obj: ClassSession, course: Optional[Course] = None) -> SessionResponse:
+def _to_response(
+    db: Session,
+    session_obj: ClassSession,
+    course: Optional[Course] = None,
+    total_enrolled: Optional[int] = None,
+    checked_in_count: Optional[int] = None,
+) -> SessionResponse:
+    """Single-session response. List endpoints use _to_responses(), which
+    passes pre-batched counts so a page doesn't run 2-3 queries per row."""
     course = course or session_obj.course
-    # Two count queries per session - acceptable for now (small course
-    # rosters in this project); revisit with a batched aggregate join if
-    # Phase 7 perf hardening flags this list endpoint as an N+1 hotspot.
-    total_enrolled = (
-        db.query(Enrollment)
-        .filter(Enrollment.course_id == session_obj.course_id, Enrollment.is_active.is_(True))
-        .count()
-    )
-    checked_in_count = db.query(CheckIn).filter(CheckIn.session_id == session_obj.id).count()
+    if total_enrolled is None:
+        total_enrolled = (
+            db.query(Enrollment)
+            .filter(Enrollment.course_id == session_obj.course_id, Enrollment.is_active.is_(True))
+            .count()
+        )
+    if checked_in_count is None:
+        checked_in_count = db.query(CheckIn).filter(CheckIn.session_id == session_obj.id).count()
     return SessionResponse(
         id=session_obj.id,
         course_id=session_obj.course_id,
@@ -67,6 +75,37 @@ def _to_response(db: Session, session_obj: ClassSession, course: Optional[Course
         checked_in_count=checked_in_count,
         created_at=session_obj.created_at,
     )
+
+
+def _to_responses(db: Session, sessions: List[ClassSession]) -> List[SessionResponse]:
+    """Batched version for list endpoints: 3 queries per page (courses,
+    enrollment counts per course, check-in counts per session) instead of
+    up to 3 per session. Measured before: 100 concurrent GET /sessions/
+    (limit=100) took p95 ~9.5 s."""
+    if not sessions:
+        return []
+    course_ids = {s.course_id for s in sessions}
+    session_ids = [s.id for s in sessions]
+    courses = {c.id: c for c in db.query(Course).filter(Course.id.in_(course_ids)).all()}
+    enrolled = dict(
+        db.query(Enrollment.course_id, func.count(Enrollment.id))
+        .filter(Enrollment.course_id.in_(course_ids), Enrollment.is_active.is_(True))
+        .group_by(Enrollment.course_id)
+        .all()
+    )
+    checked_in = dict(
+        db.query(CheckIn.session_id, func.count(CheckIn.id))
+        .filter(CheckIn.session_id.in_(session_ids))
+        .group_by(CheckIn.session_id)
+        .all()
+    )
+    return [
+        _to_response(
+            db, s, course=courses.get(s.course_id),
+            total_enrolled=enrolled.get(s.course_id, 0), checked_in_count=checked_in.get(s.id, 0),
+        )
+        for s in sessions
+    ]
 
 
 def _validate_schedule(scheduled_start: datetime, scheduled_end: datetime, opens: datetime, closes: datetime) -> None:
@@ -103,7 +142,7 @@ def list_sessions(
 
     total = query.count()
     sessions = query.order_by(ClassSession.scheduled_start.desc()).offset(offset).limit(limit).all()
-    return Page(items=[_to_response(db, s) for s in sessions], total=total, limit=limit, offset=offset)
+    return Page(items=_to_responses(db, sessions), total=total, limit=limit, offset=offset)
 
 
 @router.get("/active", response_model=List[SessionResponse])
@@ -119,7 +158,7 @@ def list_active_sessions(db: Session = Depends(get_db)):
         )
         .all()
     )
-    return [_to_response(db, s) for s in sessions]
+    return _to_responses(db, sessions)
 
 
 @router.get("/my-sessions", response_model=List[SessionResponse])
@@ -162,7 +201,7 @@ def list_my_sessions(
         query = query.filter(ClassSession.scheduled_start >= _now())
 
     sessions = query.order_by(ClassSession.scheduled_start.asc()).limit(limit).all()
-    return [_to_response(db, s) for s in sessions]
+    return _to_responses(db, sessions)
 
 
 @router.get("/{session_id}", response_model=SessionResponse)
