@@ -53,6 +53,7 @@ from app.services.audit import log_event
 from app.services.client_ip import get_client_ip
 from app.services.authz import can_manage_session, require_manage_session
 from app.services.rate_limit import enforce_rate_limit
+from app.services.sanitize import sanitize_text
 
 router = APIRouter(prefix="/checkins", tags=["checkins"])
 settings = get_settings()
@@ -564,7 +565,7 @@ def appeal_checkin(
         raise APIError(status.HTTP_400_BAD_REQUEST, "Appeal window has expired", ErrorCode.APPEAL_WINDOW_EXPIRED)
 
     checkin.status = "appealed"
-    checkin.appeal_reason = payload.appeal_reason
+    checkin.appeal_reason = sanitize_text(payload.appeal_reason)
     checkin.appealed_at = _now()
 
     log_event(
@@ -604,7 +605,7 @@ def review_checkin(
     checkin.status = payload.status
     checkin.reviewed_by_id = current_user.id
     checkin.reviewed_at = _now()
-    checkin.review_notes = payload.review_notes
+    checkin.review_notes = sanitize_text(payload.review_notes) if payload.review_notes else payload.review_notes
 
     log_event(
         db, "checkin_reviewed", user_id=current_user.id, resource_type="checkin", resource_id=checkin.id,
