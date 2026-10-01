@@ -71,9 +71,12 @@ _DEVICE_UNTRUSTED_WEIGHT = 0.05
 _IMPOSSIBLE_TRAVEL_WEIGHT = 0.30
 _IMPOSSIBLE_TRAVEL_KMH = 250.0  # faster than this between two check-ins = impossible
 _LIVENESS_FAILED_WEIGHT = 0.25
-_VIOLATION_SIGNALS = {"impossible_travel", "gps_spoof_suspected"}
+_VIOLATION_SIGNALS = {"impossible_travel", "gps_spoof_suspected", "rapid_succession"}
 _FACE_MATCH_FAILED_WEIGHT = 0.25
 _REPLAY_WEIGHT = 0.30
+# Timing signals carry weight 0: a no-photo check-in already sits at ~0.68,
+# so any added weight would push it into CRITICAL (auto-reject).
+_LATE_CHECKIN_MINUTES = 15  # after scheduled_start -> informational "unusual_time"
 
 
 @dataclass
@@ -148,6 +151,8 @@ def assess(
     require_liveness: bool = False,
     require_face_match: bool = False,
     replay_suspected: bool = False,
+    other_students_on_device: int = 0,
+    minutes_after_start: Optional[float] = None,
 ) -> RiskAssessment:
     """require_liveness / require_face_match come from the session (and the
     course's require_face_recognition). When a requirement is set:
@@ -215,6 +220,20 @@ def assess(
         elif face_match_passed is None:
             signals.append(RiskSignal("face_match_unverified", "high", weight=0.0))
             needs_review = True
+
+    if other_students_on_device > 0:
+        # Proxy sign-in: this device checked in someone else very recently.
+        signals.append(RiskSignal(
+            "rapid_succession", "high", weight=0.0,
+            details={"other_students_on_device": other_students_on_device},
+        ))
+        needs_review = True
+
+    if minutes_after_start is not None and minutes_after_start > _LATE_CHECKIN_MINUTES:
+        # Informational only (no review, no score): lets instructors see late arrivals.
+        signals.append(RiskSignal(
+            "unusual_time", "low", weight=0.0, details={"minutes_after_start": round(minutes_after_start, 1)},
+        ))
 
     if replay_suspected:
         # The same student submitted byte-identical image data before - a

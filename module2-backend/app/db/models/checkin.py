@@ -38,6 +38,10 @@ class CheckIn(Base):
     # Lets us spot a student re-submitting a previously captured photo
     # (replay attack, see risk_scoring "replay_suspected").
     liveness_image_hash = Column(String(64), nullable=True, index=True)
+    # SHA-256 of the client's device_fingerprint (raw value never stored).
+    # Spots one device checking in several different students in quick
+    # succession (proxy sign-in, risk_scoring "rapid_succession").
+    device_fingerprint_hash = Column(String(64), nullable=True, index=True)
 
     risk_score = Column(Float, nullable=False, default=0.0, index=True)
     risk_factors = Column(Text, nullable=True)  # JSON array, serialized

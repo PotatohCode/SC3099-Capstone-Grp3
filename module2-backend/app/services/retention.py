@@ -74,6 +74,7 @@ def anonymize_checkin(checkin: CheckIn) -> None:
     checkin.distance_from_venue_meters = None
     checkin.face_embedding_hash = None
     checkin.liveness_image_hash = None
+    checkin.device_fingerprint_hash = None
     checkin.scheduled_deletion_at = None  # mark processed
 
 

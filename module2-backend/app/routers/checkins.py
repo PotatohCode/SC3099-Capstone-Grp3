@@ -18,6 +18,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Query, Request, status
+from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.config import get_settings
@@ -242,6 +243,19 @@ def create_checkin(
             is not None
         )
 
+    # --- Proxy sign-in: same device used by other students just now --------
+    device_fingerprint_hash = hashlib.sha256(payload.device_fingerprint.encode()).hexdigest()
+    other_students_on_device = (
+        db.query(func.count(func.distinct(CheckIn.student_id)))
+        .filter(
+            CheckIn.device_fingerprint_hash == device_fingerprint_hash,
+            CheckIn.student_id != current_user.id,
+            CheckIn.checked_in_at >= now - timedelta(minutes=10),
+        )
+        .scalar()
+    )
+    minutes_after_start = (now - session_obj.scheduled_start).total_seconds() / 60
+
     # --- Liveness + face match (defensive: 5s timeout, degrade on failure) --
     liveness_passed: Optional[bool] = None
     liveness_score = 0.0
@@ -320,6 +334,8 @@ def create_checkin(
         require_liveness=bool(session_obj.require_liveness_check),
         require_face_match=bool(session_obj.require_face_match or course.require_face_recognition),
         replay_suspected=replay_suspected,
+        other_students_on_device=other_students_on_device,
+        minutes_after_start=minutes_after_start,
     )
 
     log_event(
@@ -346,6 +362,7 @@ def create_checkin(
         face_match_score=face_match_score,
         face_embedding_hash=current_face_hash,
         liveness_image_hash=liveness_image_hash,
+        device_fingerprint_hash=device_fingerprint_hash,
         risk_score=assessment.risk_score,
         risk_factors=json.dumps(assessment.risk_factors),
         qr_code_verified=False,  # QR flow not implemented in Phase 6 - see KNOWN-ISSUES.md
