@@ -19,7 +19,7 @@ Each entry notes which role(s) can call it.
 `role` defaults to `"student"` if omitted; accepts any of the four roles.
 **201** → `UserResponse` (see §2). **422** if password < 8 chars or email
 malformed. **400 EMAIL_ALREADY_REGISTERED** if the email's taken. **429** if
-this IP has registered 300+ times in the last hour.
+this IP has registered 100,000+ times in the last hour (effectively never).
 
 ### `POST /api/v1/auth/login` — anyone
 ```json
@@ -27,7 +27,11 @@ this IP has registered 300+ times in the last hour.
 ```
 **200** → `{ "access_token", "refresh_token", "token_type": "bearer", "user": UserResponse }`.
 **401 INVALID_CREDENTIALS** wrong email/password. **403 ACCOUNT_DISABLED** if
-`is_active=false`. **429** after 60 failed attempts from this IP in an hour.
+`is_active=false`. **429 ACCOUNT_LOCKED** (with `Retry-After` seconds) once
+this account has had 10 consecutive wrong passwords. It stays locked for 15 minutes,
+**even if the correct password is then sent**. *(Changed 2026-10-01, see
+[CHANGES-2026-10-01.md](CHANGES-2026-10-01.md).)* The per-IP limit is
+100,000 failures/hour, so it's effectively never hit.
 
 ### `POST /api/v1/auth/refresh` — anyone with a valid refresh token
 ```json
@@ -103,9 +107,10 @@ KNOWN-ISSUES.md if you need the reasoning for an admin UI).
 Only `code`/`name`/`semester` are required. **201** → `CourseResponse`.
 **400 COURSE_CODE_TAKEN** if `code` isn't unique.
 
-### `PUT /api/v1/courses/{id}` — admin, or the assigned instructor
+### `PUT /api/v1/courses/{id}` — **admin only** *(changed 2026-10-01)*
 Same fields as create, all optional (partial update), plus `is_active`.
-**403** if you're an instructor who isn't this course's owner.
+**403 INSUFFICIENT_PERMISSIONS** for any non-admin, including the course's
+own instructor.
 
 ### `DELETE /api/v1/courses/{id}` — **admin only**
 **204**. Soft-delete (`is_active=false`), not a real row delete.
@@ -252,7 +257,9 @@ Validation before it even reaches risk scoring, in order: enrolled in the
 course? (**403 NOT_ENROLLED**) → session active? (**400
 SESSION_NOT_ACTIVE**) → inside the check-in window? (**400
 SESSION_WINDOW_CLOSED**) → already checked in for this session? (**400
-ALREADY_CHECKED_IN**). Rate-limited to 10/minute per student.
+ALREADY_CHECKED_IN**) → GPS and client IP inside Singapore? (**403
+OUTSIDE_SINGAPORE**, no record saved, so the student can retry; *added
+2026-10-01*). Rate-limited to 10/minute per student.
 
 **201** → full `CheckinResponse`:
 ```json
