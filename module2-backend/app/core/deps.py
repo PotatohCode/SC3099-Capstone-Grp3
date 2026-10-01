@@ -17,6 +17,7 @@ from app.core.errors import APIError, ErrorCode
 from app.core.security import decode_token
 from app.db.base import SessionLocal
 from app.db.models.user import User
+from app.services import token_revocation
 from app.services.rate_limit import enforce_rate_limit
 
 # auto_error=False so a missing Authorization header reaches our own 401
@@ -60,7 +61,7 @@ def get_current_user(
     except JWTError:
         raise unauthorized
 
-    if payload.get("type") != "access":
+    if payload.get("type") != "access" or token_revocation.is_revoked(payload):
         raise unauthorized
 
     user_id = payload.get("sub")
@@ -96,7 +97,7 @@ def get_optional_user(
         payload = decode_token(credentials.credentials)
     except JWTError:
         return None
-    if payload.get("type") != "access":
+    if payload.get("type") != "access" or token_revocation.is_revoked(payload):
         return None
     user = db.get(User, payload.get("sub"))
     if user is None or not user.is_active:

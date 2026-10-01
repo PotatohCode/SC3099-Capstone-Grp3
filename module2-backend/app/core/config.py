@@ -24,6 +24,11 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+    # Single-use refresh tokens: each /auth/refresh revokes the token it was
+    # given. Off by default - a client that reuses a refresh token (or two
+    # tabs refreshing at once) would otherwise be logged out. Turn on only
+    # once every client stores the new refresh token each time.
+    REFRESH_TOKEN_ROTATION: bool = False
 
     # --- Password hashing (bcrypt, cost >= 10) ------------------------------
     # 10 = SECURITY-REQUIREMENTS.md's minimum and its documented default

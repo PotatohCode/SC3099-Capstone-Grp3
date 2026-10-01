@@ -1,7 +1,9 @@
 import math
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, Request, Response, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError
 from sqlalchemy import update
 from sqlalchemy.orm import Session
@@ -18,8 +20,9 @@ from app.core.security import (
     verify_password,
 )
 from app.db.models.user import User
-from app.schemas.auth import LoginRequest, LoginResponse, RefreshRequest, RefreshResponse, RegisterRequest
+from app.schemas.auth import LoginRequest, LoginResponse, LogoutRequest, RefreshRequest, RefreshResponse, RegisterRequest
 from app.schemas.user import UserResponse
+from app.services import token_revocation
 from app.services.audit import log_event, log_security_violation
 from app.services.client_ip import get_client_ip
 from app.services.rate_limit import enforce_rate_limit, peek_rate_limit, record_hit
@@ -177,14 +180,49 @@ def refresh(payload: RefreshRequest, db: Session = Depends(get_db)):
     except JWTError:
         raise invalid
 
-    if token_payload.get("type") != "refresh":
+    if token_payload.get("type") != "refresh" or token_revocation.is_revoked(token_payload):
         raise invalid
 
     user = db.get(User, token_payload.get("sub"))
     if user is None or not user.is_active:
         raise invalid
 
+    if settings.REFRESH_TOKEN_ROTATION:
+        token_revocation.revoke(token_payload)
+
     return RefreshResponse(
         access_token=create_access_token(user.id, user.email, user.role),
         refresh_token=create_refresh_token(user.id, user.email, user.role),
     )
+
+
+@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+def logout(
+    request: Request,
+    payload: Optional[LogoutRequest] = None,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(HTTPBearer(auto_error=False)),
+    db: Session = Depends(get_db),
+):
+    """Revokes the refresh token in the body and/or the access token in the
+    Authorization header (both if given), so neither can be used again even
+    before it expires. Always 204 - already-invalid tokens are ignored, so
+    this never reveals anything and is safe to call twice."""
+    user_id = None
+    tokens = [(payload.refresh_token if payload else None, "refresh"),
+              (credentials.credentials if credentials else None, "access")]
+    for raw, expected_type in tokens:
+        if not raw:
+            continue
+        try:
+            claims = decode_token(raw)
+        except JWTError:
+            continue
+        if claims.get("type") != expected_type or token_revocation.is_revoked(claims):
+            continue
+        token_revocation.revoke(claims)
+        user_id = user_id or claims.get("sub")
+    if user_id:
+        log_event(db, "logout", user_id=user_id, ip_address=get_client_ip(request),
+                  user_agent=request.headers.get("user-agent"))
+        db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
