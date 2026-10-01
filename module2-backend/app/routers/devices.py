@@ -12,7 +12,7 @@ from app.core.deps import get_current_user, get_db, require_role
 from app.core.errors import APIError, ErrorCode
 from app.db.models.device import Device
 from app.db.models.user import User
-from app.schemas.common import Page
+from app.schemas.common import Page, page_limit
 from app.schemas.device import DeviceRegisterRequest, DeviceResponse, DeviceUpdateRequest
 from app.services.audit import log_event
 from app.services.sanitize import sanitize_text
@@ -112,11 +112,12 @@ def list_devices(
     user_id: Optional[str] = None,
     is_trusted: Optional[bool] = None,
     is_active: Optional[bool] = None,
-    limit: int = Query(default=50, ge=1, le=200),
+    limit: int = Query(default=50, ge=1),
     offset: int = Query(default=0, ge=0),
     current_user: User = Depends(require_role("admin")),
     db: Session = Depends(get_db),
 ):
+    limit = page_limit(limit)
     query = db.query(Device)
     if user_id:
         query = query.filter(Device.user_id == user_id)

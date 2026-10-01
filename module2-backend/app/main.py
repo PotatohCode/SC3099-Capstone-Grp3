@@ -9,9 +9,13 @@ Error format: see IMPLEMENTATION-PLAN.md's "Team decisions that deviate
 from the written docs" - every non-422 error body includes a `code` field
 alongside `detail`, via the exception handlers registered below.
 """
+import asyncio
 import logging
+import re
 import time
+import uuid
 
+import anyio.to_thread
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
@@ -23,6 +27,7 @@ from app.core.config import get_settings
 from app.core.errors import DEFAULT_CODE_BY_STATUS, APIError, ErrorCode
 from app.core.metrics import http_request_duration_seconds
 from app.routers import admin, audit, auth, checkins, courses, devices, enrollments, export, sessions, stats, users
+from app.services.retention_scheduler import retention_loop
 
 settings = get_settings()
 logger = logging.getLogger("saiv.errors")
@@ -41,7 +46,7 @@ app.add_middleware(
     allow_headers=["*"],
     # Lets browser code read Retry-After on 429s (account lockout, rate
     # limits) - cross-origin JS can only see headers listed here.
-    expose_headers=["Retry-After"],
+    expose_headers=["Retry-After", "X-Request-ID"],
 )
 
 
@@ -64,6 +69,27 @@ class MetricsMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(MetricsMiddleware)
 
+_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+
+
+class RequestIDMiddleware(BaseHTTPMiddleware):
+    """Correlation id for every request (Module 2 design deck: "Request ID
+    for correlation"). Reuses a well-formed incoming X-Request-ID (so a
+    caller can trace its own request), otherwise generates one; echoed on
+    the response and included in server-side error logs. Added last, so
+    it's the outermost user middleware and covers everything inside it."""
+
+    async def dispatch(self, request: Request, call_next):
+        incoming = request.headers.get("x-request-id", "")
+        request_id = incoming if _REQUEST_ID_RE.match(incoming) else uuid.uuid4().hex
+        request.state.request_id = request_id
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
+        return response
+
+
+app.add_middleware(RequestIDMiddleware)
+
 
 @app.exception_handler(APIError)
 async def api_error_handler(request: Request, exc: APIError) -> JSONResponse:
@@ -84,10 +110,33 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException) 
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     """Never leak internals (per API-SPECIFICATION.md's Error Responses
     section) - log the real error server-side, return the generic message."""
-    logger.exception("Unhandled exception on %s %s", request.method, request.url.path)
+    # Unhandled errors are answered outside the user middleware stack, so
+    # attach the request id here too.
+    request_id = getattr(request.state, "request_id", None)
+    logger.exception("Unhandled exception on %s %s [request_id=%s]", request.method, request.url.path, request_id)
     return JSONResponse(
-        status_code=500, content={"detail": "Internal server error", "code": ErrorCode.INTERNAL_ERROR}
+        status_code=500, content={"detail": "Internal server error", "code": ErrorCode.INTERNAL_ERROR},
+        headers={"X-Request-ID": request_id} if request_id else None,
     )
+
+
+@app.on_event("startup")
+async def size_thread_pool() -> None:
+    # See THREADPOOL_SIZE in core/config.py for why the default 40 deadlocks.
+    anyio.to_thread.current_default_thread_limiter().total_tokens = settings.THREADPOOL_SIZE
+
+
+@app.on_event("startup")
+async def start_retention_sweep() -> None:
+    if settings.RETENTION_SWEEP_INTERVAL_MINUTES > 0:
+        app.state.retention_task = asyncio.create_task(retention_loop())
+
+
+@app.on_event("shutdown")
+async def stop_retention_sweep() -> None:
+    task = getattr(app.state, "retention_task", None)
+    if task is not None:
+        task.cancel()
 
 
 @app.get("/health")

@@ -10,11 +10,15 @@ regardless of score) is not a pure `risk_score < threshold` comparison,
 and Module 3 is currently a 501 stub so the degrade-gracefully paths are
 what actually run end-to-end today.
 """
+import base64
+import binascii
+import hashlib
 import json
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Query, Request, status
+from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.config import get_settings
@@ -47,12 +51,13 @@ from app.schemas.checkin import (
     RiskFactorItem,
     SessionCheckinItem,
 )
-from app.schemas.common import Page
+from app.schemas.common import Page, page_limit
 from app.services import face_client, geofencing, risk_scoring, singapore_check
-from app.services.audit import log_event
+from app.services.audit import log_event, log_security_violation
 from app.services.client_ip import get_client_ip
 from app.services.authz import can_manage_session, require_manage_session
 from app.services.rate_limit import enforce_rate_limit
+from app.services.sanitize import sanitize_text
 
 router = APIRouter(prefix="/checkins", tags=["checkins"])
 settings = get_settings()
@@ -62,6 +67,19 @@ APPEAL_WINDOW_DAYS = 7
 
 def _now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _image_hash(image_b64: str) -> str:
+    """SHA-256 of the decoded image bytes (data-URL prefix and whitespace
+    ignored), so the same photo re-encoded with different padding or line
+    breaks still matches. Falls back to hashing the raw string if it isn't
+    valid base64."""
+    data = image_b64.split(",", 1)[1] if image_b64.startswith("data:") else image_b64
+    try:
+        raw = base64.b64decode("".join(data.split()), validate=True)
+    except (binascii.Error, ValueError):
+        raw = image_b64.encode()
+    return hashlib.sha256(raw).hexdigest()
 
 
 def _parse_risk_factors(raw: Optional[str]) -> List[RiskFactorItem]:
@@ -187,6 +205,10 @@ def create_checkin(
                 "ip_country": None if ip_ok else singapore_check.ip_country(client_ip),
             },
         )
+        log_security_violation(
+            db, "outside_singapore", user_id=current_user.id, resource_type="session", resource_id=session_obj.id,
+            ip_address=client_ip, user_agent=request.headers.get("user-agent"), details={"reason": reason},
+        )
         db.commit()
         raise APIError(
             status.HTTP_403_FORBIDDEN, "Check-in only allowed from within Singapore", ErrorCode.OUTSIDE_SINGAPORE
@@ -208,6 +230,31 @@ def create_checkin(
         if venue_lat is not None and venue_lon is not None
         else None
     )
+
+    # --- Replay check: same student re-submitting a previously used photo --
+    liveness_image_hash: Optional[str] = None
+    replay_suspected = False
+    if payload.liveness_challenge_response:
+        liveness_image_hash = _image_hash(payload.liveness_challenge_response)
+        replay_suspected = (
+            db.query(CheckIn.id)
+            .filter(CheckIn.student_id == current_user.id, CheckIn.liveness_image_hash == liveness_image_hash)
+            .first()
+            is not None
+        )
+
+    # --- Proxy sign-in: same device used by other students just now --------
+    device_fingerprint_hash = hashlib.sha256(payload.device_fingerprint.encode()).hexdigest()
+    other_students_on_device = (
+        db.query(func.count(func.distinct(CheckIn.student_id)))
+        .filter(
+            CheckIn.device_fingerprint_hash == device_fingerprint_hash,
+            CheckIn.student_id != current_user.id,
+            CheckIn.checked_in_at >= now - timedelta(minutes=10),
+        )
+        .scalar()
+    )
+    minutes_after_start = (now - session_obj.scheduled_start).total_seconds() / 60
 
     # --- Liveness + face match (defensive: 5s timeout, degrade on failure) --
     liveness_passed: Optional[bool] = None
@@ -286,6 +333,9 @@ def create_checkin(
         face_match_passed=face_match_passed,
         require_liveness=bool(session_obj.require_liveness_check),
         require_face_match=bool(session_obj.require_face_match or course.require_face_recognition),
+        replay_suspected=replay_suspected,
+        other_students_on_device=other_students_on_device,
+        minutes_after_start=minutes_after_start,
     )
 
     log_event(
@@ -301,8 +351,8 @@ def create_checkin(
         status=assessment.status,
         checked_in_at=now,
         verified_at=now,
-        latitude=payload.latitude,
-        longitude=payload.longitude,
+        latitude=round(payload.latitude, settings.LOCATION_STORAGE_DECIMALS),
+        longitude=round(payload.longitude, settings.LOCATION_STORAGE_DECIMALS),
         location_accuracy_meters=payload.location_accuracy_meters,
         distance_from_venue_meters=distance,
         liveness_passed=liveness_passed,
@@ -311,6 +361,8 @@ def create_checkin(
         face_match_passed=face_match_passed,
         face_match_score=face_match_score,
         face_embedding_hash=current_face_hash,
+        liveness_image_hash=liveness_image_hash,
+        device_fingerprint_hash=device_fingerprint_hash,
         risk_score=assessment.risk_score,
         risk_factors=json.dumps(assessment.risk_factors),
         qr_code_verified=False,  # QR flow not implemented in Phase 6 - see KNOWN-ISSUES.md
@@ -344,8 +396,16 @@ def create_checkin(
     ]
     log_event(
         db, outcome_action, user_id=current_user.id, resource_type="checkin", resource_id=checkin.id,
-        details={"risk_score": assessment.risk_score, "status": assessment.status},
+        # risk_level makes "MEDIUM: auto-approve with logging" visible in the
+        # audit trail without re-deriving bands from the score.
+        details={"risk_score": assessment.risk_score, "risk_level": assessment.risk_level, "status": assessment.status},
     )
+    for violation in assessment.violation_types:
+        log_security_violation(
+            db, violation, user_id=current_user.id, resource_type="checkin", resource_id=checkin.id,
+            ip_address=get_client_ip(request), user_agent=request.headers.get("user-agent"),
+            details={"session_id": session_obj.id, "status": assessment.status},
+        )
 
     db.commit()
     db.refresh(checkin)
@@ -366,11 +426,12 @@ def list_checkins(
     max_risk_score: Optional[float] = None,
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
-    limit: int = Query(default=50, ge=1, le=200),
+    limit: int = Query(default=50, ge=1),
     offset: int = Query(default=0, ge=0),
     current_user: User = Depends(require_role("instructor", "ta", "admin")),
     db: Session = Depends(get_db),
 ):
+    limit = page_limit(limit)
     query = (
         db.query(CheckIn)
         .join(ClassSession, CheckIn.session_id == ClassSession.id)
@@ -418,10 +479,11 @@ def list_checkins(
 @router.get("/my-checkins", response_model=List[MyCheckinItem])
 def my_checkins(
     course_id: Optional[str] = None,
-    limit: int = Query(default=50, ge=1, le=200),
+    limit: int = Query(default=50, ge=1),
     current_user: User = Depends(require_role("student")),
     db: Session = Depends(get_db),
 ):
+    limit = page_limit(limit)
     query = (
         db.query(CheckIn)
         .join(ClassSession, CheckIn.session_id == ClassSession.id)
@@ -482,11 +544,12 @@ def session_checkins(
 def flagged_checkins(
     course_id: Optional[str] = None,
     session_id: Optional[str] = None,
-    limit: int = Query(default=50, ge=1, le=200),
+    limit: int = Query(default=50, ge=1),
     offset: int = Query(default=0, ge=0),
     current_user: User = Depends(require_role("instructor", "ta", "admin")),
     db: Session = Depends(get_db),
 ):
+    limit = page_limit(limit)
     query = (
         db.query(CheckIn)
         .join(ClassSession, CheckIn.session_id == ClassSession.id)
@@ -564,7 +627,7 @@ def appeal_checkin(
         raise APIError(status.HTTP_400_BAD_REQUEST, "Appeal window has expired", ErrorCode.APPEAL_WINDOW_EXPIRED)
 
     checkin.status = "appealed"
-    checkin.appeal_reason = payload.appeal_reason
+    checkin.appeal_reason = sanitize_text(payload.appeal_reason)
     checkin.appealed_at = _now()
 
     log_event(
@@ -604,7 +667,7 @@ def review_checkin(
     checkin.status = payload.status
     checkin.reviewed_by_id = current_user.id
     checkin.reviewed_at = _now()
-    checkin.review_notes = payload.review_notes
+    checkin.review_notes = sanitize_text(payload.review_notes) if payload.review_notes else payload.review_notes
 
     log_event(
         db, "checkin_reviewed", user_id=current_user.id, resource_type="checkin", resource_id=checkin.id,

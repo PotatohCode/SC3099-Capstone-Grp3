@@ -34,6 +34,14 @@ class CheckIn(Base):
     face_match_passed = Column(Boolean, nullable=True)
     face_match_score = Column(Float, nullable=True)
     face_embedding_hash = Column(String(64), nullable=True)  # SimHash, never raw - see users.face_embedding_hash
+    # SHA-256 of the submitted liveness image bytes - never the image itself.
+    # Lets us spot a student re-submitting a previously captured photo
+    # (replay attack, see risk_scoring "replay_suspected").
+    liveness_image_hash = Column(String(64), nullable=True, index=True)
+    # SHA-256 of the client's device_fingerprint (raw value never stored).
+    # Spots one device checking in several different students in quick
+    # succession (proxy sign-in, risk_scoring "rapid_succession").
+    device_fingerprint_hash = Column(String(64), nullable=True, index=True)
 
     risk_score = Column(Float, nullable=False, default=0.0, index=True)
     risk_factors = Column(Text, nullable=True)  # JSON array, serialized

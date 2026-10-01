@@ -26,7 +26,11 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
     # --- Password hashing (bcrypt, cost >= 10) ------------------------------
-    BCRYPT_ROUNDS: int = 12
+    # 10 = SECURITY-REQUIREMENTS.md's minimum and its documented default
+    # (~4x cheaper than 12). Every login/registration pays this cost, so it
+    # dominates latency under the 100-user stress tests. Existing hashes keep
+    # their own cost (it's stored in the hash), so they still verify.
+    BCRYPT_ROUNDS: int = 10
 
     # --- Risk scoring defaults (overridable per course/session) ------------
     RISK_SCORE_THRESHOLD: float = 0.5
@@ -36,6 +40,13 @@ class Settings(BaseSettings):
 
     # --- Data retention ------------------------------------------------------
     PII_RETENTION_DAYS: int = 30
+    # Briefing: location is "only used for geofence check; stored with
+    # limited precision". Checks use the full-precision fix; only the stored
+    # (and returned) coordinates are rounded. 4 dp is about 11 m.
+    LOCATION_STORAGE_DECIMALS: int = 4
+    # Automatic sweep (services/retention_scheduler.py). 0 disables it.
+    RETENTION_SWEEP_INTERVAL_MINUTES: int = 60
+    RETENTION_SWEEP_INITIAL_DELAY_SECONDS: int = 15
 
     # --- Rate limiting (Redis-based; see SECURITY-REQUIREMENTS.md) ---------
     # All four of these are plain pydantic-settings fields, so every one is
@@ -71,6 +82,18 @@ class Settings(BaseSettings):
     # --- Singapore-only check-ins (see services/singapore_check.py) ---------
     # Bundled DB-IP "IP to Country Lite" database (CC BY 4.0).
     GEOIP_DB_PATH: str = str(Path(__file__).resolve().parents[1] / "data" / "dbip-country-lite.mmdb")
+
+    # --- Concurrency ---------------------------------------------------------
+    # Worker threads for sync endpoints AND their response validation
+    # (FastAPI runs both in anyio's thread pool; the default is 40). With
+    # 40 threads and 30 DB connections (pool 10 + overflow 20), a burst of
+    # ~100 requests deadlocked: every thread waited for a connection while
+    # the 30 requests holding connections had finished their endpoint but
+    # couldn't get a thread to validate their response, so never released
+    # them - until the 30 s pool timeout turned ~30% of them into 500s.
+    # Measured with 100 concurrent logins/registrations. Keep this well
+    # above the expected burst size (hidden stress tests: 100 users).
+    THREADPOOL_SIZE: int = 200
 
     # --- CORS ----------------------------------------------------------------
     CORS_ORIGINS: list[str] = [

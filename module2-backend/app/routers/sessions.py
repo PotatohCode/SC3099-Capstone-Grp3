@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Query, status
+from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.deps import get_current_user, get_db, require_role
@@ -15,7 +16,7 @@ from app.db.models.course import Course
 from app.db.models.enrollment import Enrollment
 from app.db.models.session import ClassSession
 from app.db.models.user import User
-from app.schemas.common import Page
+from app.schemas.common import Page, page_limit
 from app.schemas.session import SessionCreate, SessionResponse, SessionUpdate
 from app.services.audit import log_event
 from app.services.authz import require_edit_course, require_manage_session
@@ -28,17 +29,24 @@ def _now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
-def _to_response(db: Session, session_obj: ClassSession, course: Optional[Course] = None) -> SessionResponse:
+def _to_response(
+    db: Session,
+    session_obj: ClassSession,
+    course: Optional[Course] = None,
+    total_enrolled: Optional[int] = None,
+    checked_in_count: Optional[int] = None,
+) -> SessionResponse:
+    """Single-session response. List endpoints use _to_responses(), which
+    passes pre-batched counts so a page doesn't run 2-3 queries per row."""
     course = course or session_obj.course
-    # Two count queries per session - acceptable for now (small course
-    # rosters in this project); revisit with a batched aggregate join if
-    # Phase 7 perf hardening flags this list endpoint as an N+1 hotspot.
-    total_enrolled = (
-        db.query(Enrollment)
-        .filter(Enrollment.course_id == session_obj.course_id, Enrollment.is_active.is_(True))
-        .count()
-    )
-    checked_in_count = db.query(CheckIn).filter(CheckIn.session_id == session_obj.id).count()
+    if total_enrolled is None:
+        total_enrolled = (
+            db.query(Enrollment)
+            .filter(Enrollment.course_id == session_obj.course_id, Enrollment.is_active.is_(True))
+            .count()
+        )
+    if checked_in_count is None:
+        checked_in_count = db.query(CheckIn).filter(CheckIn.session_id == session_obj.id).count()
     return SessionResponse(
         id=session_obj.id,
         course_id=session_obj.course_id,
@@ -69,6 +77,37 @@ def _to_response(db: Session, session_obj: ClassSession, course: Optional[Course
     )
 
 
+def _to_responses(db: Session, sessions: List[ClassSession]) -> List[SessionResponse]:
+    """Batched version for list endpoints: 3 queries per page (courses,
+    enrollment counts per course, check-in counts per session) instead of
+    up to 3 per session. Measured before: 100 concurrent GET /sessions/
+    (limit=100) took p95 ~9.5 s."""
+    if not sessions:
+        return []
+    course_ids = {s.course_id for s in sessions}
+    session_ids = [s.id for s in sessions]
+    courses = {c.id: c for c in db.query(Course).filter(Course.id.in_(course_ids)).all()}
+    enrolled = dict(
+        db.query(Enrollment.course_id, func.count(Enrollment.id))
+        .filter(Enrollment.course_id.in_(course_ids), Enrollment.is_active.is_(True))
+        .group_by(Enrollment.course_id)
+        .all()
+    )
+    checked_in = dict(
+        db.query(CheckIn.session_id, func.count(CheckIn.id))
+        .filter(CheckIn.session_id.in_(session_ids))
+        .group_by(CheckIn.session_id)
+        .all()
+    )
+    return [
+        _to_response(
+            db, s, course=courses.get(s.course_id),
+            total_enrolled=enrolled.get(s.course_id, 0), checked_in_count=checked_in.get(s.id, 0),
+        )
+        for s in sessions
+    ]
+
+
 def _validate_schedule(scheduled_start: datetime, scheduled_end: datetime, opens: datetime, closes: datetime) -> None:
     if scheduled_end <= scheduled_start:
         raise APIError(status.HTTP_400_BAD_REQUEST, "scheduled_end must be after scheduled_start", ErrorCode.INVALID_SCHEDULE)
@@ -83,11 +122,12 @@ def list_sessions(
     instructor_id: Optional[str] = None,
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
-    limit: int = Query(default=50, ge=1, le=200),
+    limit: int = Query(default=50, ge=1),
     offset: int = Query(default=0, ge=0),
     current_user: User = Depends(require_role("instructor", "ta", "admin")),
     db: Session = Depends(get_db),
 ):
+    limit = page_limit(limit)
     query = db.query(ClassSession).options(joinedload(ClassSession.course))
     if status_filter:
         query = query.filter(ClassSession.status == status_filter)
@@ -102,7 +142,7 @@ def list_sessions(
 
     total = query.count()
     sessions = query.order_by(ClassSession.scheduled_start.desc()).offset(offset).limit(limit).all()
-    return Page(items=[_to_response(db, s) for s in sessions], total=total, limit=limit, offset=offset)
+    return Page(items=_to_responses(db, sessions), total=total, limit=limit, offset=offset)
 
 
 @router.get("/active", response_model=List[SessionResponse])
@@ -118,17 +158,18 @@ def list_active_sessions(db: Session = Depends(get_db)):
         )
         .all()
     )
-    return [_to_response(db, s) for s in sessions]
+    return _to_responses(db, sessions)
 
 
 @router.get("/my-sessions", response_model=List[SessionResponse])
 def list_my_sessions(
     status_filter: Optional[str] = Query(default=None, alias="status"),
     upcoming: bool = False,
-    limit: int = Query(default=50, ge=1, le=200),
+    limit: int = Query(default=50, ge=1),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    limit = page_limit(limit)
     query = db.query(ClassSession).options(joinedload(ClassSession.course))
 
     if current_user.role == "student":
@@ -160,7 +201,7 @@ def list_my_sessions(
         query = query.filter(ClassSession.scheduled_start >= _now())
 
     sessions = query.order_by(ClassSession.scheduled_start.asc()).limit(limit).all()
-    return [_to_response(db, s) for s in sessions]
+    return _to_responses(db, sessions)
 
 
 @router.get("/{session_id}", response_model=SessionResponse)
