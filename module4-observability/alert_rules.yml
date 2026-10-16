@@ -1,0 +1,45 @@
+# Alerts from the Module 4 design deck ("High flagged rate -> possible issue",
+# "Many failed logins -> possible attack"), plus backend availability.
+# Evaluated by Prometheus; shown in Prometheus (/alerts) and in Grafana's
+# "SAIV · Attendance & Security" dashboard.
+groups:
+  - name: saiv-attendance-security
+    rules:
+      - alert: HighFlaggedRate
+        expr: |
+          (
+            sum(increase(checkins_flagged_total[15m]))
+            / sum(increase(checkin_attempts_total[15m]))
+          ) > 0.3
+          and sum(increase(checkin_attempts_total[15m])) >= 5
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "More than 30% of check-ins flagged in the last 15 minutes"
+          description: >-
+            {{ $value | humanizePercentage }} of recent check-in attempts were flagged for review.
+            Possible issue: wrong venue/geofence, GPS problems, or a proxy sign-in attempt.
+            Check the review queue in the instructor portal.
+
+      - alert: ManyFailedLogins
+        expr: sum(increase(login_failed_total[10m])) >= 20
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "20+ failed sign-ins in 10 minutes"
+          description: >-
+            {{ $value | printf "%.0f" }} failed sign-ins in the last 10 minutes: possible
+            password-guessing attack. Check the audit log for login_failed / account_locked events.
+
+  - name: saiv-availability
+    rules:
+      - alert: BackendDown
+        expr: up{job="saiv-backend"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Backend API is not responding to Prometheus"
+          description: "Prometheus can't scrape backend:8000/metrics. Check `docker compose ps backend`."
