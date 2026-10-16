@@ -1,0 +1,21 @@
+[theme]
+base = "light"
+primaryColor = "#0f766e"
+backgroundColor = "#f6f7f2"
+secondaryBackgroundColor = "#ffffff"
+textColor = "#173042"
+
+[server]
+headless = true
+port = 8501
+address = "0.0.0.0"
+# Uploads are CSV account lists only.
+maxUploadSize = 5
+
+[browser]
+gatherUsageStats = false
+
+[client]
+toolbarMode = "minimal"
+# Don't show Python tracebacks to users (they reveal internals).
+showErrorDetails = false
