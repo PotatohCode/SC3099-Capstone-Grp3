@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import os
 import random
 import sys
 import urllib.error
@@ -134,7 +135,7 @@ def main() -> None:
         if kind == "spoof":       # suspiciously perfect accuracy -> flagged
             accuracy = 0.5
         # A fresh camera frame each time: identical bytes would be a replay.
-        frame = photo + rng.randbytes(16)
+        frame = photo + os.urandom(16)
         call("POST", "/checkins/", {
             "session_id": session["id"], "latitude": lat, "longitude": lon,
             "location_accuracy_meters": accuracy, "device_fingerprint": f"seed-device-{index:02d}",
