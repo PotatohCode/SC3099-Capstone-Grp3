@@ -124,6 +124,10 @@ services:
       DATABASE_URL: postgresql://saiv:saiv_password@postgres:5432/saiv
       BACKEND_URL: http://backend:8000
       PROMETHEUS_URL: http://prometheus:9090
+      # Link opened in the user's browser, so it uses the host port.
+      GRAFANA_PUBLIC_URL: http://localhost:3001
+      # "true" adds an "Explore with sample data" button on the sign-in page.
+      DEMO_MODE: "false"
     depends_on:
       backend:
         condition: service_healthy
@@ -137,12 +141,14 @@ services:
   # ==========================================================================
 
   prometheus:
-    image: prom/prometheus:latest
+    # Pinned: ":latest" can change config formats without warning.
+    image: prom/prometheus:v3.1.0
     container_name: saiv-prometheus
     ports:
       - "9090:9090"
     volumes:
       - ./module4-observability/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./module4-observability/alert_rules.yml:/etc/prometheus/alert_rules.yml
       - prometheus_data:/prometheus
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
@@ -151,13 +157,14 @@ services:
       - saiv-network
 
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:11.4.0
     container_name: saiv-grafana
     ports:
       - "3001:3000"
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/provisioning/dashboards/json/attendance-security.json
     volumes:
       - grafana_data:/var/lib/grafana
       - ./module4-observability/grafana/provisioning:/etc/grafana/provisioning
@@ -167,7 +174,7 @@ services:
       - saiv-network
 
   otel-collector:
-    image: otel/opentelemetry-collector:latest
+    image: otel/opentelemetry-collector:0.160.0
     container_name: saiv-otel-collector
     ports:
       - "4317:4317"   # gRPC

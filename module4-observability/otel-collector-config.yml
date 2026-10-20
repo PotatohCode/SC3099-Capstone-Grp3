@@ -1,3 +1,8 @@
+# OpenTelemetry Collector: receives traces/metrics over OTLP from services
+# that send them (OTEL_EXPORTER_OTLP_ENDPOINT in docker-compose.yml).
+# The `logging` exporter was removed from current collector images, so this
+# uses `debug`, and the Prometheus exporter moves to 8889 because the
+# collector's own telemetry already listens on 8888.
 receivers:
   otlp:
     protocols:
@@ -12,18 +17,23 @@ processors:
     send_batch_size: 1024
 
 exporters:
-  logging:
-    loglevel: debug
+  debug:
+    verbosity: basic
   prometheus:
-    endpoint: "0.0.0.0:8888"
+    endpoint: "0.0.0.0:8889"
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
 
 service:
+  extensions: [health_check]
   pipelines:
     traces:
       receivers: [otlp]
       processors: [batch]
-      exporters: [logging]
+      exporters: [debug]
     metrics:
       receivers: [otlp]
       processors: [batch]
-      exporters: [prometheus, logging]
+      exporters: [prometheus, debug]

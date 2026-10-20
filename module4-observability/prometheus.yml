@@ -2,12 +2,16 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
+rule_files:
+  - /etc/prometheus/alert_rules.yml
+
 scrape_configs:
   - job_name: 'saiv-backend'
     static_configs:
       - targets: ['backend:8000']
     metrics_path: '/metrics'
 
+  # Shows as DOWN until Module 3 adds GET /metrics (see README.md).
   - job_name: 'saiv-face-recognition'
     static_configs:
       - targets: ['face-recognition:8001']
