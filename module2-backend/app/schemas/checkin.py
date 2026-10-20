@@ -24,7 +24,30 @@ class CheckinCreate(BaseModel):
     location_accuracy_meters: Optional[float] = Field(default=None, ge=0)
     device_fingerprint: str = Field(min_length=1, max_length=64)
     liveness_challenge_response: Optional[str] = None  # base64 image, optional
+    # Frame burst (base64 frames, oldest first) captured while the student
+    # performs a liveness challenge. Additive: the single image above stays
+    # in the spec and the course tests. Count/size are checked in the
+    # router (413, not a 422 that would echo the frames back).
+    liveness_challenge_frames: Optional[List[str]] = None
+    # From POST /checkins/challenge. When given, its server-chosen sequence
+    # is what Module 3 checks and what gets stored.
+    challenge_id: Optional[str] = Field(default=None, max_length=64)
+    # Client-declared challenge when there's no challenge_id (e.g. "blink");
+    # a label only, never trusted for the decision. Defaults to "passive".
+    challenge_type: Optional[str] = Field(default=None, max_length=50, pattern=r"^[a-z_]+$")
     qr_code: Optional[str] = None
+
+
+class LivenessChallengeRequest(BaseModel):
+    session_id: str
+
+
+class LivenessChallengeResponse(BaseModel):
+    challenge_id: str
+    session_id: str
+    sequence: List[str]  # actions in order, e.g. ["blink", "turn_left"]
+    expires_at: datetime
+    max_frames: int
 
 
 class RiskFactorItem(BaseModel):

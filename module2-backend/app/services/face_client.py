@@ -25,7 +25,7 @@ one request, so only that call degrades.
 """
 import logging
 import time
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 import httpx
 
@@ -39,7 +39,7 @@ COOLDOWN_SECONDS = 30.0
 _circuit_open_until: dict[str, float] = {}
 
 
-def _post(path: str, payload: dict) -> Optional[dict[str, Any]]:
+def _post(path: str, payload: dict, timeout: float = TIMEOUT_SECONDS) -> Optional[dict[str, Any]]:
     now = time.monotonic()
     if _circuit_open_until.get(path, 0.0) > now:
         return None
@@ -47,7 +47,7 @@ def _post(path: str, payload: dict) -> Optional[dict[str, Any]]:
     settings = get_settings()
     url = f"{settings.FACE_SERVICE_URL}{path}"
     try:
-        with httpx.Client(timeout=TIMEOUT_SECONDS) as client:
+        with httpx.Client(timeout=timeout) as client:
             response = client.post(url, json=payload)
             response.raise_for_status()
             _circuit_open_until.pop(path, None)  # a success clears any prior cooldown
@@ -87,12 +87,29 @@ def verify_face(image_base64: str, reference_template_hash: str) -> Optional[dic
     return _post("/face/verify", {"image": image_base64, "reference_template_hash": reference_template_hash})
 
 
-def check_liveness(image_base64: str, challenge_type: str = "passive") -> Optional[dict[str, Any]]:
+def check_liveness(
+    image_base64: str,
+    challenge_type: str = "passive",
+    frames: Optional[List[str]] = None,
+    challenge_sequence: Optional[List[str]] = None,
+) -> Optional[dict[str, Any]]:
     """POST /liveness/check. None on any failure - caller degrades to
     liveness_passed=None, liveness_score=0.0 (per INTEGRATION-GUIDE.md's
     sample - None, not False, so an unattempted/unreachable check never
-    triggers the liveness-failed hard-override on its own)."""
-    return _post("/liveness/check", {"challenge_response": image_base64, "challenge_type": challenge_type})
+    triggers the liveness-failed hard-override on its own).
+
+    With a frame burst, also sends `frames` (and `challenge_sequence` for a
+    server-issued challenge); `challenge_response` is still one image, so a
+    Module 3 build that predates frames keeps answering. Contract:
+    api-docs/API-FOR-FACE-RECOGNITION.md section 3. Bursts take longer to
+    analyse, so they get LIVENESS_TIMEOUT_SECONDS; single images keep 5 s."""
+    payload: dict[str, Any] = {"challenge_response": image_base64, "challenge_type": challenge_type}
+    if not frames:
+        return _post("/liveness/check", payload)
+    payload["frames"] = frames
+    if challenge_sequence:
+        payload["challenge_sequence"] = challenge_sequence
+    return _post("/liveness/check", payload, timeout=get_settings().LIVENESS_TIMEOUT_SECONDS)
 
 
 def assess_risk(payload: dict[str, Any]) -> Optional[dict[str, Any]]:

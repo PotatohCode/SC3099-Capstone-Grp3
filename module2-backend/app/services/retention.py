@@ -30,6 +30,7 @@ from sqlalchemy.orm import Session
 
 from app.core.security import get_password_hash
 from app.db.models.checkin import CheckIn
+from app.db.models.liveness_frame_hash import LivenessFrameHash
 from app.db.models.user import User
 
 
@@ -95,5 +96,11 @@ def run_retention_sweep(db: Session) -> RetentionSweepResult:
     )
     for checkin in due_checkins:
         anonymize_checkin(checkin)
+    if due_checkins:
+        # Per-frame image hashes (replay detection) go with the check-in's
+        # other image-derived data.
+        db.query(LivenessFrameHash).filter(
+            LivenessFrameHash.checkin_id.in_([c.id for c in due_checkins])
+        ).delete(synchronize_session=False)
 
     return {"users_anonymized": len(due_users), "checkins_anonymized": len(due_checkins)}
