@@ -21,6 +21,7 @@ from app.schemas.common import Page, page_limit
 from app.schemas.session import SessionCreate, SessionResponse, SessionUpdate
 from app.services.audit import log_event
 from app.services.authz import require_edit_course, require_manage_session
+from app.services.roster import active_student_enrollments
 from app.services.sanitize import sanitize_text
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
@@ -42,11 +43,7 @@ def _to_response(
     passes pre-batched counts so a page doesn't run 2-3 queries per row."""
     course = course or session_obj.course
     if total_enrolled is None:
-        total_enrolled = (
-            db.query(Enrollment)
-            .filter(Enrollment.course_id == session_obj.course_id, Enrollment.is_active.is_(True))
-            .count()
-        )
+        total_enrolled = active_student_enrollments(db).filter(Enrollment.course_id == session_obj.course_id).count()
     if checked_in_count is None:
         checked_in_count = db.query(CheckIn).filter(CheckIn.session_id == session_obj.id).count()
     return SessionResponse(
@@ -90,8 +87,9 @@ def _to_responses(db: Session, sessions: List[ClassSession]) -> List[SessionResp
     session_ids = [s.id for s in sessions]
     courses = {c.id: c for c in db.query(Course).filter(Course.id.in_(course_ids)).all()}
     enrolled = dict(
-        db.query(Enrollment.course_id, func.count(Enrollment.id))
-        .filter(Enrollment.course_id.in_(course_ids), Enrollment.is_active.is_(True))
+        active_student_enrollments(db)
+        .with_entities(Enrollment.course_id, func.count(Enrollment.id))
+        .filter(Enrollment.course_id.in_(course_ids))
         .group_by(Enrollment.course_id)
         .all()
     )
