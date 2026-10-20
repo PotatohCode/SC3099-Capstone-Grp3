@@ -5,7 +5,8 @@ Read [API-CONVENTIONS.md](API-CONVENTIONS.md) for general context, but note:
 call *us*; for Module 3, **Module 2 calls you.** This is the contract your
 service implements so our calls succeed. For **what changed and what you
 need to do**, see [CHANGES-2026-10-01.md](CHANGES-2026-10-01.md) §1 and the
-Module 3 guide in §4. Last updated 2026-10-01.
+Module 3 guide in §4. Last updated 2026-10-20 (frame-burst liveness and
+server-issued challenges: §3).
 
 ---
 
@@ -15,7 +16,9 @@ Module 3 guide in §4. Last updated 2026-10-01.
   inside docker-compose (`http://localhost:8001` from your machine).
 - **No authentication**: internal service-to-service calls.
 - **Every call is a `POST` with a JSON body**, and we expect JSON back.
-- **5-second timeout** per call, strictly enforced.
+- **5-second timeout** per call, strictly enforced. Exception:
+  `/liveness/check` calls that carry a frame burst get **15 seconds**
+  (`LIVENESS_TIMEOUT_SECONDS`); single-image calls keep 5 s.
 - **Concurrency:** the backend handles 100+ simultaneous check-ins, and each
   check-in with a photo can call `/liveness/check`, `/face/verify` and
   `/risk/assess`. The hidden stress tests use ~100 concurrent users, so
@@ -88,14 +91,64 @@ hard-fail because you're down. A slow service still gets cut off at 5 s.
 
 ### 3. `POST /liveness/check`
 
-**We send:**
+Two request shapes. **Keep supporting the first**: the course's public
+tests call you directly with a single image and `"challenge_type":
+"passive"`, and most check-ins still send one photo.
+
+**(a) Single image (unchanged):**
 ```json
 { "challenge_response": "base64 image", "challenge_type": "passive" }
 ```
-**We read:**
-```json
-{ "liveness_passed": true, "liveness_score": 0.0 }
+
+**(b) Frame burst, new (2026-10-20).** Sent when the student's app captured
+a short burst while performing a challenge:
+```jsonc
+{
+  "challenge_response": "base64 image",          // still sent: the middle frame, so an older build keeps working
+  "challenge_type": "sequence",                  // "sequence" when the backend issued a challenge;
+                                                 // otherwise whatever the client sent ("blink", "passive", ...)
+  "frames": ["base64 frame 1", "base64 frame 2", "..."],   // ordered, oldest first, 1–30 frames
+  "challenge_sequence": ["blink", "turn_left"]   // present only when the backend issued a challenge
+}
 ```
+- `frames`: ~5 frames per second, about 8 per step (≈16 frames for a 2-step
+  challenge). Each frame is under the per-image limit; the whole request
+  is under 15 MB, so expect small JPEGs (≈640 px wide).
+- `challenge_sequence`: 1–3 actions, never the same action twice in a row.
+  **Actions (v1):**
+
+  | Action | What to detect across the frames |
+  |---|---|
+  | `blink` | Eyes open → closed → open (eye aspect ratio from the face mesh) |
+  | `turn_left` | Head yaw to the **student's** left past a threshold, then back toward centre. Front cameras mirror the image: handle that on your side |
+  | `turn_right` | Same, to the right |
+
+  More actions (`nod`, `open_mouth`) may be added later in the same format.
+  Treat an unknown action as "not performed".
+- Steps must happen **in the order given**.
+
+**We read:**
+```jsonc
+{
+  "liveness_passed": true,      // as before: your anti-spoof verdict
+  "liveness_score": 0.0,        // as before
+  "challenge_passed": true,     // new: were all steps performed, in order? Only needed for shape (b) with challenge_sequence
+  "steps_passed": [true, false] // optional, one per step, for our logs
+}
+```
+
+**How we decide (frame burst with a challenge):**
+
+| Your answer | Outcome |
+|---|---|
+| `challenge_passed: false` | Treated as a **failed liveness check** → check-in **rejected** (the student can appeal) |
+| `challenge_passed: true` | Your `liveness_passed` decides, as today |
+| `challenge_passed` missing or `null` (e.g. older build, or you couldn't tell) | **Unverified** → at most **flagged for review**, unless `liveness_passed` is `false` |
+| Call failed / timed out | Unverified, same as today |
+
+Your current build ignores the unknown fields and scores
+`challenge_response` as one image. That's safe: without `challenge_passed`
+we never auto-approve a challenged check-in.
 - `liveness_passed: false` → **always rejects** the check-in
   (`liveness_failed`, hard reject), whatever the score.
 - `liveness_passed: null` (e.g. no face found), or a failed call → on a

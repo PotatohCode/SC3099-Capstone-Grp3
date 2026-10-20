@@ -7,7 +7,8 @@ pagination, rate limits). For **what changed and what you need to do**, see
 
 This covers every endpoint your UI is likely to call, across all four roles
 (student/instructor/ta/admin), since one frontend serves all of them. Each
-entry notes who can call it. Last updated 2026-10-01.
+entry notes who can call it. Last updated 2026-10-20 (liveness challenges
+and frame bursts in §7; `role` on the course roster in §5).
 
 ---
 
@@ -170,7 +171,8 @@ they own or staff; admins see all.
 ```
 `session_type` ∈ `lecture|tutorial|lab|exam`; `status` ∈
 `scheduled|active|closed|cancelled`. `qr_code_enabled` is always `false`
-(QR check-in isn't implemented).
+(QR check-in isn't implemented). `total_enrolled` counts **students only**;
+assigned TAs aren't included.
 
 ### `POST /api/v1/sessions/` — instructor or admin
 ```json
@@ -203,8 +205,12 @@ Partial update plus `status`. `status: "active"` stamps `actual_start`;
 Plain array of `{ id, course_id, course_code, course_name, semester, instructor_name, enrolled_at, is_active }`.
 
 ### `GET /api/v1/enrollments/course/{course_id}` — instructor/ta/admin who staff the course
-→ `{ course_id, course_code, total_enrolled, students: [{ id, student_id, student_email, student_name, enrolled_at, is_active, face_enrolled }] }`.
+→ `{ course_id, course_code, total_enrolled, students: [{ id, student_id, student_email, student_name, role, enrolled_at, is_active, face_enrolled }] }`.
 `face_enrolled` lets you show who still needs to enrol their face.
+**Assigned TAs are on this list too** (that's how TA access works), with
+`role: "ta"`. Add `?role=student` (or `?role=ta`) to get only one kind;
+`total_enrolled` counts what's returned. Optional `?search=` filters by name
+or email.
 
 ### `POST /api/v1/enrollments/` — instructor/admin who owns the course
 `{ "student_id": "...", "course_id": "..." }` → **201**. **400 ALREADY_ENROLLED**.
@@ -253,14 +259,52 @@ Plain array of `{ id, device_fingerprint, device_name, platform, browser, os_ver
 
 ## 7. Check-ins — the core flow
 
-### `POST /api/v1/checkins/` — **student only**
+### `POST /api/v1/checkins/challenge` — **student only** (new)
+Get a random liveness challenge for the next check-in.
 ```json
+// request
+{ "session_id": "..." }
+// 201
+{ "challenge_id": "...", "session_id": "...", "sequence": ["blink", "turn_left"],
+  "expires_at": "2026-10-20T04:01:30", "max_frames": 30 }
+```
+- `sequence`: 2 steps by default, from `blink`, `turn_left`, `turn_right`
+  (the **student's** left; your preview is probably mirrored). Never the same
+  step twice in a row. More actions may be added later: show a generic
+  prompt for one you don't recognise.
+- **Expires after ~90 s and works once.** Fetch it right before capturing.
+- Same guards as a check-in: `404 SESSION_NOT_FOUND`, `403 NOT_ENROLLED`,
+  `400 SESSION_NOT_ACTIVE` / `SESSION_WINDOW_CLOSED`. Max 30 per minute.
+- `503 CHALLENGE_UNAVAILABLE`: challenges are down. Check in with a single
+  photo instead.
+
+**Capture:** show each step in order and record ~5 frames per second, about
+8 per step (≈16 frames for 2 steps), as small JPEGs (≈640 px wide), base64
+without the `data:` prefix, oldest first. At most `max_frames` frames, each
+under 10,000,000 base64 characters, and the whole request under 15 MB.
+
+### `POST /api/v1/checkins/` — **student only**
+```jsonc
 { "session_id": "...", "latitude": 1.35, "longitude": 103.68,
   "location_accuracy_meters": 10.0, "device_fingerprint": "...",
-  "liveness_challenge_response": "<base64 photo, optional>", "qr_code": null }
+  "liveness_challenge_response": "<base64 photo, optional>",
+  "liveness_challenge_frames": ["<base64 frame>", "..."],  // optional, new: burst for a challenge
+  "challenge_id": "...",                                    // optional, new: from /checkins/challenge
+  "challenge_type": null,                                   // optional, new: label only, e.g. "blink"
+  "qr_code": null }
 ```
-- **Send a fresh photo every time.** A photo the same student already used is
-  rejected (`replay_suspected`).
+- **Two ways to send liveness:** one photo (`liveness_challenge_response`,
+  as before), or a challenge burst (`challenge_id` +
+  `liveness_challenge_frames`). The photo field keeps working.
+- **Challenge outcome:** the face service checks the frames against the
+  sequence. Steps not performed → `rejected` (`liveness_failed`, appealable).
+  If it can't confirm the steps → at most `flagged` (`liveness_unverified`).
+  Until Module 3 ships frame checking, challenged check-ins are flagged.
+- `challenge_type` (lowercase letters and `_`) is only a label stored with
+  the check-in when you send frames **without** a challenge.
+- **Send a fresh photo or burst every time.** If **any** image (the photo or
+  any one frame) was used in an earlier check-in by the same student, the
+  check-in is rejected (`replay_suspected`).
 - **Send full-precision GPS and the real accuracy** from the Geolocation API.
   An accuracy under 1 m is treated as a mocked location
   (`gps_spoof_suspected`, flagged).
@@ -271,13 +315,15 @@ Plain array of `{ id, device_fingerprint, device_name, platform, browser, os_ver
 | Response | Meaning | UI |
 |---|---|---|
 | `429 RATE_LIMITED` | More than 10 check-ins per minute | Wait and retry |
-| `413 IMAGE_TOO_LARGE` | Photo over the size limit | "Photo too large, retake" |
+| `413 IMAGE_TOO_LARGE` | Photo, or any one frame, over the size limit | "Photo too large, retake" |
+| `413 TOO_MANY_FRAMES` | More than 30 frames | Send fewer frames |
 | `404 SESSION_NOT_FOUND` | Unknown session | |
 | `403 NOT_ENROLLED` | Not enrolled in the course | |
 | `400 SESSION_NOT_ACTIVE` / `SESSION_WINDOW_CLOSED` | Not open right now | |
 | `400 ALREADY_CHECKED_IN` | Already has a check-in for this session | Offer appeal if it was rejected |
 | `403 CONSENT_REQUIRED` | Only if the backend's consent enforcement is set to `reject` (off by default) | Ask for camera + location permission |
 | `403 OUTSIDE_SINGAPORE` | GPS or public IP outside Singapore. **Nothing saved, retry allowed** | "Check-in is only available within Singapore. If you're using a VPN, turn it off and try again." |
+| `400 CHALLENGE_INVALID` | `challenge_id` unknown, expired, already used, or for another session/student. **Nothing saved** | Get a new challenge and redo the steps |
 
 **201** → `CheckinResponse`:
 ```json

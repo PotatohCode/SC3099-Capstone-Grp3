@@ -3,7 +3,8 @@
 Read [API-CONVENTIONS.md](API-CONVENTIONS.md) first (auth, error format,
 pagination). For **what changed and what you need to do**, see
 [CHANGES-2026-10-01.md](CHANGES-2026-10-01.md) §1 and the Module 4 guide in
-§4. Last updated 2026-10-01.
+§4. Last updated 2026-10-20 (student counts exclude TAs; `challenge_reuse`
+violation type).
 
 This covers the `/stats/*` analytics, `/export/*` data export, `/audit/*`
 compliance log, and `/metrics` for Prometheus/Grafana. Everything here needs
@@ -21,6 +22,13 @@ for a review screen).
 **under two names for the same value**, one matching the written spec and
 one matching what the graded tests assert. Both are always present and
 always equal, so use whichever you prefer.
+
+**Student counts exclude TAs** (since 2026-10-20). Assigned TAs are
+attached to their course as enrollment rows, but `total_students`,
+`total_enrolled`, `student_attendance`, `low_attendance_alerts`, attendance
+rates, the session export summary and `GET /sessions/*`'s `total_enrolled`
+only count users with the `student` role. For a roster without TAs, call
+`GET /enrollments/course/{id}?role=student` (each row also has `role`).
 
 ### `GET /stats/overview` — instructor/ta/admin
 Query: `course_id` (optional), `days` (1–365, default 7; controls the trend
@@ -170,7 +178,7 @@ Useful `details` fields:
 | Action | `details` |
 |---|---|
 | `checkin_approved` / `_flagged` / `_rejected` | `risk_score`, **`risk_level`** (LOW/MEDIUM/HIGH/CRITICAL), `status` |
-| `security_violation` | **`violation_type`**: `account_lockout`, `outside_singapore`, `geo_out_of_bounds`, `liveness_failed`, `face_match_failed`, `replay_suspected`, `impossible_travel`, `gps_spoof_suspected`, `rapid_succession` |
+| `security_violation` | **`violation_type`**: `account_lockout`, `outside_singapore`, `geo_out_of_bounds`, `liveness_failed`, `face_match_failed`, `replay_suspected`, `impossible_travel`, `gps_spoof_suspected`, `rapid_succession`, `challenge_reuse` (a liveness challenge used twice or by another student; `details.reason` = `reused` / `other_student`) |
 | `checkin_rejected_geo` | `reason` (`ip`/`gps`/`gps_and_ip`), `gps_in_singapore`, `ip_country` (no coordinates) |
 | `account_locked` | `failed_attempts`, `lockout_minutes` |
 | `login_failed` | `email`, or `reason: "account_locked"` |
