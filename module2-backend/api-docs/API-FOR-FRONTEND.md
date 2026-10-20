@@ -151,12 +151,17 @@ Query: `status`, `course_id`, `instructor_id`, `start_date`, `end_date`,
 
 ### `GET /api/v1/sessions/active` — public, no auth required
 Plain array of sessions currently `active` **and** inside their check-in
-window. Use this (or `my-sessions`) for a "check in now" screen.
+window, **for every course** (not just the student's).
 
 ### `GET /api/v1/sessions/my-sessions` — any authenticated role
 Query: `status`, `upcoming` (bool), `limit`. Plain array, scoped by role:
 students see their enrolled courses' sessions; instructors/TAs see sessions
 they own or staff; admins see all.
+**`status=active` does not check the check-in window.** A session an
+instructor forgot to close stays `active` after its window ends, and a
+check-in then gets `400 SESSION_WINDOW_CLOSED`. For a student's "check in
+now" list, call `my-sessions?status=active` and keep only sessions where
+`checkin_opens_at <= now <= checkin_closes_at` (UTC).
 
 ### `GET /api/v1/sessions/{id}` — any authenticated role
 → `SessionResponse`:
@@ -273,8 +278,12 @@ Get a random liveness challenge for the next check-in.
   step twice in a row. More actions may be added later: show a generic
   prompt for one you don't recognise.
 - **Expires after ~90 s and works once.** Fetch it right before capturing.
-- Same guards as a check-in: `404 SESSION_NOT_FOUND`, `403 NOT_ENROLLED`,
-  `400 SESSION_NOT_ACTIVE` / `SESSION_WINDOW_CLOSED`. Max 30 per minute.
+  `expires_at` is **UTC** with no `Z` (like every timestamp; see
+  API-CONVENTIONS), so `2026-10-20T04:01:30` is 12:01:30 in Singapore.
+- Checks the session first: `404 SESSION_NOT_FOUND`, `403 NOT_ENROLLED`,
+  `400 SESSION_NOT_ACTIVE` / `SESSION_WINDOW_CLOSED`. It does **not** check
+  "already checked in" or the Singapore rule; those still come from the
+  check-in itself. More than 30 per minute → `429 RATE_LIMITED`.
 - `503 CHALLENGE_UNAVAILABLE`: challenges are down. Check in with a single
   photo instead.
 
