@@ -7,6 +7,7 @@ from app.db.models.checkin import CheckIn
 from app.db.models.course import Course
 from app.db.models.device import Device
 from app.db.models.enrollment import Enrollment
+from app.db.models.liveness_frame_hash import LivenessFrameHash
 from app.db.models.risk_signal import RiskSignal
 from app.db.models.session import ClassSession
 from app.db.models.user import User
@@ -17,6 +18,7 @@ __all__ = [
     "Course",
     "Device",
     "Enrollment",
+    "LivenessFrameHash",
     "RiskSignal",
     "ClassSession",
     "User",

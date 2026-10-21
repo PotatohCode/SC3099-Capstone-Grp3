@@ -34,6 +34,7 @@ from app.core.metrics import (
 from app.db.models.checkin import CheckIn
 from app.db.models.device import Device
 from app.db.models.enrollment import Enrollment
+from app.db.models.liveness_frame_hash import LivenessFrameHash
 from app.db.models.risk_signal import RiskSignal
 from app.db.models.session import ClassSession
 from app.db.models.user import User
@@ -47,23 +48,26 @@ from app.schemas.checkin import (
     CheckinReviewResponse,
     FlaggedCheckinItem,
     FlaggedCheckinRiskFactor,
+    LivenessChallengeRequest,
+    LivenessChallengeResponse,
     MyCheckinItem,
     RiskFactorItem,
     SessionCheckinItem,
 )
 from app.schemas.common import Page, page_limit
-from app.services import face_client, geofencing, risk_scoring, singapore_check
+from app.services import face_client, geofencing, liveness_challenge, risk_scoring, singapore_check
 from app.services.audit import log_event, log_security_violation
 from app.services.client_ip import get_client_ip
 from app.services.authz import can_manage_session, require_manage_session
 from app.services.rate_limit import enforce_rate_limit
 from app.services.sanitize import sanitize_text
-from app.services.uploads import require_image_size
+from app.services.uploads import require_frames_size, require_image_size
 
 router = APIRouter(prefix="/checkins", tags=["checkins"])
 settings = get_settings()
 
 APPEAL_WINDOW_DAYS = 7
+CHALLENGES_PER_MINUTE = 30  # per student; a retry needs a fresh challenge
 
 
 def _now() -> datetime:
@@ -81,6 +85,32 @@ def _image_hash(image_b64: str) -> str:
     except (binascii.Error, ValueError):
         raw = image_b64.encode()
     return hashlib.sha256(raw).hexdigest()
+
+
+def _submission_hash(image_hashes: List[str]) -> str:
+    """What goes in checkins.liveness_image_hash: the photo's own hash for a
+    single image (unchanged from before frame bursts), otherwise one hash
+    over the burst's frame hashes in order. Replay detection itself uses the
+    per-image rows in liveness_frame_hashes."""
+    if len(image_hashes) == 1:
+        return image_hashes[0]
+    return hashlib.sha256(":".join(image_hashes).encode()).hexdigest()
+
+
+def _stored_challenge_type(
+    sequence: Optional[List[str]], challenge_attempted: bool, client_type: Optional[str], has_image: bool
+) -> Optional[str]:
+    """checkins.liveness_challenge_type: the server-issued sequence
+    ("blink,turn_left"); "sequence" if a challenge was named but couldn't be
+    read (Redis down); else the client's declared type or "passive" when
+    there was an image; None without one."""
+    if sequence:
+        return ",".join(sequence)
+    if challenge_attempted:
+        return "sequence"
+    if has_image:
+        return client_type or "passive"
+    return None
 
 
 def _parse_risk_factors(raw: Optional[str]) -> List[RiskFactorItem]:
@@ -148,6 +178,7 @@ def create_checkin(
 ):
     enforce_rate_limit(f"rate_limit:{current_user.id}:checkin", settings.RATE_LIMIT_CHECKIN_PER_MINUTE, 60)
     require_image_size(payload.liveness_challenge_response)
+    require_frames_size(payload.liveness_challenge_frames)
     checkin_attempts_total.inc()
 
     session_obj = (
@@ -224,6 +255,34 @@ def create_checkin(
             status.HTTP_403_FORBIDDEN, "Check-in only allowed from within Singapore", ErrorCode.OUTSIDE_SINGAPORE
         )
 
+    # --- Liveness challenge (services/liveness_challenge.py) -----------------
+    # Consumed before any Module 3 call, so a challenge is single use even if
+    # this check-in fails later. A bad challenge stores nothing (400), so the
+    # app can fetch a new one and retry.
+    challenge_sequence: Optional[List[str]] = None
+    challenge_attempted = False
+    if payload.challenge_id:
+        challenge_attempted = True
+        consumed = liveness_challenge.consume(payload.challenge_id, current_user.id, session_obj.id)
+        if consumed.status == liveness_challenge.ConsumeStatus.OK:
+            challenge_sequence = consumed.sequence
+        elif consumed.status != liveness_challenge.ConsumeStatus.UNAVAILABLE:
+            # UNAVAILABLE (Redis down) falls through as "challenged but
+            # unverifiable", which caps the outcome at flagged below.
+            if consumed.status in (
+                liveness_challenge.ConsumeStatus.REUSED, liveness_challenge.ConsumeStatus.OTHER_STUDENT
+            ):
+                log_security_violation(
+                    db, "challenge_reuse", user_id=current_user.id, resource_type="session",
+                    resource_id=session_obj.id, ip_address=client_ip, user_agent=request.headers.get("user-agent"),
+                    details={"reason": consumed.status.value},
+                )
+                db.commit()
+            raise APIError(
+                status.HTTP_400_BAD_REQUEST, "Liveness challenge is invalid or expired; request a new one",
+                ErrorCode.CHALLENGE_INVALID,
+            )
+
     # --- Device resolution -------------------------------------------------
     device = (
         db.query(Device)
@@ -241,17 +300,26 @@ def create_checkin(
         else None
     )
 
-    # --- Replay check: same student re-submitting a previously used photo --
-    liveness_image_hash: Optional[str] = None
-    replay_suspected = False
-    if payload.liveness_challenge_response:
-        liveness_image_hash = _image_hash(payload.liveness_challenge_response)
-        replay_suspected = (
-            db.query(CheckIn.id)
-            .filter(CheckIn.student_id == current_user.id, CheckIn.liveness_image_hash == liveness_image_hash)
-            .first()
-            is not None
+    # --- Images: one photo and/or a frame burst --------------------------------
+    frames = payload.liveness_challenge_frames or []
+    images = ([payload.liveness_challenge_response] if payload.liveness_challenge_response else []) + frames
+    # One image for face verify and for older Module 3 builds: the photo if
+    # sent, else the middle frame of the burst.
+    primary_image = payload.liveness_challenge_response or (frames[len(frames) // 2] if frames else None)
+
+    # --- Replay check: same student re-submitting any previously used image --
+    # Per image, so reusing even one frame of an earlier burst is caught.
+    image_hashes = [_image_hash(img) for img in images]
+    unique_image_hashes = list(dict.fromkeys(image_hashes))
+    liveness_image_hash: Optional[str] = _submission_hash(image_hashes) if image_hashes else None
+    replay_suspected = bool(unique_image_hashes) and (
+        db.query(LivenessFrameHash.id)
+        .filter(
+            LivenessFrameHash.student_id == current_user.id, LivenessFrameHash.frame_hash.in_(unique_image_hashes)
         )
+        .first()
+        is not None
+    )
 
     # --- Proxy sign-in: same device used by other students just now --------
     device_fingerprint_hash = hashlib.sha256(payload.device_fingerprint.encode()).hexdigest()
@@ -273,18 +341,44 @@ def create_checkin(
     face_match_score: Optional[float] = None
     current_face_hash: Optional[str] = None
 
-    if payload.liveness_challenge_response:
-        liveness_result = face_client.check_liveness(payload.liveness_challenge_response)
+    challenge_passed: Optional[bool] = None
+
+    if primary_image:
+        sent_challenge_type = "sequence" if challenge_attempted else (payload.challenge_type or "passive")
+        liveness_result = face_client.check_liveness(
+            primary_image, sent_challenge_type, frames=frames or None, challenge_sequence=challenge_sequence
+        )
         if liveness_result is not None:
             liveness_passed = liveness_result.get("liveness_passed")
             liveness_score = liveness_result.get("liveness_score", 0.0) or 0.0
+            challenge_passed = liveness_result.get("challenge_passed")
+
+        # A challenged check-in needs Module 3 to confirm the steps. Not
+        # performed -> failed liveness (rejected, appealable). No answer
+        # (older build, Redis down, call failed) -> unverified, so it's never
+        # auto-approved; a spoof verdict (False) still stands.
+        if challenge_attempted:
+            if challenge_passed is False:
+                liveness_passed = False
+            elif challenge_passed is not True and liveness_passed is not False:
+                liveness_passed = None
 
         if current_user.face_embedding_hash:
-            verify_result = face_client.verify_face(payload.liveness_challenge_response, current_user.face_embedding_hash)
+            verify_result = face_client.verify_face(primary_image, current_user.face_embedding_hash)
             if verify_result is not None:
                 face_match_passed = verify_result.get("match_passed")
                 face_match_score = verify_result.get("match_score")
                 current_face_hash = verify_result.get("current_template_hash")
+
+    # LIVENESS_CHALLENGE_ENFORCEMENT=flag: on a liveness-required session,
+    # only a passed server-issued challenge counts as verified liveness.
+    if (
+        settings.LIVENESS_CHALLENGE_ENFORCEMENT == "flag"
+        and session_obj.require_liveness_check
+        and not (challenge_sequence and challenge_passed is True)
+        and liveness_passed is True
+    ):
+        liveness_passed = None
 
     # --- Risk scoring: prefer Module 3's /risk/assess, else local fallback --
     # Only worth the round-trip if we actually have image-derived signals
@@ -292,7 +386,7 @@ def create_checkin(
     # face_match, and effectively device) would be blank anyway, and the
     # geo signal is already computed independently via geofencing above.
     remote_risk = None
-    if payload.liveness_challenge_response:
+    if primary_image:
         risk_request = {
             "liveness_score": liveness_score,
             "face_match_score": face_match_score,
@@ -371,7 +465,9 @@ def create_checkin(
         distance_from_venue_meters=distance,
         liveness_passed=liveness_passed,
         liveness_score=liveness_score,
-        liveness_challenge_type="passive" if payload.liveness_challenge_response else None,
+        liveness_challenge_type=_stored_challenge_type(
+            challenge_sequence, challenge_attempted, payload.challenge_type, bool(primary_image)
+        ),
         face_match_passed=face_match_passed,
         face_match_score=face_match_score,
         face_embedding_hash=current_face_hash,
@@ -387,6 +483,9 @@ def create_checkin(
     )
     db.add(checkin)
     db.flush()
+
+    for frame_hash in unique_image_hashes:
+        db.add(LivenessFrameHash(checkin_id=checkin.id, student_id=current_user.id, frame_hash=frame_hash))
 
     for signal in assessment.signals:
         db.add(RiskSignal(
@@ -424,6 +523,55 @@ def create_checkin(
     db.commit()
     db.refresh(checkin)
     return _to_full_response(checkin)
+
+
+# =============================================================================
+# POST /checkins/challenge
+# =============================================================================
+
+@router.post("/challenge", response_model=LivenessChallengeResponse, status_code=status.HTTP_201_CREATED)
+def issue_liveness_challenge(
+    payload: LivenessChallengeRequest,
+    current_user: User = Depends(require_role("student")),
+    db: Session = Depends(get_db),
+):
+    """Random liveness challenge for the next check-in (see
+    services/liveness_challenge.py). Same session guards as a check-in, so
+    the app learns early that it can't check in at all."""
+    enforce_rate_limit(f"rate_limit:{current_user.id}:challenge", CHALLENGES_PER_MINUTE, 60)
+
+    session_obj = db.query(ClassSession).filter(ClassSession.id == payload.session_id).first()
+    if session_obj is None:
+        raise APIError(status.HTTP_404_NOT_FOUND, "Session not found", ErrorCode.SESSION_NOT_FOUND)
+    is_enrolled = (
+        db.query(Enrollment.id)
+        .filter(
+            Enrollment.student_id == current_user.id,
+            Enrollment.course_id == session_obj.course_id,
+            Enrollment.is_active.is_(True),
+        )
+        .first()
+        is not None
+    )
+    if not is_enrolled:
+        raise APIError(status.HTTP_403_FORBIDDEN, "Not enrolled in this course", ErrorCode.NOT_ENROLLED)
+    if session_obj.status != "active":
+        raise APIError(status.HTTP_400_BAD_REQUEST, "Session is not active", ErrorCode.SESSION_NOT_ACTIVE)
+    now = _now()
+    if not (session_obj.checkin_opens_at <= now <= session_obj.checkin_closes_at):
+        raise APIError(status.HTTP_400_BAD_REQUEST, "Check-in window is closed", ErrorCode.SESSION_WINDOW_CLOSED)
+
+    try:
+        issued = liveness_challenge.issue(current_user.id, session_obj.id)
+    except liveness_challenge.ChallengeUnavailable:
+        raise APIError(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "Liveness challenges are temporarily unavailable",
+            ErrorCode.CHALLENGE_UNAVAILABLE,
+        )
+    return LivenessChallengeResponse(
+        challenge_id=issued.challenge_id, session_id=session_obj.id, sequence=issued.sequence,
+        expires_at=issued.expires_at, max_frames=settings.MAX_LIVENESS_FRAMES,
+    )
 
 
 # =============================================================================

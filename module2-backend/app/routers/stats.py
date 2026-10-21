@@ -45,6 +45,7 @@ from app.schemas.stats import (
     TimelinePoint,
 )
 from app.services.authz import can_edit_course, require_edit_course, require_manage_session
+from app.services.roster import active_student_enrollments
 
 router = APIRouter(prefix="/stats", tags=["stats"])
 
@@ -102,7 +103,7 @@ def stats_overview(
 
     sessions_q = db.query(ClassSession)
     courses_q = db.query(Course)
-    enrollments_q = db.query(Enrollment).filter(Enrollment.is_active.is_(True))
+    enrollments_q = active_student_enrollments(db)
     if scope is not None:
         sessions_q = sessions_q.filter(ClassSession.course_id.in_(scope or {""}))
         courses_q = courses_q.filter(Course.id.in_(scope or {""}))
@@ -172,11 +173,7 @@ def session_stats(
         raise APIError(404, "Session not found", ErrorCode.SESSION_NOT_FOUND)
     require_manage_session(db, current_user, session_obj)
 
-    total_enrolled = (
-        db.query(Enrollment)
-        .filter(Enrollment.course_id == session_obj.course_id, Enrollment.is_active.is_(True))
-        .count()
-    )
+    total_enrolled = active_student_enrollments(db).filter(Enrollment.course_id == session_obj.course_id).count()
     checkins = db.query(CheckIn).filter(CheckIn.session_id == session_id).all()
 
     by_status = ByStatusCounts()
@@ -231,9 +228,7 @@ def course_stats(
     require_edit_course(current_user, course)
 
     sessions = db.query(ClassSession).filter(ClassSession.course_id == course_id).all()
-    total_enrolled = (
-        db.query(Enrollment).filter(Enrollment.course_id == course_id, Enrollment.is_active.is_(True)).count()
-    )
+    total_enrolled = active_student_enrollments(db).filter(Enrollment.course_id == course_id).count()
 
     checkins_by_session = {}
     session_summaries = []
@@ -256,9 +251,9 @@ def course_stats(
     flagged_checkins = sum(1 for cs in checkins_by_session.values() for c in cs if c.status == "flagged")
 
     enrollments = (
-        db.query(Enrollment)
+        active_student_enrollments(db)
         .options(joinedload(Enrollment.student))
-        .filter(Enrollment.course_id == course_id, Enrollment.is_active.is_(True))
+        .filter(Enrollment.course_id == course_id)
         .all()
     )
     total_sessions = len(sessions)

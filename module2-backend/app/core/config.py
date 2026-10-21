@@ -9,6 +9,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -137,6 +138,33 @@ class Settings(BaseSettings):
     # above that, checked from Content-Length before the body is read.
     MAX_IMAGE_BASE64_CHARS: int = 10_000_000
     MAX_REQUEST_BODY_BYTES: int = 15_000_000
+
+    # --- Liveness frame bursts and challenges ------------------------------------
+    # A check-in can send a short burst of frames (liveness_challenge_frames)
+    # instead of one photo, captured while the student performs a challenge.
+    # 30 frames fits a 3-step challenge at ~8 frames per step. Each frame is
+    # also held to MAX_IMAGE_BASE64_CHARS, and the 15 MB body cap still
+    # applies to the whole request.
+    MAX_LIVENESS_FRAMES: int = Field(default=30, ge=1)
+    # Analysing a burst takes Module 3 longer than one image. Used only for
+    # /liveness/check calls that carry frames; every other call keeps 5 s.
+    LIVENESS_TIMEOUT_SECONDS: float = Field(default=15.0, gt=0)
+    # Server-issued challenges (POST /checkins/challenge): a random sequence
+    # of actions, single use, bound to one student and session. No action
+    # repeats back to back, so every 2-step sequence includes a head turn
+    # (the part a pre-recorded video can't predict).
+    LIVENESS_CHALLENGE_ACTIONS: list[str] = ["blink", "turn_left", "turn_right"]
+    LIVENESS_CHALLENGE_STEPS: int = Field(default=2, ge=1, le=3)
+    LIVENESS_CHALLENGE_TTL_SECONDS: int = Field(default=90, ge=10)
+    # LIVENESS_CHALLENGE_ENFORCEMENT - on a session that requires liveness:
+    #   off  - a check-in without a valid challenge is scored as before
+    #          (single-image passive liveness can still approve it)
+    #   flag - without a passed challenge, liveness counts as unverified,
+    #          so the check-in is at most "flagged"
+    # Off by default: needs Module 1 (prompts + burst capture) and Module 3
+    # (challenge_passed) first; with it on today, every check-in from the
+    # website would go to review.
+    LIVENESS_CHALLENGE_ENFORCEMENT: Literal["off", "flag"] = "off"
 
     # --- CORS ----------------------------------------------------------------
     CORS_ORIGINS: list[str] = [

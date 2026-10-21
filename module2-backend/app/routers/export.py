@@ -31,6 +31,7 @@ from app.schemas.export import ExportRecord, SessionExportResponse, SessionExpor
 from app.services.audit import log_event
 from app.services.client_ip import get_client_ip
 from app.services.authz import require_export_course, require_manage_session
+from app.services.roster import active_student_enrollments
 
 router = APIRouter(prefix="/export", tags=["export"])
 
@@ -137,11 +138,7 @@ def export_session_attendance(
         raise APIError(404, "Session not found", ErrorCode.SESSION_NOT_FOUND)
     require_manage_session(db, current_user, session_obj)
 
-    total_enrolled = (
-        db.query(Enrollment)
-        .filter(Enrollment.course_id == session_obj.course_id, Enrollment.is_active.is_(True))
-        .count()
-    )
+    total_enrolled = active_student_enrollments(db).filter(Enrollment.course_id == session_obj.course_id).count()
     checkins = (
         db.query(CheckIn)
         .options(joinedload(CheckIn.student), joinedload(CheckIn.session))

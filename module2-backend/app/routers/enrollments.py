@@ -5,7 +5,7 @@ routers/admin.py (POST /admin/enrollments/).
 """
 import secrets
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session, joinedload
@@ -63,6 +63,7 @@ def course_enrollments(
     course_id: str,
     is_active: bool = True,
     search: Optional[str] = None,
+    role: Optional[Literal["student", "ta"]] = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -80,6 +81,8 @@ def course_enrollments(
     if search:
         like = f"%{search}%"
         query = query.filter((User.full_name.ilike(like)) | (User.email.ilike(like)))
+    if role:
+        query = query.filter(User.role == role)
     enrollments = query.all()
 
     return CourseEnrollmentsResponse(
@@ -92,6 +95,7 @@ def course_enrollments(
                 student_id=e.student_id,
                 student_email=e.student.email,
                 student_name=e.student.full_name,
+                role=e.student.role,
                 enrolled_at=e.enrolled_at,
                 is_active=e.is_active,
                 face_enrolled=e.student.face_enrolled,

@@ -39,6 +39,9 @@ class CourseEnrollmentStudent(BaseModel):
     student_id: str
     student_email: str
     student_name: str
+    # "student" or "ta": TAs are attached to a course as enrollment rows
+    # too. Lets clients (e.g. an "absent students" list) skip TAs.
+    role: str
     enrolled_at: datetime
     is_active: bool
     face_enrolled: bool
