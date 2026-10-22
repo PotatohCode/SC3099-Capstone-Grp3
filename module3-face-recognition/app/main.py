@@ -18,16 +18,29 @@ Recommended Libraries:
 """
 
 import base64
+import functools
+import os
+import re
 import threading
+import time
 from io import BytesIO
 
 import face_recognition
 import mediapipe as mp
 import numpy as np
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
+from prometheus_client import (
+    CONTENT_TYPE_LATEST,
+    CollectorRegistry,
+    Counter,
+    Histogram,
+    generate_latest,
+    multiprocess,
+)
 from pydantic import BaseModel
+from starlette.middleware.base import BaseHTTPMiddleware
 from typing import Optional, Dict, List, Any
 
 app = FastAPI(
@@ -43,6 +56,86 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# =============================================================================
+# METRICS (GET /metrics, scraped by module4-observability/prometheus.yml)
+# =============================================================================
+#
+# Names start with face_ instead of reusing the backend's
+# http_request_duration_seconds: Module 4's system-health dashboard sums that
+# name across every scrape job, so face-service latency (seconds, under load)
+# would be mixed into the backend's API latency and error-rate panels.
+#
+# Each uvicorn worker process keeps its own counters, and a scrape reaches only
+# one worker. When PROMETHEUS_MULTIPROC_DIR is set (the Dockerfile sets it),
+# prometheus_client writes every worker's values into that folder and /metrics
+# reports their sum. Without it (e.g. a local single-process run), the normal
+# in-process registry is used.
+
+face_request_duration_seconds = Histogram(
+    "face_request_duration_seconds",
+    "Face service request latency in seconds",
+    ["method", "path", "status_code"],
+    # 5 s and 15 s are the backend's timeouts (single image / frame burst).
+    buckets=(0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 15, 30, 60),
+)
+face_enroll_total = Counter("face_enroll_total", "Face enrollments by outcome", ["outcome"])
+face_verify_total = Counter("face_verify_total", "Face verifications by outcome", ["outcome"])
+face_liveness_total = Counter("face_liveness_total", "Liveness checks by outcome", ["outcome"])
+
+
+class MetricsMiddleware(BaseHTTPMiddleware):
+    """
+    Records face_request_duration_seconds for every request. The path label
+    is the route template (e.g. "/face/verify"), not the raw URL, and
+    requests that match no route are labelled "unmatched", so random URLs
+    can't create unbounded label values.
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        start = time.perf_counter()
+        response = await call_next(request)
+        route = request.scope.get("route")
+        face_request_duration_seconds.labels(
+            method=request.method,
+            path=getattr(route, "path", None) or "unmatched",
+            status_code=str(response.status_code),
+        ).observe(time.perf_counter() - start)
+        return response
+
+
+app.add_middleware(MetricsMiddleware)
+
+
+def _count_outcome(counter, outcome_of):
+    """
+    Decorator for a sync endpoint: once it returns, increment `counter`
+    with outcome=outcome_of(response). This keeps counting out of the
+    endpoints' many early returns. functools.wraps preserves the endpoint's
+    signature and docstring, which FastAPI reads for request parsing and
+    /docs.
+    """
+    def decorator(endpoint):
+        @functools.wraps(endpoint)
+        def wrapper(*args, **kwargs):
+            response = endpoint(*args, **kwargs)
+            counter.labels(outcome=outcome_of(response)).inc()
+            return response
+        return wrapper
+    return decorator
+
+
+def _enroll_outcome(response):
+    return "success" if response.enrollment_successful else "failed"
+
+
+def _verify_outcome(response):
+    return {True: "match", False: "no_match"}.get(response.match_passed, "not_compared")
+
+
+def _liveness_outcome(response):
+    return {True: "passed", False: "failed"}.get(response.liveness_passed, "not_assessed")
 
 
 # =============================================================================
@@ -140,6 +233,21 @@ async def health_check():
     return {"status": "healthy", "service": "SAIV Face Recognition & Risk Service"}
 
 
+@app.get("/metrics")
+async def metrics():
+    """
+    Prometheus metrics (see the METRICS section above). A plain route, as in
+    module2-backend, rather than mounting prometheus_client's ASGI app:
+    Starlette's Mount redirects /metrics to /metrics/, which a scraper may not
+    follow. Sums all worker processes when PROMETHEUS_MULTIPROC_DIR is set.
+    """
+    if os.environ.get("PROMETHEUS_MULTIPROC_DIR"):
+        registry = CollectorRegistry()
+        multiprocess.MultiProcessCollector(registry)
+        return Response(content=generate_latest(registry), media_type=CONTENT_TYPE_LATEST)
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
 @app.get("/")
 async def root():
     """
@@ -162,6 +270,7 @@ async def root():
             "/face/match",
             "/liveness/check",
             "/risk/assess",
+            "/metrics",
         ]
     }
 
@@ -176,6 +285,7 @@ _QUALITY_FACE_AREA_RATIO_TARGET = 0.15  # face covering ~15% of frame -> full ma
 
 
 @app.post("/face/enroll", response_model=FaceEnrollResponse, status_code=201)
+@_count_outcome(face_enroll_total, _enroll_outcome)
 def enroll_face(request: FaceEnrollRequest):
     """
     Enroll a user's face for future verification.
@@ -293,6 +403,7 @@ def enroll_face(request: FaceEnrollRequest):
 # =============================================================================
 
 @app.post("/face/verify", response_model=FaceVerifyResponse)
+@_count_outcome(face_verify_total, _verify_outcome)
 def verify_face(request: FaceVerifyRequest):
     """
     Verify a face against an enrolled template.
@@ -418,6 +529,7 @@ def match_face(request: FaceVerifyRequest):
 # =============================================================================
 
 @app.post("/liveness/check", response_model=LivenessResponse)
+@_count_outcome(face_liveness_total, _liveness_outcome)
 def check_liveness(request: LivenessRequest):
     """
     Perform liveness detection on submitted image.
@@ -733,7 +845,12 @@ def decode_base64_image(base64_string: str) -> np.ndarray:
     Implemented: raises ValueError if the string isn't valid base64, or
     doesn't decode to a readable image. Callers (the endpoint handlers)
     are responsible for turning that into the appropriate HTTP error.
+
+    Whitespace (spaces, line breaks) is removed before decoding: base64
+    wrapped across lines is still valid data, but validate=True rejects it,
+    which made /face/verify report "couldn't compare" for a good photo.
     """
+    base64_string = "".join((base64_string or "").split())
     if not base64_string:
         raise ValueError("Image data is empty")
 
@@ -1040,6 +1157,9 @@ def detect_blink(face_mesh_landmarks):
     pass
 
 
+_VPN_USER_AGENT_PATTERN = re.compile(r"vpn|proxy|tunnel|\btor\b", re.IGNORECASE)
+
+
 def detect_vpn_proxy(ip_address: str, user_agent: str) -> tuple:
     """
     Detect VPN/proxy usage.
@@ -1053,37 +1173,30 @@ def detect_vpn_proxy(ip_address: str, user_agent: str) -> tuple:
     Return (is_vpn: bool, confidence: float)
 
     ---
-    Implemented per the bullets above. Note docs/API-SPECIFICATION.md's
-    own "Quick Start" sample code only checks 172.16-172.19 (a narrower,
-    incomplete range) - this follows this docstring's explicit "172.16-31"
-    instead, checking the second octet numerically rather than hardcoding
-    16 string prefixes.
+    Only the user-agent keyword check is implemented. Private and loopback
+    IPs (the first two bullets) are deliberately NOT treated as VPN signs,
+    superseding this starter TODO:
+    - The course's later clarification says private/local addresses
+      (192.168.x, 10.x, 127.x) "may be treated as on-campus and allowed".
+    - module2-backend asks for the same (CHANGES-2026-10-01.md, Module 3
+      §A): inside docker-compose every request reaches us from a private
+      172.x address, so flagging them added VPN risk to every genuine
+      check-in.
+    Whether a public IP is outside Singapore is checked by the backend
+    (GeoIP) before it calls us, so nothing here looks at the IP at all;
+    `ip_address` stays in the signature for callers and future checks.
+
+    "tor" must be a whole word: as a plain substring it matched ordinary
+    user agents, e.g. Android phones that include "motorola" in their user
+    agent. "vpn", "proxy" and "tunnel" are still matched anywhere, so
+    "vpn-client" and "myvpnapp" both count.
     """
     is_vpn = False
     confidence = 0.0
 
-    if ip_address:
-        if ip_address == "::1" or ip_address.startswith("127."):
-            is_vpn = True
-            confidence = 0.7
-        elif ip_address.startswith("10.") or ip_address.startswith("192.168."):
-            is_vpn = True
-            confidence = 0.7
-        else:
-            octets = ip_address.split(".")
-            if len(octets) == 4 and octets[0] == "172":
-                try:
-                    if 16 <= int(octets[1]) <= 31:
-                        is_vpn = True
-                        confidence = 0.7
-                except ValueError:
-                    pass
-
-    if user_agent:
-        vpn_keywords = ("vpn", "proxy", "tunnel", "tor")
-        if any(keyword in user_agent.lower() for keyword in vpn_keywords):
-            is_vpn = True
-            confidence = max(confidence, 0.8)
+    if user_agent and _VPN_USER_AGENT_PATTERN.search(user_agent):
+        is_vpn = True
+        confidence = 0.8
 
     return is_vpn, confidence
 
