@@ -24,6 +24,7 @@ from app.schemas.user import (
 from app.services import face_client
 from app.services.audit import log_event
 from app.services.authz import can_edit_course
+from app.services.partial_update import drop_nulls_for_required
 from app.services.sanitize import sanitize_text
 from app.services.uploads import require_image_size
 
@@ -100,10 +101,14 @@ def enroll_face(
         )
 
     require_image_size(payload.image)
-    result = face_client.enroll_face(current_user.id, payload.image, current_user.camera_consent)
+    user_id, consent = current_user.id, current_user.camera_consent
+    # Don't hold a DB connection while Module 3 works (see the same step in
+    # routers/checkins.py create_checkin). Nothing is pending here.
+    db.commit()
+    result = face_client.enroll_face(user_id, payload.image, consent)
     if result is None:
-        # Module 3 timed out / errored / is a 501 stub (see KNOWN-ISSUES.md) -
-        # degrade to a real 503, not a crash or a fake success.
+        # Module 3 timed out / errored / answered 4xx or 5xx - degrade to a
+        # real 503, not a crash or a fake success.
         raise APIError(
             status.HTTP_503_SERVICE_UNAVAILABLE, "Face recognition service unavailable",
             ErrorCode.FACE_SERVICE_UNAVAILABLE,
@@ -189,7 +194,7 @@ def update_user(
     if user is None:
         raise APIError(status.HTTP_404_NOT_FOUND, "User not found", ErrorCode.USER_NOT_FOUND)
 
-    updates = payload.model_dump(exclude_unset=True)
+    updates = drop_nulls_for_required(User, payload.model_dump(exclude_unset=True))
     for field, value in updates.items():
         setattr(user, field, value)
 

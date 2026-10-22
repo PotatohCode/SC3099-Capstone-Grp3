@@ -20,9 +20,11 @@ not an outage of the whole API, same resilience philosophy as the Face
 Service calls (see services/face_client.py).
 """
 import logging
+import time
 from typing import Optional, Tuple
 
 import redis
+from redis.client import Pipeline
 
 from app.core.config import get_settings
 from app.core.errors import APIError, ErrorCode
@@ -31,12 +33,72 @@ logger = logging.getLogger("saiv.rate_limit")
 
 _client: Optional[redis.Redis] = None
 
+# Fail fast while Redis is down. Every caller already treats RedisError as
+# "fail open", but each failing call first waited for the connection to
+# fail: ~4 s when the redis host doesn't resolve (container stopped),
+# measured. An authenticated request makes 2-4 Redis calls, so with Redis
+# down every request took 8-16 s. After a connection failure, calls skip
+# Redis (raise ConnectionError at once) for this long. When the window ends,
+# the first caller probes and the window is renewed straight away, so
+# everyone else keeps failing fast instead of all probing at once; a
+# successful call clears it.
+_DOWN_SECONDS = 5.0
+_down_until = 0.0  # 0 = Redis considered up
+
+
+def _raise_if_down() -> None:
+    global _down_until
+    if _down_until == 0.0:
+        return
+    now = time.monotonic()
+    if now < _down_until:
+        raise redis.ConnectionError("Redis marked unavailable (fail-fast window)")
+    _down_until = now + _DOWN_SECONDS  # this caller probes; others keep failing fast
+
+
+def _mark_down() -> None:
+    global _down_until
+    _down_until = time.monotonic() + _DOWN_SECONDS
+
+
+def _mark_up() -> None:
+    global _down_until
+    _down_until = 0.0
+
+
+class _FailFastPipeline(Pipeline):
+    def execute(self, raise_on_error=True):
+        _raise_if_down()
+        try:
+            result = super().execute(raise_on_error)
+        except (redis.ConnectionError, redis.TimeoutError):
+            _mark_down()
+            raise
+        _mark_up()
+        return result
+
+
+class _FailFastRedis(redis.Redis):
+    def execute_command(self, *args, **options):
+        _raise_if_down()
+        try:
+            result = super().execute_command(*args, **options)
+        except (redis.ConnectionError, redis.TimeoutError):
+            _mark_down()
+            raise
+        _mark_up()
+        return result
+
+    def pipeline(self, transaction=True, shard_hint=None):
+        _raise_if_down()
+        return _FailFastPipeline(self.connection_pool, self.response_callbacks, transaction, shard_hint)
+
 
 def _get_client() -> redis.Redis:
     global _client
     if _client is None:
         settings = get_settings()
-        _client = redis.Redis.from_url(
+        _client = _FailFastRedis.from_url(
             settings.REDIS_URL, decode_responses=True, socket_connect_timeout=2.0, socket_timeout=2.0
         )
     return _client

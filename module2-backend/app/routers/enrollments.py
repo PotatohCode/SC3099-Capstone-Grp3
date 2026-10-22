@@ -28,6 +28,7 @@ from app.schemas.enrollment import (
 )
 from app.services.audit import log_event
 from app.services.authz import require_edit_course, require_staff_course
+from app.services.enrollment import EnrollOutcome, enroll
 
 router = APIRouter(prefix="/enrollments", tags=["enrollments"])
 
@@ -119,21 +120,9 @@ def create_enrollment(
     if db.get(User, payload.student_id) is None:
         raise APIError(status.HTTP_404_NOT_FOUND, "Student not found", ErrorCode.STUDENT_NOT_FOUND)
 
-    existing = (
-        db.query(Enrollment)
-        .filter(Enrollment.student_id == payload.student_id, Enrollment.course_id == payload.course_id)
-        .first()
-    )
-    if existing is not None:
+    enrollment, outcome = enroll(db, payload.student_id, payload.course_id, actor_id=current_user.id)
+    if outcome == EnrollOutcome.ALREADY_ENROLLED:
         raise APIError(status.HTTP_400_BAD_REQUEST, "Student already enrolled", ErrorCode.ALREADY_ENROLLED)
-
-    enrollment = Enrollment(student_id=payload.student_id, course_id=payload.course_id)
-    db.add(enrollment)
-    db.flush()
-    log_event(
-        db, "enrollment_added", user_id=current_user.id, resource_type="enrollment", resource_id=enrollment.id,
-        details={"student_id": payload.student_id, "course_id": payload.course_id},
-    )
     db.commit()
     db.refresh(enrollment)
     return enrollment
@@ -175,23 +164,11 @@ def bulk_enroll(
             log_event(db, "user_created", user_id=student.id, resource_type="user", resource_id=student.id)
             created += 1
 
-        existing = (
-            db.query(Enrollment)
-            .filter(Enrollment.student_id == student.id, Enrollment.course_id == payload.course_id)
-            .first()
-        )
-        if existing is not None:
+        _, outcome = enroll(db, student.id, payload.course_id, actor_id=current_user.id, via="bulk")
+        if outcome == EnrollOutcome.ALREADY_ENROLLED:
             already_enrolled += 1
             details.append(EnrollmentBulkDetailItem(email=email, status="already_enrolled"))
             continue
-
-        enrollment = Enrollment(student_id=student.id, course_id=payload.course_id)
-        db.add(enrollment)
-        db.flush()
-        log_event(
-            db, "enrollment_added", user_id=current_user.id, resource_type="enrollment", resource_id=enrollment.id,
-            details={"student_id": student.id, "course_id": payload.course_id, "via": "bulk"},
-        )
         enrolled += 1
         details.append(EnrollmentBulkDetailItem(email=email, status="enrolled"))
 

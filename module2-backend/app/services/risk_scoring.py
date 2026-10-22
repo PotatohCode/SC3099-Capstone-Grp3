@@ -3,8 +3,8 @@ Multi-signal risk scoring for check-ins (Task 2.7 / SECURITY-REQUIREMENTS.md).
 
 Prefers Module 3's POST /risk/assess (the full 5-signal weighted formula -
 see IMPLEMENTATION-PLAN.md's gotcha on this) when reachable, as the base
-score. When it isn't (currently: always, since Module 3 is a 501 stub -
-see KNOWN-ISSUES.md), falls back to compute_fallback_risk()'s local
+score. When it isn't (service down, timed out or circuit open, or no
+photo was sent), falls back to compute_fallback_risk()'s local
 approximation using only the signals Module 2 can see without Module 3:
 liveness, geofence distance, device trust.
 
@@ -25,6 +25,8 @@ from typing import Any, Optional
 # approved vs flagged; 0.3 doesn't need its own branch since anything
 # under the - always <= 0.5 - threshold is already "approved").
 CRITICAL_THRESHOLD = 0.7
+# Highest score a check-in without a liveness result can get (see assess()).
+UNVERIFIED_SCORE_CAP = 0.69
 
 # Signal severity rule: "critical" is reserved for signals that hard-reject
 # the check-in on their own (liveness failed, GPS > 2x geofence, face
@@ -118,9 +120,15 @@ def compute_fallback_risk(
 ) -> float:
     """Local approximation used only when Module 3's /risk/assess itself
     is unreachable. distance_ratio = distance_meters / geofence_radius, or
-    None if no venue is configured (treated as no geo signal, not risky)."""
+    None if no venue is configured (treated as no geo signal, not risky).
+
+    Inside the geofence the geo component is 0: being 10 m from the venue
+    isn't a risk (the spec's geolocation signal is about accuracy and
+    validity, and the geofence is checked separately via geo_out_of_bounds).
+    It used to scale with distance, which pushed no-liveness check-ins
+    standing in the room past CRITICAL."""
     liveness_component = 1.0 - liveness_score
-    geo_component = 0.0 if distance_ratio is None else min(distance_ratio, 1.0)
+    geo_component = 0.0 if distance_ratio is None or distance_ratio <= 1.0 else 1.0
     if device_trusted is None:
         device_component = 0.5  # unknown - uncertain, not assumed worst-case
     else:
@@ -164,7 +172,9 @@ def assess(
       can't be auto-approved and is flagged for review instead. These
       "unverified" signals carry weight 0: they cap the outcome at flagged
       without moving the score, so an unverifiable check-in is never
-      rejected outright just because a service was down."""
+      rejected outright just because a service was down. Without a
+      liveness result the score itself is also capped below CRITICAL
+      (UNVERIFIED_SCORE_CAP), since a missing result counts as full risk."""
     signals: list[RiskSignal] = []
     hard_reject = False
     needs_review = False
@@ -254,6 +264,17 @@ def assess(
 
     score = base_risk_score + sum(s.weight for s in signals)
     score = round(min(max(score, 0.0), 1.0), 4)
+
+    # No liveness result (no photo, Module 3 down / timed out / no face
+    # found, or an unconfirmed challenge): a missing result counts as full
+    # liveness risk, so the score alone can reach CRITICAL even for a
+    # genuine student in the room. Unverified must mean review, not
+    # auto-reject, so cap it just under CRITICAL (keeping "CRITICAL =
+    # auto-reject" true) and force review so a high course threshold can't
+    # approve it either. Hard-reject signals still reject.
+    if liveness_passed is None and not hard_reject and score >= CRITICAL_THRESHOLD:
+        score = UNVERIFIED_SCORE_CAP
+        needs_review = True
 
     if hard_reject or score >= CRITICAL_THRESHOLD:
         status = "rejected"

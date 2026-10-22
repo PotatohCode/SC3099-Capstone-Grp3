@@ -14,6 +14,7 @@ otherwise the doc does.
 """
 import csv
 import io
+import re
 from datetime import datetime
 from typing import List, Optional
 
@@ -79,6 +80,15 @@ def _to_csv(records: List[ExportRecord]) -> str:
     return buf.getvalue()
 
 
+def _safe_filename_part(value: str, fallback: str) -> str:
+    """Session names and course codes are free text, but they go into the
+    Content-Disposition header: a quote or line break there breaks the
+    header, and a non-latin-1 character can't be sent at all. Keep only
+    characters that are safe in any filename."""
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("._")[:80]
+    return cleaned or fallback
+
+
 def _csv_response(csv_text: str, filename: str) -> Response:
     return Response(
         content=csv_text, media_type="text/csv",
@@ -121,7 +131,7 @@ def export_course_attendance(
     db.commit()
 
     if format == "csv":
-        return _csv_response(_to_csv(records), f"attendance_{course.code}.csv")
+        return _csv_response(_to_csv(records), f"attendance_{_safe_filename_part(course.code, course.id)}.csv")
     return records
 
 
@@ -155,7 +165,7 @@ def export_session_attendance(
     db.commit()
 
     if format == "csv":
-        return _csv_response(_to_csv(records), f"session_{session_obj.name}.csv")
+        return _csv_response(_to_csv(records), f"session_{_safe_filename_part(session_obj.name, session_obj.id)}.csv")
 
     attended = [c for c in checkins if c.status not in NON_ATTENDANCE_STATUSES]
     approved = [c for c in checkins if c.status == "approved"]

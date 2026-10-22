@@ -20,6 +20,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy import text
+from sqlalchemy.exc import DataError, IntegrityError, OperationalError
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -57,6 +58,36 @@ class BodySizeLimitMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+def _internal_error(request: Request) -> JSONResponse:
+    request_id = getattr(request.state, "request_id", None)
+    return JSONResponse(
+        status_code=500, content={"detail": "Internal server error", "code": ErrorCode.INTERNAL_ERROR},
+        headers={"X-Request-ID": request_id} if request_id else None,
+    )
+
+
+class UnhandledErrorMiddleware(BaseHTTPMiddleware):
+    """Turns an unexpected exception into our 500 JSON *here*, inside the
+    user middleware. Left to Starlette's outermost ServerErrorMiddleware
+    (the Exception handler below), the error is re-raised after the 500 is
+    sent and the server drops the keep-alive connection without a
+    `Connection: close`, so the client's *next* request on that connection
+    fails too (measured: every 500 cost a second request). Handled here, the
+    connection stays usable, and metrics, CORS and X-Request-ID all see a
+    normal 500 response. Added first, so it's the innermost middleware."""
+
+    async def dispatch(self, request: Request, call_next):
+        try:
+            return await call_next(request)
+        except Exception:
+            logger.exception(
+                "Unhandled exception on %s %s [request_id=%s]",
+                request.method, request.url.path, getattr(request.state, "request_id", None),
+            )
+            return _internal_error(request)
+
+
+app.add_middleware(UnhandledErrorMiddleware)
 app.add_middleware(BodySizeLimitMiddleware)
 
 app.add_middleware(
@@ -127,18 +158,80 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException) 
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail, "code": code}, headers=exc.headers)
 
 
+def _invalid_input(detail: str) -> JSONResponse:
+    return JSONResponse(status_code=400, content={"detail": detail, "code": ErrorCode.INVALID_INPUT})
+
+
+@app.exception_handler(ValueError)
+async def value_error_handler(request: Request, exc: ValueError) -> JSONResponse:
+    """psycopg2 refuses any string containing a NUL character (raised as a
+    plain ValueError when the query runs), so "\\x00" / "%00" in a path id,
+    a query filter or a body field used to be a 500. It's bad input: 400.
+    Any other ValueError is unexpected: logged, generic 500."""
+    if "NUL (0x00)" in str(exc):
+        return _invalid_input("Input contains a NUL character")
+    logger.exception("Unhandled ValueError on %s %s", request.method, request.url.path)
+    return _internal_error(request)
+
+
+@app.exception_handler(DataError)
+async def data_error_handler(request: Request, exc: DataError) -> JSONResponse:
+    """The database rejected a value: a number out of range (e.g.
+    offset=10^20 overflows bigint), a malformed value, and so on. That's
+    the client's input, not a server fault: 400, without the SQL details."""
+    logger.warning("Database rejected input on %s %s: %s", request.method, request.url.path, exc.orig)
+    return _invalid_input("A value is out of range or not valid")
+
+
+# Unique constraints/indexes -> the error the endpoint's own "already exists?"
+# check returns. That check and the INSERT aren't atomic: two identical
+# requests at the same instant both pass the check, and the loser hits the
+# constraint here (measured: 20 parallel duplicates -> up to 71% 500s).
+# The data was always safe; this only fixes the answer.
+_UNIQUE_VIOLATIONS = {
+    "ix_users_email": ("Email already registered", ErrorCode.EMAIL_ALREADY_REGISTERED),
+    "ix_courses_code": ("Course code already exists", ErrorCode.COURSE_CODE_TAKEN),
+    "uq_enrollment_student_course": ("Student already enrolled", ErrorCode.ALREADY_ENROLLED),
+    "uq_checkin_session_student": ("Already checked in for this session", ErrorCode.ALREADY_CHECKED_IN),
+    "ix_devices_device_fingerprint": (
+        "Device fingerprint already registered to another user", ErrorCode.DEVICE_FINGERPRINT_TAKEN,
+    ),
+}
+
+
+@app.exception_handler(IntegrityError)
+async def integrity_error_handler(request: Request, exc: IntegrityError) -> JSONResponse:
+    constraint = getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
+    if constraint in _UNIQUE_VIOLATIONS:
+        detail, code = _UNIQUE_VIOLATIONS[constraint]
+        return JSONResponse(status_code=400, content={"detail": detail, "code": code})
+    logger.exception("Unhandled IntegrityError on %s %s", request.method, request.url.path)
+    return _internal_error(request)
+
+
+@app.exception_handler(OperationalError)
+async def operational_error_handler(request: Request, exc: OperationalError) -> JSONResponse:
+    """Database unreachable (or a transient failure like a deadlock). Not a
+    bug in the request or the server: 503 so clients know to retry, rather
+    than a 500. The pool's pre-ping reconnects once Postgres is back."""
+    logger.error("Database unavailable on %s %s: %s", request.method, request.url.path, exc.orig)
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "Service temporarily unavailable, please retry", "code": ErrorCode.SERVICE_UNAVAILABLE},
+        headers={"Retry-After": "5"},
+    )
+
+
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     """Never leak internals (per API-SPECIFICATION.md's Error Responses
-    section) - log the real error server-side, return the generic message."""
-    # Unhandled errors are answered outside the user middleware stack, so
-    # attach the request id here too.
-    request_id = getattr(request.state, "request_id", None)
-    logger.exception("Unhandled exception on %s %s [request_id=%s]", request.method, request.url.path, request_id)
-    return JSONResponse(
-        status_code=500, content={"detail": "Internal server error", "code": ErrorCode.INTERNAL_ERROR},
-        headers={"X-Request-ID": request_id} if request_id else None,
+    section) - log the real error server-side, return the generic message.
+    Backstop only: UnhandledErrorMiddleware normally answers first."""
+    logger.exception(
+        "Unhandled exception on %s %s [request_id=%s]",
+        request.method, request.url.path, getattr(request.state, "request_id", None),
     )
+    return _internal_error(request)
 
 
 @app.on_event("startup")

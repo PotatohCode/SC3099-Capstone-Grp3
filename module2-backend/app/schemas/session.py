@@ -3,13 +3,15 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
+from app.schemas.common import EscapedLabel, EscapedName
+
 SessionType = Literal["lecture", "tutorial", "lab", "exam"]
 SessionStatusLiteral = Literal["scheduled", "active", "closed", "cancelled"]
 
 
 class SessionCreate(BaseModel):
     course_id: str
-    name: str = Field(min_length=1, max_length=255)
+    name: EscapedName
     session_type: SessionType = "lecture"
     description: Optional[str] = None
     scheduled_start: datetime
@@ -20,8 +22,8 @@ class SessionCreate(BaseModel):
     checkin_closes_at: Optional[datetime] = None
     venue_latitude: Optional[float] = Field(default=None, ge=-90, le=90)
     venue_longitude: Optional[float] = Field(default=None, ge=-180, le=180)
-    venue_name: Optional[str] = None
-    geofence_radius_meters: Optional[float] = None
+    venue_name: Optional[EscapedLabel] = None
+    geofence_radius_meters: Optional[float] = Field(default=None, gt=0)
     require_liveness_check: bool = True
     require_face_match: bool = False
     risk_threshold: Optional[float] = Field(default=None, ge=0, le=1)
@@ -30,7 +32,7 @@ class SessionCreate(BaseModel):
 class SessionUpdate(BaseModel):
     """PATCH /sessions/{session_id} - partial update, any subset of fields."""
 
-    name: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    name: Optional[EscapedName] = None
     session_type: Optional[SessionType] = None
     description: Optional[str] = None
     scheduled_start: Optional[datetime] = None
@@ -40,8 +42,8 @@ class SessionUpdate(BaseModel):
     status: Optional[SessionStatusLiteral] = None
     venue_latitude: Optional[float] = Field(default=None, ge=-90, le=90)
     venue_longitude: Optional[float] = Field(default=None, ge=-180, le=180)
-    venue_name: Optional[str] = None
-    geofence_radius_meters: Optional[float] = None
+    venue_name: Optional[EscapedLabel] = None
+    geofence_radius_meters: Optional[float] = Field(default=None, gt=0)
     require_liveness_check: Optional[bool] = None
     require_face_match: Optional[bool] = None
     risk_threshold: Optional[float] = Field(default=None, ge=0, le=1)

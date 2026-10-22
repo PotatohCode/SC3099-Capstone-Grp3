@@ -3,12 +3,13 @@ from typing import List, Literal
 from pydantic import BaseModel, EmailStr, Field
 
 from app.schemas.auth import Role
+from app.schemas.common import PASSWORD_MAX_LENGTH, EscapedName
 
 
 class AdminUserBulkItem(BaseModel):
     email: EmailStr
-    password: str = Field(min_length=8)
-    full_name: str = Field(min_length=1, max_length=255)
+    password: str = Field(min_length=8, max_length=PASSWORD_MAX_LENGTH)
+    full_name: EscapedName
     role: Role = "student"
 
 

@@ -3,7 +3,7 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
-from app.schemas.common import Role
+from app.schemas.common import EscapedName, Role
 
 
 class UserResponse(BaseModel):
@@ -23,7 +23,7 @@ class UserResponse(BaseModel):
 class UserUpdateRequest(BaseModel):
     """PUT /users/me - all fields optional, only supplied ones are changed."""
 
-    full_name: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    full_name: Optional[EscapedName] = None
     camera_consent: Optional[bool] = None
     geolocation_consent: Optional[bool] = None
 
