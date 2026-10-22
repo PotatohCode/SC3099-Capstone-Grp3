@@ -5,8 +5,10 @@ Read [API-CONVENTIONS.md](API-CONVENTIONS.md) for general context, but note:
 call *us*; for Module 3, **Module 2 calls you.** This is the contract your
 service implements so our calls succeed. For **what changed and what you
 need to do**, see [CHANGES-2026-10-01.md](CHANGES-2026-10-01.md) §1 and the
-Module 3 guide in §4. Last updated 2026-10-20 (frame-burst liveness and
-server-issued challenges: §3).
+Module 3 guide in §4. Last updated 2026-10-22 (corrections: frames are not
+mirrored, and what to return for "no face" on `/face/verify`; see
+CHANGES §3.9). Frame-burst liveness and server-issued challenges: §3
+(2026-10-20).
 
 ---
 
@@ -85,9 +87,12 @@ hard-fail because you're down. A slow service still gets cut off at 5 s.
   - On failure we use `None` → on a face-required session the check-in is
     **flagged for review**, not rejected.
 - **Only return `match_passed: false` when you've actually compared two
-  faces and they differ.** For "no face found" or "can't decide", prefer an
-  error, or return the low score with `face_detected: false`, rather than a
-  confident `false`.
+  faces and they differ.** We read only `match_passed`, `match_score` and
+  `current_template_hash`; any other field (e.g. `face_detected`) is
+  ignored, so a `false` is a hard reject whatever else you send. For "no
+  face found" or "can't decide", return **`match_passed: null`** (→ flagged
+  for review), or a **4xx** (that call alone falls back, and the circuit
+  breaker stays closed).
 
 ### 3. `POST /liveness/check`
 
@@ -120,8 +125,16 @@ a short burst while performing a challenge:
   | Action | What to detect across the frames |
   |---|---|
   | `blink` | Eyes open → closed → open (eye aspect ratio from the face mesh) |
-  | `turn_left` | Head yaw to the **student's** left past a threshold, then back toward centre. Front cameras mirror the image: handle that on your side |
-  | `turn_right` | Same, to the right |
+  | `turn_left` | Head yaw to the **student's** left past a threshold, then back toward centre. Frames are **not mirrored** (see below), so the face turns toward the **image's right** |
+  | `turn_right` | Same, to the student's right (toward the image's left) |
+
+  **Frames are never mirrored.** The app captures the raw camera image
+  (`getUserMedia` → canvas, no flip), so you see what someone facing the
+  student would see: the student's left is the image's right. If the app
+  ever mirrors its on-screen preview, that's CSS only and doesn't change
+  the frames. Yaw sign conventions differ between libraries, so check yours
+  with a quick test (turn to your own left on camera and log the yaw) rather
+  than assuming the sign.
 
   More actions (`nod`, `open_mouth`) may be added later in the same format.
   Treat an unknown action as "not performed".

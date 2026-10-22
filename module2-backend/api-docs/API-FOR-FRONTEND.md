@@ -7,8 +7,11 @@ pagination, rate limits). For **what changed and what you need to do**, see
 
 This covers every endpoint your UI is likely to call, across all four roles
 (student/instructor/ta/admin), since one frontend serves all of them. Each
-entry notes who can call it. Last updated 2026-10-20 (liveness challenges
-and frame bursts in §7; `role` on the course roster in §5).
+entry notes who can call it. Last updated 2026-10-22 (corrections, see
+CHANGES §3.9: challenge left/right and mirroring in §7, no-photo outcome,
+413 order, `PUT /courses` can't change `code`). Liveness challenges and
+frame bursts in §7 and `role` on the course roster in §5 date from
+2026-10-20.
 
 ---
 
@@ -134,7 +137,8 @@ Only `code`/`name`/`semester` are required. **201** → `CourseResponse`.
 always rejected (above 0.7 nothing gets flagged).
 
 ### `PUT /api/v1/courses/{id}` — **admin only**
-Same fields as create, all optional, plus `is_active`. **403
+Same fields as create, all optional, plus `is_active`, **except `code`**,
+which can't be changed (a `code` in the body is silently ignored). **403
 INSUFFICIENT_PERMISSIONS** for any non-admin, including the course's own
 instructor. Show course editing to admins only.
 
@@ -215,7 +219,8 @@ Plain array of `{ id, course_id, course_code, course_name, semester, instructor_
 **Assigned TAs are on this list too** (that's how TA access works), with
 `role: "ta"`. Add `?role=student` (or `?role=ta`) to get only one kind;
 `total_enrolled` counts what's returned. Optional `?search=` filters by name
-or email.
+or email. `?is_active=false` lists removed enrollments instead (default
+`true`).
 
 ### `POST /api/v1/enrollments/` — instructor/admin who owns the course
 `{ "student_id": "...", "course_id": "..." }` → **201**. **400 ALREADY_ENROLLED**.
@@ -273,9 +278,11 @@ Get a random liveness challenge for the next check-in.
 { "challenge_id": "...", "session_id": "...", "sequence": ["blink", "turn_left"],
   "expires_at": "2026-10-20T04:01:30", "max_frames": 30 }
 ```
-- `sequence`: 2 steps by default, from `blink`, `turn_left`, `turn_right`
-  (the **student's** left; your preview is probably mirrored). Never the same
-  step twice in a row. More actions may be added later: show a generic
+- `sequence`: 2 steps by default, from `blink`, `turn_left`, `turn_right`.
+  Left/right are the **student's own** left/right, so prompt them that way.
+  Send the frames exactly as captured: **never flip them**. If you mirror
+  the on-screen preview (selfie style), do it in CSS only; that doesn't
+  affect what `drawImage` captures. Never the same step twice in a row. More actions may be added later: show a generic
   prompt for one you don't recognise.
 - **Expires after ~90 s and works once.** Fetch it right before capturing.
   `expires_at` is **UTC** with no `Z` (like every timestamp; see
@@ -324,8 +331,9 @@ under 10,000,000 base64 characters, and the whole request under 15 MB.
 | Response | Meaning | UI |
 |---|---|---|
 | `429 RATE_LIMITED` | More than 10 check-ins per minute | Wait and retry |
-| `413 IMAGE_TOO_LARGE` | Photo, or any one frame, over the size limit | "Photo too large, retake" |
+| `413 IMAGE_TOO_LARGE` | Photo over the size limit | "Photo too large, retake" |
 | `413 TOO_MANY_FRAMES` | More than 30 frames | Send fewer frames |
+| `413 IMAGE_TOO_LARGE` | Any one frame over the size limit | Retake with smaller frames |
 | `404 SESSION_NOT_FOUND` | Unknown session | |
 | `403 NOT_ENROLLED` | Not enrolled in the course | |
 | `400 SESSION_NOT_ACTIVE` / `SESSION_WINDOW_CLOSED` | Not open right now | |
@@ -351,14 +359,18 @@ under 10,000,000 base64 characters, and the whole request under 15 MB.
 - `risk_level` ∈ `LOW|MEDIUM|HIGH|CRITICAL`. Use it for the badge; CRITICAL
   is a rejection.
 - `latitude`/`longitude` come back rounded to 4 decimals (privacy rule).
-- **A check-in without a photo is always `flagged`** (~0.68 risk), because a
-  missing liveness result counts as full risk. Auto-approval needs a photo,
-  and on face-required sessions an enrolled face.
+- **On liveness-required sessions (the default), a check-in without a photo
+  is always `flagged`**, since there's no liveness result to verify. It
+  also scores high (~0.68 from an unregistered device), because a missing
+  liveness result counts as full risk. Auto-approval needs a photo, and on
+  face-required sessions an enrolled face. (On a session with
+  `require_liveness_check: false`, a no-photo check-in from an
+  admin-trusted device can score under the threshold and be approved.)
 - The full list of `risk_factors` types and what each means is in
   [CHANGES §5.3](CHANGES-2026-10-01.md#53-risk-factor-types).
 
 ### `GET /api/v1/checkins/my-checkins` — student only
-Plain array: `{ id, session_id, session_name, course_code, status, checked_in_at, risk_score, risk_level }`.
+Query: `course_id` (optional), `limit` (default 50, max 100). Plain array: `{ id, session_id, session_name, course_code, status, checked_in_at, risk_score, risk_level }`.
 
 ### `GET /api/v1/checkins/{id}` — the owning student, or staff who manage the session
 → full `CheckinResponse`.
