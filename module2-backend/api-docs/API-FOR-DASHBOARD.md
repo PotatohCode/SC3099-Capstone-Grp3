@@ -3,8 +3,10 @@
 Read [API-CONVENTIONS.md](API-CONVENTIONS.md) first (auth, error format,
 pagination). For **what changed and what you need to do**, see
 [CHANGES-2026-10-01.md](CHANGES-2026-10-01.md) §1 and the Module 4 guide in
-§4. Last updated 2026-10-20 (student counts exclude TAs; `challenge_reuse`
-violation type).
+§4. Last updated 2026-10-22 (corrections, see CHANGES §3.9: what
+`flagged_pending` counts, and what the course-stats date filter covers).
+Student counts excluding TAs and the `challenge_reuse` violation type date
+from 2026-10-20.
 
 This covers the `/stats/*` analytics, `/export/*` data export, `/audit/*`
 compliance log, and `/metrics` for Prometheus/Grafana. Everything here needs
@@ -53,6 +55,9 @@ window only).
   session in, or are TA-assigned to; admins see everything.
 - **Windowing:** `approval_rate` / `average_attendance_rate` are all-time;
   only `trends` uses `days`.
+- **`flagged_pending` / `flagged_pending_review` count `flagged` only.**
+  The review queue (`GET /checkins/flagged`) also includes `appealed`
+  rows, so its `total` can be higher.
 
 **Attendance rate, everywhere in this file:** `rejected` check-ins
 (blocked fraud) are excluded from every "attendance"/"attended" figure.
@@ -92,8 +97,11 @@ auto-rejected). So "high" here means HIGH + CRITICAL.
   "low_attendance_alerts": [{ "student_id", "student_name", "attendance_rate": 0.0, "sessions_missed": 0 }]
 }
 ```
-- `start_date`/`end_date` (optional) filter which check-ins count toward the
-  per-session breakdown.
+- `start_date`/`end_date` (optional) filter which check-ins count, for
+  **every** figure: `sessions`, `student_attendance`,
+  `low_attendance_alerts` and `flagged_checkins`. `total_sessions` (and so
+  each student's denominator) still counts **every** session in the
+  course, so per-student rates drop when a date range is set.
 - `low_attendance_alerts` uses a **0.75** attendance-rate threshold. That's
   our own default (the spec doesn't give one); ask if you need it
   configurable.

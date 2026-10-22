@@ -11,7 +11,8 @@ Read this first, then whichever of these applies to you:
 > baseline; where anything here disagrees, that document is newer.
 
 This describes the **implemented behaviour** of the Module 2 backend as of
-**2026-10-01**: the course's public test suite passes in full (92/92 points).
+**2026-10-22** (last correction: CHANGES §3.9): the course's public test
+suite passes in full (92/92 points).
 Where the written course spec and the implementation differ, this is what's
 actually running; the reasons are given in CHANGES-2026-10-01.md.
 
@@ -43,10 +44,12 @@ Authorization: Bearer <access_token>
 - Token claims: `sub` (user id), `email`, `role`, `type` (`access` or
   `refresh`), `iat`, `exp`, `jti` (unique id, used for revocation). Don't
   rely on claims beyond what `/users/me` returns.
-- **401** = missing, invalid, expired or revoked token. **403** = valid token
-  but wrong role or ownership, a disabled/deleted account, or a business
-  rule (e.g. `OUTSIDE_SINGAPORE`, `PASSWORD_INCORRECT`). Don't conflate the
-  two: only 401 should trigger "refresh token, then log out".
+- **401** = missing, invalid, expired or revoked token, **or a token that
+  belongs to a disabled/deleted account** (refreshing it also gets `401`).
+  **403** = valid token but wrong role or ownership, or a business rule
+  (e.g. `OUTSIDE_SINGAPORE`, `PASSWORD_INCORRECT`). A disabled/deleted
+  account gets `403 ACCOUNT_DISABLED` only from **login**. Don't conflate
+  the two: only 401 should trigger "refresh token, then log out".
 
 ## Roles
 
@@ -110,6 +113,7 @@ All 429s include a `Retry-After` header (seconds), readable from browser code.
 | Login failures | 100,000/hour | IP | `429 RATE_LIMITED` (course asked for a high value) |
 | Registration | 100,000/hour | IP | `429 RATE_LIMITED` |
 | Check-in submission | 10/minute | user | `429 RATE_LIMITED` |
+| Liveness challenge (`POST /checkins/challenge`) | 30/minute | user | `429 RATE_LIMITED` |
 | Everything else | 1000/hour | user | `429 RATE_LIMITED` |
 
 ## Request and response details
