@@ -18,6 +18,7 @@ Recommended Libraries:
 """
 
 import base64
+import threading
 from io import BytesIO
 
 import face_recognition
@@ -71,7 +72,9 @@ class FaceVerifyRequest(BaseModel):
 
 class FaceVerifyResponse(BaseModel):
     """Response model for face verification."""
-    match_passed: bool
+    # None when no comparison happened (undecodable image, no face, invalid
+    # reference hash): module2 hard-rejects on False for face-required sessions.
+    match_passed: Optional[bool]
     match_score: float  # 0.0 to 1.0
     match_threshold: float  # Default: 0.70
     face_detected: bool
@@ -173,7 +176,7 @@ _QUALITY_FACE_AREA_RATIO_TARGET = 0.15  # face covering ~15% of frame -> full ma
 
 
 @app.post("/face/enroll", response_model=FaceEnrollResponse, status_code=201)
-async def enroll_face(request: FaceEnrollRequest):
+def enroll_face(request: FaceEnrollRequest):
     """
     Enroll a user's face for future verification.
 
@@ -290,7 +293,7 @@ async def enroll_face(request: FaceEnrollRequest):
 # =============================================================================
 
 @app.post("/face/verify", response_model=FaceVerifyResponse)
-async def verify_face(request: FaceVerifyRequest):
+def verify_face(request: FaceVerifyRequest):
     """
     Verify a face against an enrolled template.
 
@@ -314,8 +317,12 @@ async def verify_face(request: FaceVerifyRequest):
     graceful-degrade contract (API-FOR-FACE-RECOGNITION.md: on failure
     they set face_match_passed/score to None without failing the
     check-in). decode failures, no detection, and no usable embedding are
-    all treated the same way: face_detected=False, match_passed=False,
-    match_score=0.0, current_template_hash="".
+    all treated the same way: face_detected=False, match_passed=None,
+    match_score=0.0, current_template_hash="". None, not False:
+    API-FOR-FACE-RECOGNITION.md reserves False for "compared two faces and
+    they differ" - module2 reads only match_passed and hard-rejects on False
+    for face-required sessions, so a blurry photo must not look like a
+    different person. tests/public's no-face test accepts face_detected=False.
 
     match_passed is decided directly against dlib's own documented
     threshold (_DLIB_EUCLIDEAN_MATCH_THRESHOLD = 0.6 euclidean distance),
@@ -340,14 +347,15 @@ async def verify_face(request: FaceVerifyRequest):
     A reference_template_hash that isn't a valid 64-char hex SimHash
     (e.g. empty string, from a user who never successfully enrolled, or
     not valid hex) can't be compared - _hamming_distance raises
-    ValueError, treated as "no match" (match_score=0.0) rather than a
-    crash, since it's an expected data state, not a service failure.
+    ValueError, treated as "couldn't compare" (match_passed=None,
+    match_score=0.0) rather than a crash, since it's an expected data
+    state, not a service failure.
     """
     try:
         image_array = decode_base64_image(request.image)
     except ValueError:
         return FaceVerifyResponse(
-            match_passed=False,
+            match_passed=None,
             match_score=0.0,
             match_threshold=0.70,
             face_detected=False,
@@ -357,7 +365,7 @@ async def verify_face(request: FaceVerifyRequest):
     detection = detect_face(image_array)
     if detection is None:
         return FaceVerifyResponse(
-            match_passed=False,
+            match_passed=None,
             match_score=0.0,
             match_threshold=0.70,
             face_detected=False,
@@ -367,7 +375,7 @@ async def verify_face(request: FaceVerifyRequest):
     embedding = extract_face_embedding(image_array, detection)
     if embedding is None:
         return FaceVerifyResponse(
-            match_passed=False,
+            match_passed=None,
             match_score=0.0,
             match_threshold=0.70,
             face_detected=False,
@@ -384,7 +392,7 @@ async def verify_face(request: FaceVerifyRequest):
         match_passed = bool(estimated_euclidean <= _DLIB_EUCLIDEAN_MATCH_THRESHOLD)
         match_score = max(0.0, 1 - estimated_euclidean / 2.0)
     except ValueError:
-        match_passed = False
+        match_passed = None
         match_score = 0.0
 
     return FaceVerifyResponse(
@@ -397,12 +405,12 @@ async def verify_face(request: FaceVerifyRequest):
 
 
 @app.post("/face/match")
-async def match_face(request: FaceVerifyRequest):
+def match_face(request: FaceVerifyRequest):
     """
     Legacy face matching endpoint. Redirects to /face/verify.
     Kept for backwards compatibility.
     """
-    return await verify_face(request)
+    return verify_face(request)
 
 
 # =============================================================================
@@ -410,7 +418,7 @@ async def match_face(request: FaceVerifyRequest):
 # =============================================================================
 
 @app.post("/liveness/check", response_model=LivenessResponse)
-async def check_liveness(request: LivenessRequest):
+def check_liveness(request: LivenessRequest):
     """
     Perform liveness detection on submitted image.
 
@@ -626,6 +634,12 @@ async def assess_risk(request: RiskAssessRequest):
     Recommendations reuse the exact strings from
     docs/API-SPECIFICATION.md's "Recommendations Logic" section, since
     that's the only place specific wording is given.
+
+    `async def`, unlike the image endpoints: it's pure arithmetic with no
+    blocking calls, so it runs directly on the event loop. As a sync
+    handler it needed a thread-pool thread, and under load every thread
+    was taken by image requests queued on _model_lock, so this took
+    seconds instead of milliseconds.
     """
     def _signal_risk(score: Optional[float]) -> float:
         return 1 - max(0.0, min(1.0, score)) if score is not None else 0.0
@@ -733,6 +747,27 @@ def decode_base64_image(base64_string: str) -> np.ndarray:
     return np.array(image)
 
 
+# --- Shared face models (one set per process) ---
+#
+# The route handlers are plain `def`, so FastAPI runs them on a thread pool
+# (~40 threads) and quick endpoints like /risk/assess no longer wait behind
+# image work. The face models themselves, though, are used by one request at
+# a time per process, under _model_lock:
+# - dlib (via face_recognition) is ~95% of each request's time and its models
+#   are module-level objects that aren't safe to call from several threads at
+#   once, so it was going to be one-at-a-time anyway.
+# - MediaPipe solution objects aren't thread-safe either. An earlier version
+#   gave each thread its own copy instead; under load that built dozens of
+#   models at once after a restart (100 parallel requests hung for 120s) and
+#   left ~40 threads competing for the CPU, which delayed every response.
+# Threads waiting on the lock are idle, so the server stays responsive.
+# Running several requests at once comes from uvicorn worker processes
+# (WEB_CONCURRENCY in the Dockerfile), each with its own models and lock.
+_model_lock = threading.Lock()
+_face_detector = mp.solutions.face_detection.FaceDetection(model_selection=0, min_detection_confidence=0.5)
+_face_mesh_static = mp.solutions.face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1, min_detection_confidence=0.5)
+
+
 def detect_face(image_array):
     """
     Detect faces in an image using MediaPipe.
@@ -747,11 +782,11 @@ def detect_face(image_array):
     Implemented: uses mediapipe.solutions.face_detection.FaceDetection with
     min_detection_confidence=0.5. Returns the highest-confidence detection
     result (with its confidence score), or None if no face was detected.
+    Uses the process-wide _face_detector under _model_lock (built once at
+    import) rather than constructing a detector on every call.
     """
-    with mp.solutions.face_detection.FaceDetection(
-        model_selection=0, min_detection_confidence=0.5
-    ) as face_detector:
-        results = face_detector.process(image_array)
+    with _model_lock:
+        results = _face_detector.process(image_array)
 
     if not results.detections:
         return None
@@ -813,27 +848,52 @@ def extract_face_embedding(image_array, detection):
     were tried first and both empirically failed to discriminate real
     people, which a purpose-trained embedding actually does.
 
-    `detection` (from detect_face) is accepted for interface consistency
-    with the rest of the pipeline (enroll_face/verify_face/check_liveness
-    all call this the same way, and enroll_face's quality_score still
-    needs MediaPipe's detection separately) but isn't used here -
-    face_recognition.face_encodings() runs its own internal face
-    detector rather than accepting a pre-computed bounding box. This
-    means detection effectively runs twice (MediaPipe once, dlib once)
-    per request, which is wasteful but deliberately kept simple and
-    matches exactly what was empirically validated before switching -
-    optimizing that away (e.g. by passing detection's bounding box in as
-    known_face_locations) is a reasonable later improvement, not done
-    here to avoid changing two things at once.
+    `detection` (from detect_face) supplies the face box: it's passed to
+    face_recognition.face_encodings() as known_face_locations, so dlib
+    skips its own face detector, which was ~60-85% of each request's time
+    (0.8-2.3s per image vs a steady ~0.35s with the box). Measured on the
+    sample images before switching: same-person distances stayed at
+    0.33-0.43 and obama-vs-biden at 0.81-0.87 (threshold 0.6), and the same
+    image's embedding moved only 0.04-0.07 between the two box sources, so
+    templates enrolled with dlib's own detector still match. If MediaPipe's
+    box is unusable (degenerate after clamping to the image), dlib's own
+    detector is used as before.
 
-    Returns None if dlib's own detector can't find/encode a face (can
-    happen even when MediaPipe's detect_face already succeeded, since
-    they're different detectors and can disagree).
+    Returns None if no face can be encoded.
+
+    The dlib call runs under _model_lock, since its models are shared
+    module-level objects that aren't safe to use from several threads at
+    once.
     """
-    encodings = face_recognition.face_encodings(image_array)
+    face_box = _dlib_face_box(image_array, detection)
+    with _model_lock:
+        if face_box is not None:
+            encodings = face_recognition.face_encodings(image_array, known_face_locations=[face_box])
+        else:
+            encodings = face_recognition.face_encodings(image_array)
     if not encodings:
         return None
     return encodings[0]
+
+
+def _dlib_face_box(image_array, detection):
+    """
+    Convert a MediaPipe detection into dlib's (top, right, bottom, left) pixel
+    box, clamped to the image. MediaPipe gives a box relative to image size
+    that can extend past the edges for faces partly out of frame. Returns
+    None if there's no detection or the clamped box has no area.
+    """
+    if detection is None:
+        return None
+    height, width = image_array.shape[:2]
+    box = detection.location_data.relative_bounding_box
+    top = max(0, int(box.ymin * height))
+    left = max(0, int(box.xmin * width))
+    bottom = min(height, int((box.ymin + box.height) * height))
+    right = min(width, int((box.xmin + box.width) * width))
+    if bottom <= top or right <= left:
+        return None
+    return (top, right, bottom, left)
 
 
 def generate_face_hash(embedding) -> str:
@@ -925,12 +985,11 @@ def analyze_face_mesh(image_array):
     function's own docstring is the more direct instruction for it.
     Runs on the full image (not a pre-cropped region), unlike
     extract_face_embedding, since check_liveness calls this directly on
-    the decoded image.
+    the decoded image. Uses the process-wide _face_mesh_static under
+    _model_lock (built once at import).
     """
-    with mp.solutions.face_mesh.FaceMesh(
-        static_image_mode=True, max_num_faces=1, min_detection_confidence=0.5
-    ) as face_mesh:
-        results = face_mesh.process(image_array)
+    with _model_lock:
+        results = _face_mesh_static.process(image_array)
 
     if not results.multi_face_landmarks:
         return {
