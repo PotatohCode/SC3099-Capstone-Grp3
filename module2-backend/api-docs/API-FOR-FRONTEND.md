@@ -1,17 +1,13 @@
 # Module 2 Backend API — For Module 1 (Frontend)
 
 Read [API-CONVENTIONS.md](API-CONVENTIONS.md) first (auth, error format,
-pagination, rate limits). For **what changed and what you need to do**, see
-[CHANGES-2026-10-01.md](CHANGES-2026-10-01.md) §1 and the Module 1 guide in
-§4.
+pagination, rate limits). **Your tasks:** the Module 1 table in
+[CHANGES-2026-10-01.md](CHANGES-2026-10-01.md). **Why things changed:**
+[CHANGELOG.md](CHANGELOG.md).
 
 This covers every endpoint your UI is likely to call, across all four roles
 (student/instructor/ta/admin), since one frontend serves all of them. Each
-entry notes who can call it. Last updated 2026-10-22 (corrections, see
-CHANGES §3.9: challenge left/right and mirroring in §7, no-photo outcome,
-413 order, `PUT /courses` can't change `code`). Liveness challenges and
-frame bursts in §7 and `role` on the course roster in §5 date from
-2026-10-20.
+entry notes who can call it. Last updated 2026-10-23.
 
 ---
 
@@ -22,7 +18,8 @@ frame bursts in §7 and `role` on the course roster in §5 date from
 { "email": "a@b.com", "password": "min 8 chars", "full_name": "...", "role": "student" }
 ```
 `role` defaults to `"student"`; any of the four roles is accepted.
-**201** → `UserResponse` (§2). **422** password < 8 chars or malformed email.
+**201** → `UserResponse` (§2). **422** password < 8 or > 128 chars, or
+malformed email.
 **400 EMAIL_ALREADY_REGISTERED**.
 
 ### `POST /api/v1/auth/login` — anyone
@@ -48,7 +45,7 @@ A `429` from login in practice always means `ACCOUNT_LOCKED`.
 `user`). **Store the new refresh token.** **401 INVALID_REFRESH_TOKEN** if
 expired, revoked, or an access token was sent.
 
-### `POST /api/v1/auth/logout` — anyone (new)
+### `POST /api/v1/auth/logout` — anyone
 ```json
 { "refresh_token": "..." }        // optional; also send Authorization: Bearer <access>
 ```
@@ -74,9 +71,8 @@ Partial update; send only what changes:
 { "full_name": "...", "camera_consent": true, "geolocation_consent": true }
 ```
 → **200** updated `UserResponse`. **This is how consent is recorded.** Call it
-when the student grants camera/location permission. Today consent is only
-stored in the browser, so the backend sees `false`. This is required for
-face enrolment, and later for consent enforcement on check-in.
+when the student grants camera/location permission. It's required for face
+enrolment, and for consent enforcement on check-in once that's switched on.
 
 ### `POST /api/v1/users/me/face/enroll`
 ```json
@@ -89,18 +85,19 @@ face enrolment, and later for consent enforcement on check-in.
 | `400 CAMERA_CONSENT_REQUIRED` | `camera_consent` is false; call `PUT /users/me` first |
 | `400 NO_FACE_DETECTED` | No usable face in the image |
 | `413 IMAGE_TOO_LARGE` | Image over 10,000,000 base64 characters |
-| `503 FACE_SERVICE_UNAVAILABLE` | Module 3 didn't answer within 5 s; let the user retry |
+| `503 FACE_SERVICE_UNAVAILABLE` | Module 3 failed: it didn't answer in time (~5 s), returned an error, or is temporarily skipped after earlier failures (30 s). Let the user retry |
 
 Without an enrolled face, check-ins on face-required sessions are always
 `flagged`, so an enrolment step matters.
 
-### `DELETE /api/v1/users/me` — new (right to deletion)
+### `DELETE /api/v1/users/me` — any authenticated role (right to deletion)
 ```json
 { "password": "<current password>" }
 ```
 → **202** `{ "message": "...", "scheduled_deletion_at": "..." }`. The account
 is deactivated **immediately** (its tokens stop working and login returns
-`403 ACCOUNT_DISABLED`), and personal data is anonymised after 30 days.
+`403 ACCOUNT_DISABLED`), and personal data, including registered devices,
+is anonymised after 30 days.
 **403 PASSWORD_INCORRECT** for a wrong password. This is deliberately not
 401, so your 401 → refresh → logout logic doesn't fire.
 
@@ -133,12 +130,18 @@ instructor can manage it until one is set).
   "require_device_binding": true, "risk_threshold": 0.5 }
 ```
 Only `code`/`name`/`semester` are required. **201** → `CourseResponse`.
-**400 COURSE_CODE_TAKEN**. `risk_threshold` may be 0–1, but scores ≥ 0.7 are
-always rejected (above 0.7 nothing gets flagged).
+- `code`: letters, digits, spaces, `-` and `_` only, up to 20 characters
+  (else `422`). **400 COURSE_CODE_TAKEN** if it exists.
+- `name` / `venue_name` are stored HTML-escaped.
+- `geofence_radius_meters` must be > 0 (`422`).
+- An `instructor_id` that doesn't exist → **404 USER_NOT_FOUND**.
+- `risk_threshold` may be 0–1, but scores ≥ 0.7 are always rejected (above
+  0.7 nothing gets flagged).
 
 ### `PUT /api/v1/courses/{id}` — **admin only**
 Same fields as create, all optional, plus `is_active`, **except `code`**,
-which can't be changed (a `code` in the body is silently ignored). **403
+which can't be changed (a `code` in the body is silently ignored). `null`
+for a required field is ignored; for an optional one it clears it. **403
 INSUFFICIENT_PERMISSIONS** for any non-admin, including the course's own
 instructor. Show course editing to admins only.
 
@@ -160,7 +163,8 @@ window, **for every course** (not just the student's).
 ### `GET /api/v1/sessions/my-sessions` — any authenticated role
 Query: `status`, `upcoming` (bool), `limit`. Plain array, scoped by role:
 students see their enrolled courses' sessions; instructors/TAs see sessions
-they own or staff; admins see all.
+they own plus every session of the courses they're assigned to as TA;
+admins see all.
 **`status=active` does not check the check-in window.** A session an
 instructor forgot to close stays `active` after its window ends, and a
 check-in then gets `400 SESSION_WINDOW_CLOSED`. For a student's "check in
@@ -197,10 +201,17 @@ assigned TAs aren't included.
 - **`scheduled_start` may not be more than 5 minutes in the past** → `400
   INVALID_SCHEDULE`. End must be after start, and closes after opens.
 - The caller must manage the parent course. **201** → `SessionResponse`.
+- **Owner (`instructor_id`)** = the creator, except when an **admin** creates
+  a session in a course with an assigned instructor: then **that instructor**
+  owns it, so they can start, close, review and see its stats. In a course
+  with no assigned instructor, the admin stays the owner.
+- `name` / `venue_name` are stored HTML-escaped; `geofence_radius_meters`
+  must be > 0.
 
 ### `PATCH /api/v1/sessions/{id}` — instructor or admin who manages it
 Partial update plus `status`. `status: "active"` stamps `actual_start`;
 `"closed"` stamps `actual_end`. Use these for "start/end session" controls.
+`null` for a required field is ignored.
 
 ### `DELETE /api/v1/sessions/{id}` — instructor or admin who manages it
 **204**, a real delete, but **400 SESSION_NOT_DELETABLE** unless
@@ -223,7 +234,11 @@ or email. `?is_active=false` lists removed enrollments instead (default
 `true`).
 
 ### `POST /api/v1/enrollments/` — instructor/admin who owns the course
-`{ "student_id": "...", "course_id": "..." }` → **201**. **400 ALREADY_ENROLLED**.
+`{ "student_id": "...", "course_id": "..." }` → **201**. **400 ALREADY_ENROLLED**
+only if the student is currently enrolled. Re-adding a **removed** student
+reactivates their old enrollment (same `id`, new `enrolled_at`) and
+returns **201**. Bulk enrolment and `POST /admin/enrollments/` behave the
+same way.
 
 ### `POST /api/v1/enrollments/bulk` — instructor/admin who owns the course
 ```json
@@ -269,7 +284,7 @@ Plain array of `{ id, device_fingerprint, device_name, platform, browser, os_ver
 
 ## 7. Check-ins — the core flow
 
-### `POST /api/v1/checkins/challenge` — **student only** (new)
+### `POST /api/v1/checkins/challenge` — **student only**
 Get a random liveness challenge for the next check-in.
 ```json
 // request
@@ -282,8 +297,9 @@ Get a random liveness challenge for the next check-in.
   Left/right are the **student's own** left/right, so prompt them that way.
   Send the frames exactly as captured: **never flip them**. If you mirror
   the on-screen preview (selfie style), do it in CSS only; that doesn't
-  affect what `drawImage` captures. Never the same step twice in a row. More actions may be added later: show a generic
-  prompt for one you don't recognise.
+  affect what `drawImage` captures. Never the same step twice in a row.
+  More actions may be added later: show a generic prompt for one you don't
+  recognise.
 - **Expires after ~90 s and works once.** Fetch it right before capturing.
   `expires_at` is **UTC** with no `Z` (like every timestamp; see
   API-CONVENTIONS), so `2026-10-20T04:01:30` is 12:01:30 in Singapore.
@@ -304,9 +320,9 @@ under 10,000,000 base64 characters, and the whole request under 15 MB.
 { "session_id": "...", "latitude": 1.35, "longitude": 103.68,
   "location_accuracy_meters": 10.0, "device_fingerprint": "...",
   "liveness_challenge_response": "<base64 photo, optional>",
-  "liveness_challenge_frames": ["<base64 frame>", "..."],  // optional, new: burst for a challenge
-  "challenge_id": "...",                                    // optional, new: from /checkins/challenge
-  "challenge_type": null,                                   // optional, new: label only, e.g. "blink"
+  "liveness_challenge_frames": ["<base64 frame>", "..."],  // optional: burst for a challenge
+  "challenge_id": "...",                                    // optional: from /checkins/challenge
+  "challenge_type": null,                                   // optional: label only, e.g. "blink"
   "qr_code": null }
 ```
 - **Two ways to send liveness:** one photo (`liveness_challenge_response`,
@@ -324,6 +340,12 @@ under 10,000,000 base64 characters, and the whole request under 15 MB.
 - **Send full-precision GPS and the real accuracy** from the Geolocation API.
   An accuracy under 1 m is treated as a mocked location
   (`gps_spoof_suspected`, flagged).
+- **Singapore-only rule:** the GPS must be in Singapore (its islands and the
+  straits count; Johor Bahru, Pengerang and Batam don't), **and** the client
+  IP must not be a public IP located outside Singapore. Private/local IPs
+  count as on-campus. Otherwise `403 OUTSIDE_SINGAPORE`, nothing is stored,
+  and the student can retry (e.g. after turning off a VPN). For testing, use
+  NTU (`1.3483, 103.6831`); devtools locations outside Singapore get `403`.
 - `qr_code` is accepted but not checked (QR isn't implemented).
 
 **Checks, in order** (the first failure wins):
@@ -339,7 +361,7 @@ under 10,000,000 base64 characters, and the whole request under 15 MB.
 | `400 SESSION_NOT_ACTIVE` / `SESSION_WINDOW_CLOSED` | Not open right now | |
 | `400 ALREADY_CHECKED_IN` | Already has a check-in for this session | Offer appeal if it was rejected |
 | `403 CONSENT_REQUIRED` | Only if the backend's consent enforcement is set to `reject` (off by default) | Ask for camera + location permission |
-| `403 OUTSIDE_SINGAPORE` | GPS or public IP outside Singapore. **Nothing saved, retry allowed** | "Check-in is only available within Singapore. If you're using a VPN, turn it off and try again." |
+| `403 OUTSIDE_SINGAPORE` | GPS outside Singapore (including Johor Bahru and Batam, just across the straits), or a public IP outside Singapore. **Nothing saved, retry allowed** | "Check-in is only available within Singapore. If you're using a VPN, turn it off and try again." |
 | `400 CHALLENGE_INVALID` | `challenge_id` unknown, expired, already used, or for another session/student. **Nothing saved** | Get a new challenge and redo the steps |
 
 **201** → `CheckinResponse`:
@@ -359,15 +381,43 @@ under 10,000,000 base64 characters, and the whole request under 15 MB.
 - `risk_level` ∈ `LOW|MEDIUM|HIGH|CRITICAL`. Use it for the badge; CRITICAL
   is a rejection.
 - `latitude`/`longitude` come back rounded to 4 decimals (privacy rule).
-- **On liveness-required sessions (the default), a check-in without a photo
-  is always `flagged`**, since there's no liveness result to verify. It
-  also scores high (~0.68 from an unregistered device), because a missing
-  liveness result counts as full risk. Auto-approval needs a photo, and on
-  face-required sessions an enrolled face. (On a session with
-  `require_liveness_check: false`, a no-photo check-in from an
-  admin-trusted device can score under the threshold and be approved.)
-- The full list of `risk_factors` types and what each means is in
-  [CHANGES §5.3](CHANGES-2026-10-01.md#53-risk-factor-types).
+- **A check-in without a liveness result is never auto-rejected** unless a
+  hard-reject signal fires (GPS more than 2× the geofence away, or a
+  replayed image). "Without a liveness result" means no photo, the face
+  service is down, or no face was found. Its score is capped at **0.69**
+  (`HIGH`), and on liveness-required sessions (the default) it's always
+  `flagged` for review. A missing liveness result counts as full risk, so
+  such check-ins score high (~0.68 from an unregistered device).
+  Auto-approval needs a photo, and on face-required sessions an enrolled
+  face. (On a session with `require_liveness_check: false`, a no-photo
+  check-in from an admin-trusted device can score under the threshold and be
+  approved.)
+
+**How the outcome is decided:** a hard-reject signal, or a score ≥ 0.7 →
+`rejected`; else a score ≥ the session's/course's `risk_threshold` (default
+0.5), or a review-only signal → `flagged`; else `approved`. The score is a
+base (Module 3's `/risk/assess` when available, otherwise a local formula)
+plus the weights below, capped at 1.0.
+
+| `risk_factors` type | Severity | Weight | Effect |
+|---|---|---|---|
+| `geo_out_of_bounds` | high (1–2× radius) / **critical** (> 2×) | 0.15 | > 2× geofence → **rejected** |
+| `geo_accuracy_low` | low | 0.05 | Accuracy worse than 100 m |
+| `gps_spoof_suspected` | medium | 0 | Accuracy < 1 m → at most flagged |
+| `device_unknown` | medium / low | 0.10 / 0.05 | Unregistered / registered but not trusted |
+| `impossible_travel` | high | 0.30 | > 250 km/h from the previous check-in |
+| `liveness_failed` | **critical** | 0.25 | **rejected** (also when challenge steps weren't performed) |
+| `liveness_unverified` | high | 0 | Liveness required but no result → at most flagged |
+| `face_match_failed` | **critical** | 0.25 | Face-required session, wrong face → **rejected** |
+| `face_match_unverified` | high | 0 | Face required but no comparison → at most flagged |
+| `replay_suspected` | **critical** | 0.30 | Re-used photo or frame (same student) → **rejected** |
+| `rapid_succession` | high | 0 | Device used by another student < 10 min ago → at most flagged |
+| `unusual_time` | low | 0 | > 15 min after start; informational |
+| `consent_missing` | medium | 0 | Only with `CONSENT_ENFORCEMENT=flag` |
+| `device_unbound` | medium | 0 | Only with `DEVICE_BINDING_ENFORCEMENT=flag` |
+
+**Critical = rejects on its own.** `risk_level` bands: `LOW` < 0.3 ≤
+`MEDIUM` < 0.5 ≤ `HIGH` < 0.7 ≤ `CRITICAL` (always rejected).
 
 ### `GET /api/v1/checkins/my-checkins` — student only
 Query: `course_id` (optional), `limit` (default 50, max 100). Plain array: `{ id, session_id, session_name, course_code, status, checked_in_at, risk_score, risk_level }`.
@@ -394,7 +444,8 @@ Plain array with `risk_factors`, `risk_level` and `device_trusted`. For a
 ### `GET /api/v1/checkins/flagged` — instructor/ta/admin
 Query: `course_id`, `session_id`, `limit` (max 100), `offset`. →
 **paginated** `{items, total, limit, offset}`. Includes `appealed` rows. This
-is the review queue.
+is the review queue. Each item's `risk_factors` are `{type, severity,
+weight}`, where `severity` ∈ `critical|high|medium|low` (table above).
 
 ### `POST /api/v1/checkins/{id}/review` — staff who manage the session
 `{ "status": "approved" | "rejected", "review_notes": "..." }`. Only on
@@ -414,21 +465,34 @@ is the review queue.
 | `POST /api/v1/admin/enrollments/` | `{"student_id","course_id"}` | Bypasses course ownership |
 | `POST /api/v1/admin/retention/run` | — | Runs the retention sweep now (it also runs automatically every hour) |
 
-Also `GET /api/v1/users/` (admin; filters `role`, `is_active`, `search`;
-paginated), and `GET` / `PATCH /api/v1/users/{id}`, for a user management
-screen.
+Also, for user and device management screens:
+- `GET /api/v1/users/` (admin; filters `role`, `is_active`, `search`;
+  paginated); `GET /api/v1/users/{id}` (admin, yourself, or an instructor of
+  one of that student's courses); `PATCH /api/v1/users/{id}` (admin;
+  `{role, is_active}`, `null` ignored).
+- `GET /api/v1/devices/` (admin; filters `user_id`, `is_trusted`,
+  `is_active`; paginated). An admin `PATCH /devices/{id} {"is_trusted": true}`
+  marks a device trusted.
 
 ---
 
 ## Things worth designing around
 
-- **The backend address must not be baked to one machine's LAN IP.**
-  `docker-compose.yml` currently builds the frontend with
-  `NEXT_PUBLIC_API_URL=http://192.168.64.4:8000`, which breaks the site on
-  every other machine. See CHANGES §4, Module 1 guide.
+- **The backend address must not be baked to one machine's LAN IP**
+  (`NEXT_PUBLIC_API_URL` is fixed at build time). See the Module 1
+  checklist in [CHANGES-2026-10-01.md](CHANGES-2026-10-01.md).
 - **Flagged/rejected are normal outcomes,** not errors. Build the appeal flow
   and "pending review" messaging.
 - **`GET /courses/` and `GET /sessions/active` work without login.**
 - **Errors carry an `X-Request-ID` header.** Log it or show it in error
   details so backend issues can be traced.
-- **Free text comes back HTML-escaped** (e.g. `&lt;`). Render it as text.
+- **Free text comes back HTML-escaped** (e.g. `&lt;`), including course,
+  session and venue names. Render it as text: "R&D Lab" comes back as
+  `R&amp;D Lab`. If you want it to display as `&`, unescape it for display
+  only (it's still safe as text).
+- **A double-tap is safe:** two identical requests at once get one success
+  and the normal `400` (e.g. `ALREADY_CHECKED_IN`).
+- **If you add a proxy** (Next.js rewrites, nginx), make it set
+  `X-Forwarded-For` to the real client IP: the backend uses its first
+  address for the Singapore rule, rate limits and audit logs. Never set it
+  from browser code.

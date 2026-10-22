@@ -1,12 +1,9 @@
 # Module 2 Backend API — For Module 4 (Observability Dashboard)
 
 Read [API-CONVENTIONS.md](API-CONVENTIONS.md) first (auth, error format,
-pagination). For **what changed and what you need to do**, see
-[CHANGES-2026-10-01.md](CHANGES-2026-10-01.md) §1 and the Module 4 guide in
-§4. Last updated 2026-10-22 (corrections, see CHANGES §3.9: what
-`flagged_pending` counts, and what the course-stats date filter covers).
-Student counts excluding TAs and the `challenge_reuse` violation type date
-from 2026-10-20.
+pagination). **Your tasks:** the Module 4 table in
+[CHANGES-2026-10-01.md](CHANGES-2026-10-01.md). **Why things changed:**
+[CHANGELOG.md](CHANGELOG.md). Last updated 2026-10-23.
 
 This covers the `/stats/*` analytics, `/export/*` data export, `/audit/*`
 compliance log, and `/metrics` for Prometheus/Grafana. Everything here needs
@@ -25,7 +22,7 @@ for a review screen).
 one matching what the graded tests assert. Both are always present and
 always equal, so use whichever you prefer.
 
-**Student counts exclude TAs** (since 2026-10-20). Assigned TAs are
+**Student counts exclude TAs.** Assigned TAs are
 attached to their course as enrollment rows, but `total_students`,
 `total_enrolled`, `student_attendance`, `low_attendance_alerts`, attendance
 rates, the session export summary and `GET /sessions/*`'s `total_enrolled`
@@ -55,14 +52,28 @@ window only).
   session in, or are TA-assigned to; admins see everything.
 - **Windowing:** `approval_rate` / `average_attendance_rate` are all-time;
   only `trends` uses `days`.
+- **`average_attendance_rate`** = the mean, over held sessions in scope, of
+  each session's attended ÷ enrolled students (the same rate as
+  `GET /stats/sessions/{id}`). Sessions whose course has no students are
+  left out.
+- **`trends.attendance_rate_by_day`** = attended ÷ enrolled over the held
+  sessions **scheduled** on that day. `trends.checkins_by_day` is raw
+  check-ins by the day they were made.
+- `total_sessions` / `active_sessions` count every session, held or not.
 - **`flagged_pending` / `flagged_pending_review` count `flagged` only.**
   The review queue (`GET /checkins/flagged`) also includes `appealed`
   rows, so its `total` can be higher.
 
-**Attendance rate, everywhere in this file:** `rejected` check-ins
-(blocked fraud) are excluded from every "attendance"/"attended" figure.
-Raw counts (`checked_in`, `checked_in_count`) include every row, rejected
-ones too. Know which one you're graphing.
+**Attendance rate, everywhere in this file:** attended ÷ enrolled students,
+where "attended" means a check-in that isn't `rejected` (blocked fraud).
+`flagged` and `appealed` check-ins count as attended. Raw counts
+(`checked_in`, `checked_in_count`) include every row, rejected ones too.
+Know which one you're graphing.
+
+**Held sessions:** attendance is only measured against
+sessions that are `active` or `closed`. `scheduled` (future) and
+`cancelled` sessions don't count as missed, and don't appear in course or
+student stats.
 
 ### `GET /stats/sessions/{session_id}` — staff who manage the session
 ```json
@@ -97,10 +108,13 @@ auto-rejected). So "high" here means HIGH + CRITICAL.
   "low_attendance_alerts": [{ "student_id", "student_name", "attendance_rate": 0.0, "sessions_missed": 0 }]
 }
 ```
+- **Held sessions only:** `total_sessions`, `sessions`, every rate and
+  `low_attendance_alerts` cover `active` and `closed` sessions. Upcoming and
+  cancelled sessions are left out, so they don't count as missed.
 - `start_date`/`end_date` (optional) filter which check-ins count, for
   **every** figure: `sessions`, `student_attendance`,
   `low_attendance_alerts` and `flagged_checkins`. `total_sessions` (and so
-  each student's denominator) still counts **every** session in the
+  each student's denominator) still counts every **held** session in the
   course, so per-student rates drop when a date range is set.
 - `low_attendance_alerts` uses a **0.75** attendance-rate threshold. That's
   our own default (the spec doesn't give one); ask if you need it
@@ -116,6 +130,8 @@ auto-rejected). So "high" here means HIGH + CRITICAL.
 }
 ```
 Each recent item: `{ "session_name", "course_code", "checked_in_at", "status" }`.
+`total_sessions` and each course's `total_sessions` count **held** sessions
+only, so "attended X / Y" doesn't include classes that haven't happened yet.
 
 **Not in stats:** check-ins rejected for being **outside Singapore** (`403`)
 create **no check-in row**, so they never appear in `/stats/*` or exports.
@@ -154,8 +170,9 @@ Same "manages this session" check as other session-scoped endpoints.
 **CSV safety:** text cells starting with `= + - @` (or a tab or carriage
 return) are prefixed with `'`, so spreadsheets show them as text instead of
 running them as formulas. Example: `'=HYPERLINK(...)`. JSON values are
-unchanged. Names and other free text are HTML-escaped when stored
-(`&lt;`, `&quot;`), so render them as text.
+unchanged. Names (students, courses, sessions, venues) and other free text
+are HTML-escaped when stored (`&lt;`, `&quot;`), so render them as text.
+The download filename keeps only letters, digits, `.`, `_` and `-`.
 
 ---
 
@@ -191,6 +208,8 @@ Useful `details` fields:
 | `account_locked` | `failed_attempts`, `lockout_minutes` |
 | `login_failed` | `email`, or `reason: "account_locked"` |
 | `retention_sweep_run` | `users_anonymized`, `checkins_anonymized`, `trigger: "scheduled"` (hourly, no user) |
+| `enrollment_added` | `student_id`, `course_id`; `via: "bulk"`; `reactivated: true` when a removed student was re-added |
+| `session_created` | `course_id`, `owner_id` (the course's instructor when an admin created it; the actor is still the admin) |
 
 - **Append-only, enforced by the database.** No row can be edited or
   deleted, even with SQL, so it's safe as a permanent activity feed. Don't

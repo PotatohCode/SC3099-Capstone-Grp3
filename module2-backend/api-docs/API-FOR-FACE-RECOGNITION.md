@@ -3,12 +3,9 @@
 Read [API-CONVENTIONS.md](API-CONVENTIONS.md) for general context, but note:
 **this file is the opposite direction from the other two.** Modules 1 and 4
 call *us*; for Module 3, **Module 2 calls you.** This is the contract your
-service implements so our calls succeed. For **what changed and what you
-need to do**, see [CHANGES-2026-10-01.md](CHANGES-2026-10-01.md) §1 and the
-Module 3 guide in §4. Last updated 2026-10-22 (corrections: frames are not
-mirrored, and what to return for "no face" on `/face/verify`; see
-CHANGES §3.9). Frame-burst liveness and server-issued challenges: §3
-(2026-10-20).
+service implements so our calls succeed. **Your tasks:** the Module 3 table
+in [CHANGES-2026-10-01.md](CHANGES-2026-10-01.md). **Why things changed:**
+[CHANGELOG.md](CHANGELOG.md). Last updated 2026-10-23.
 
 ---
 
@@ -18,13 +15,18 @@ CHANGES §3.9). Frame-burst liveness and server-issued challenges: §3
   inside docker-compose (`http://localhost:8001` from your machine).
 - **No authentication**: internal service-to-service calls.
 - **Every call is a `POST` with a JSON body**, and we expect JSON back.
-- **5-second timeout** per call, strictly enforced. Exception:
-  `/liveness/check` calls that carry a frame burst get **15 seconds**
-  (`LIVENESS_TIMEOUT_SECONDS`); single-image calls keep 5 s.
+- **5-second timeout** for each step of a call: connecting, sending the
+  request, waiting for your response to start, and the gap between response
+  chunks. It's not a hard cap on the whole call: a reply that trickles in
+  slowly can take longer in total. Your replies are small JSON objects, so in
+  practice a call that isn't answered within ~5 s fails. Exception:
+  `/liveness/check` calls that carry a frame burst get **15 seconds** per
+  step (`LIVENESS_TIMEOUT_SECONDS`); single-image calls keep 5 s.
 - **Concurrency:** the backend handles 100+ simultaneous check-ins, and each
-  check-in with a photo can call `/liveness/check`, `/face/verify` and
-  `/risk/assess`. The hidden stress tests use ~100 concurrent users, so
-  load-test with 50–100 parallel requests.
+  check-in with a photo or a frame burst can call `/liveness/check`,
+  `/face/verify` and `/risk/assess`. The hidden stress tests use ~100
+  concurrent users, so load-test with 50–100 parallel requests. If you're
+  slow, only the check-ins wait; the rest of the backend stays responsive.
 - **Images:** we forward the base64 exactly as the client sent it (normally
   no `data:` prefix and no whitespace). Anything over 10,000,000 base64
   characters is refused before it reaches you.
@@ -38,7 +40,8 @@ CHANGES §3.9). Frame-burst liveness and server-issued challenges: §3
 | **5xx**, timeout, connection error, invalid JSON | Treat as failed **and stop calling that endpoint for 30 s** (circuit breaker per path), then try again |
 
 During the 30 s cooldown we score locally, so none of our endpoints
-hard-fail because you're down. A slow service still gets cut off at 5 s.
+hard-fail because you're down. A service that doesn't start answering
+within 5 s is treated as failed.
 
 ---
 
@@ -76,7 +79,8 @@ hard-fail because you're down. A slow service still gets cut off at 5 s.
 ```json
 { "match_passed": true, "match_score": 0.0, "current_template_hash": "..." }
 ```
-- Called during check-in when the student sent a photo **and** has an
+- Called during check-in when the student sent a photo or a frame burst
+  (we send the photo, or else the burst's middle frame) **and** has an
   enrolled face.
 - `current_template_hash` is stored on the check-in row as a record of that
   attempt.
@@ -100,13 +104,13 @@ Two request shapes. **Keep supporting the first**: the course's public
 tests call you directly with a single image and `"challenge_type":
 "passive"`, and most check-ins still send one photo.
 
-**(a) Single image (unchanged):**
+**(a) Single image:**
 ```json
 { "challenge_response": "base64 image", "challenge_type": "passive" }
 ```
 
-**(b) Frame burst, new (2026-10-20).** Sent when the student's app captured
-a short burst while performing a challenge:
+**(b) Frame burst.** Sent when the student's app captured a short burst
+while performing a challenge:
 ```jsonc
 {
   "challenge_response": "base64 image",          // still sent: the middle frame, so an older build keeps working
@@ -145,7 +149,7 @@ a short burst while performing a challenge:
 {
   "liveness_passed": true,      // as before: your anti-spoof verdict
   "liveness_score": 0.0,        // as before
-  "challenge_passed": true,     // new: were all steps performed, in order? Only needed for shape (b) with challenge_sequence
+  "challenge_passed": true,     // were all steps performed, in order? Only needed for shape (b) with challenge_sequence
   "steps_passed": [true, false] // optional, one per step, for our logs
 }
 ```
@@ -164,18 +168,18 @@ Your current build ignores the unknown fields and scores
 we never auto-approve a challenged check-in.
 - `liveness_passed: false` → **always rejects** the check-in
   (`liveness_failed`, hard reject), whatever the score.
-- `liveness_passed: null` (e.g. no face found), or a failed call → on a
-  session that requires liveness, the check-in is **flagged for review**
-  (`liveness_unverified`), not rejected. Your current `null` for "no face
-  detected" is exactly right.
+- `liveness_passed: null` (e.g. no face found), or a failed call → the
+  check-in is never auto-rejected for it: on a session that requires
+  liveness it's **flagged for review** (`liveness_unverified`). Your current
+  `null` for "no face detected" is exactly right.
 - **Only send `false` when you've determined the image is a spoof**
   (printed photo, screen replay, flat face mesh). Don't default to `false`
   for uncertain cases.
 
 ### 4. `POST /risk/assess`
 
-Only called when the student sent a photo; otherwise we skip it and use a
-local formula.
+Only called when the student sent a photo or a frame burst; otherwise we
+skip it and use a local formula.
 
 **We send:**
 ```json
