@@ -14,6 +14,7 @@ from app.db.models.user import User
 from app.schemas.common import Page, page_limit
 from app.schemas.course import CourseCreate, CourseResponse, CourseUpdate
 from app.services.audit import log_event
+from app.services.partial_update import drop_nulls_for_required
 from app.services.sanitize import sanitize_text
 
 router = APIRouter(prefix="/courses", tags=["courses"])
@@ -38,6 +39,13 @@ def _to_response(course: Course) -> CourseResponse:
         is_active=course.is_active,
         created_at=course.created_at,
     )
+
+
+def _require_instructor_exists(db: Session, user_id: str) -> None:
+    """An unknown instructor_id used to reach the database as a foreign-key
+    violation (500)."""
+    if db.get(User, user_id) is None:
+        raise APIError(status.HTTP_404_NOT_FOUND, "Instructor not found", ErrorCode.USER_NOT_FOUND)
 
 
 @router.get("/", response_model=Page[CourseResponse])
@@ -87,14 +95,16 @@ def create_course(
 ):
     if db.query(Course).filter(Course.code == payload.code).first() is not None:
         raise APIError(status.HTTP_400_BAD_REQUEST, "Course code already exists", ErrorCode.COURSE_CODE_TAKEN)
+    if payload.instructor_id:
+        _require_instructor_exists(db, payload.instructor_id)
 
     course = Course(
         code=payload.code,
-        name=payload.name,
+        name=sanitize_text(payload.name),
         description=sanitize_text(payload.description) if payload.description else None,
         semester=payload.semester,
         instructor_id=payload.instructor_id,
-        venue_name=payload.venue_name,
+        venue_name=sanitize_text(payload.venue_name) if payload.venue_name else None,
         venue_latitude=payload.venue_latitude,
         venue_longitude=payload.venue_longitude,
         geofence_radius_meters=payload.geofence_radius_meters,
@@ -125,9 +135,12 @@ def update_course(
     if course is None:
         raise APIError(status.HTTP_404_NOT_FOUND, "Course not found", ErrorCode.COURSE_NOT_FOUND)
 
-    updates = payload.model_dump(exclude_unset=True)
-    if "description" in updates:
-        updates["description"] = sanitize_text(updates["description"]) if updates["description"] else None
+    updates = drop_nulls_for_required(Course, payload.model_dump(exclude_unset=True))
+    if updates.get("instructor_id"):
+        _require_instructor_exists(db, updates["instructor_id"])
+    for field in ("name", "description", "venue_name"):
+        if field in updates:
+            updates[field] = sanitize_text(updates[field]) if updates[field] else None
     for field, value in updates.items():
         setattr(course, field, value)
 

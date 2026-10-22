@@ -3,12 +3,14 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
+from app.schemas.common import EscapedLabel
+
 Platform = Literal["ios", "android", "web", "desktop"]
 
 
 class DeviceRegisterRequest(BaseModel):
     device_fingerprint: str = Field(min_length=1, max_length=64)
-    device_name: Optional[str] = Field(default=None, max_length=255)
+    device_name: Optional[EscapedLabel] = None
     platform: Optional[Platform] = None
     browser: Optional[str] = Field(default=None, max_length=100)
     os_version: Optional[str] = Field(default=None, max_length=50)
@@ -23,7 +25,7 @@ class DeviceUpdateRequest(BaseModel):
     is_trusted: admin only, silently ignored (not rejected) for a
     non-admin caller - same pattern as courses' instructor_id filter."""
 
-    device_name: Optional[str] = Field(default=None, max_length=255)
+    device_name: Optional[EscapedLabel] = None
     is_active: Optional[bool] = None
     is_trusted: Optional[bool] = None
 

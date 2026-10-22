@@ -13,6 +13,7 @@ from typing import Any, Literal
 
 from jose import jwt
 from passlib.context import CryptContext
+from passlib.exc import PasswordSizeError
 
 from app.core.config import get_settings
 
@@ -28,7 +29,13 @@ def get_password_hash(password: str) -> str:
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
+    """False for a wrong password. passlib raises PasswordSizeError for
+    anything over 4096 characters; no stored password can be that long, so
+    it's simply a mismatch (login, delete account), not a 500."""
+    try:
+        return pwd_context.verify(plain_password, hashed_password)
+    except PasswordSizeError:
+        return False
 
 
 def _create_token(

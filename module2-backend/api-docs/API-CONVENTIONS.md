@@ -6,15 +6,13 @@ Read this first, then whichever of these applies to you:
 - [API-FOR-FACE-RECOGNITION.md](API-FOR-FACE-RECOGNITION.md) — Module 3
 - [API-FOR-DASHBOARD.md](API-FOR-DASHBOARD.md) — Module 4
 
-> **What changed, and what each module needs to do:**
-> [CHANGES-2026-10-01.md](CHANGES-2026-10-01.md). It's the consolidated
-> baseline; where anything here disagrees, that document is newer.
+> **What your module needs to do:** [CHANGES-2026-10-01.md](CHANGES-2026-10-01.md)
+> (team checklist). **What changed and why:** [CHANGELOG.md](CHANGELOG.md).
 
-This describes the **implemented behaviour** of the Module 2 backend as of
-**2026-10-22** (last correction: CHANGES §3.9): the course's public test
-suite passes in full (92/92 points).
-Where the written course spec and the implementation differ, this is what's
-actually running; the reasons are given in CHANGES-2026-10-01.md.
+These docs describe the backend **as it runs now** (last updated
+2026-10-23); the course's public test suite passes in full (92/92). Where
+the written course spec and the implementation differ, this is what's
+actually running; the changelog gives the reasons.
 
 Interactive docs for every endpoint and schema: `http://localhost:8000/docs`.
 
@@ -87,6 +85,8 @@ Build error handling on **`code`**, not the `detail` text. Codes you'll see:
 | Sessions/courses | `INVALID_SCHEDULE`, `COURSE_CODE_TAKEN`, `SESSION_NOT_DELETABLE`, `ALREADY_ENROLLED` |
 | Devices/face | `DEVICE_FINGERPRINT_TAKEN`, `CAMERA_CONSENT_REQUIRED`, `NO_FACE_DETECTED`, `FACE_SERVICE_UNAVAILABLE` (503) |
 | Limits | `RATE_LIMITED` (429), `IMAGE_TOO_LARGE` (413), `TOO_MANY_FRAMES` (413), `REQUEST_TOO_LARGE` (413) |
+| Bad input | `INVALID_INPUT` (400): a NUL character, or a number too large for the database (e.g. a huge `offset`) |
+| Server | `SERVICE_UNAVAILABLE` (503 + `Retry-After`): database unreachable, so retry. Also `FACE_SERVICE_UNAVAILABLE` (503) on face enrolment |
 | Server | `INTERNAL_ERROR` (500; details are logged server-side, never returned) |
 
 ## Pagination
@@ -105,7 +105,10 @@ Paginated list endpoints return:
 
 ## Rate limiting and lockout
 
-All 429s include a `Retry-After` header (seconds), readable from browser code.
+All 429s (and the database-down 503) include a `Retry-After` header
+(seconds), readable from browser code. Requests without a token (e.g.
+`GET /courses/`, `GET /sessions/active`) aren't rate-limited; only login
+and registration have per-IP limits.
 
 | Limit | Value | Keyed by | Response |
 |---|---|---|---|
@@ -124,22 +127,43 @@ All 429s include a `Retry-After` header (seconds), readable from browser code.
 - **Upload limits**: images over 10,000,000 base64 characters →
   `413 IMAGE_TOO_LARGE`. Any body over 15 MB → `413 REQUEST_TOO_LARGE`.
 - **Health**: `GET /health` → `200 {"status":"healthy","database":"ok","redis":"ok", ...}`;
-  `"degraded"` if Redis is down (still 200, everything works); `503
+  `"degraded"` if Redis is down (still 200; everything works, but rate
+  limits and logout revocation are skipped until it's back); `503
   "unhealthy"` if the database is down.
+- **Database down**: every other endpoint answers `503 SERVICE_UNAVAILABLE`
+  with `Retry-After`, and recovers on its own when the database is back.
+- **Unexpected errors**: `500 INTERNAL_ERROR`; the connection stays usable
+  for your next request.
 
 ## Things that are true everywhere
 
 - Timestamps are UTC, ISO-8601. Responses have no timezone suffix (naive
   UTC), so treat them as UTC when parsing. Requests may send `...Z` or no
   suffix.
-- IDs are UUID strings, not integers.
+- Resource IDs are UUID strings, not integers. An id that's malformed
+  simply isn't found (`404`); one containing a NUL character → `400
+  INVALID_INPUT`.
 - Soft delete is the convention (`is_active=false`), not hard deletes.
   Exceptions: `DELETE /sessions/{id}` (only while `status="scheduled"`, hard
   delete); `DELETE /enrollments/{id}` and `DELETE /devices/{id}` are soft.
 - **Deleting an account** (`DELETE /users/me`, password required) deactivates
-  it immediately and anonymises its personal data after 30 days.
-- Free-text input is HTML-escaped when stored (`<` → `&lt;`, etc.), so render
-  it as text, not HTML.
+  it immediately and anonymises its personal data after 30 days, including
+  its registered devices.
+- **Partial updates** (`PUT /courses/{id}`, `PATCH /sessions/{id}`,
+  `PATCH /users/{id}`): `null` for a required field is ignored; for an
+  optional one (e.g. `description`, `venue_name`) it clears the value.
+- **Duplicates are safe to retry.** Two identical requests at the same
+  instant (a double-tap) get the same answer as two in a row: one succeeds,
+  the other gets the normal `400` (e.g. `ALREADY_CHECKED_IN`,
+  `EMAIL_ALREADY_REGISTERED`).
+- Names and labels have a 255-character limit **after escaping** (`&` counts
+  as 5, `<`/`>` as 4, `"`/`'` as 6); longer → `422`. Course codes: letters,
+  digits, spaces, `-` and `_` only, at most 20 (`422` otherwise). Passwords:
+  8–128 characters.
+- Free-text input is HTML-escaped when stored (`<` → `&lt;`, etc.): user,
+  course and session names, venue names, descriptions, device names, appeal
+  reasons and review notes. Render it as text, not HTML ("R&D" comes back as
+  `R&amp;D`; unescape for display only if you like).
 - **Client IP** = the first `X-Forwarded-For` address if present, otherwise
   the connection address. Never set that header from browser code.
 - **CORS** allows `http://localhost:3000` and `http://localhost:8501` (plus

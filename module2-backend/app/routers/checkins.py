@@ -7,8 +7,8 @@ this router stays thin per IMPLEMENTATION-PLAN.md's own rule.
 See KNOWN-ISSUES.md before touching the decision logic: the hard override
 (liveness explicitly failed, or GPS > 2x geofence radius -> rejected
 regardless of score) is not a pure `risk_score < threshold` comparison,
-and Module 3 is currently a 501 stub so the degrade-gracefully paths are
-what actually run end-to-end today.
+and every Module 3 call has a degrade-gracefully path (timeout, error or
+4xx -> None), so a check-in never fails because the face service is down.
 """
 import base64
 import binascii
@@ -19,7 +19,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Query, Request, status
 from sqlalchemy import func
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.core.config import get_settings
 from app.core.deps import get_current_user, get_db, require_role
@@ -149,6 +149,17 @@ def _to_full_response(checkin: CheckIn) -> CheckinResponse:
         appeal_reason=checkin.appeal_reason,
         appealed_at=checkin.appealed_at,
     )
+
+
+def _flagged_risk_factors(checkin: CheckIn) -> List[FlaggedCheckinRiskFactor]:
+    """risk_factors with each signal's real severity (critical/high/medium/
+    low), taken from the risk_signals rows written alongside them. "medium"
+    only if a factor somehow has no matching row."""
+    severity_by_type = {s.signal_type: s.severity for s in checkin.risk_signals}
+    return [
+        FlaggedCheckinRiskFactor(type=rf.type, severity=severity_by_type.get(rf.type, "medium"), weight=rf.weight)
+        for rf in _parse_risk_factors(checkin.risk_factors)
+    ]
 
 
 def _scope_sessions_for_staff(db: Session, user: User):
@@ -333,6 +344,14 @@ def create_checkin(
         .scalar()
     )
     minutes_after_start = (now - session_obj.scheduled_start).total_seconds() / 60
+
+    # Hand the DB connection back to the pool while Module 3 is called (up to
+    # 5 s per call, 15 s for a frame burst). Holding it across those calls
+    # let ~30 slow check-ins take the whole pool (10 + 20 overflow), so every
+    # other request queued behind them (measured: face service hung + 100
+    # check-ins -> a plain GET took 9.5 s). Nothing is pending at this point,
+    # so this only ends the read transaction; objects reload on next access.
+    db.commit()
 
     # --- Liveness + face match (defensive: 5s timeout, degrade on failure) --
     liveness_passed: Optional[bool] = None
@@ -715,7 +734,7 @@ def flagged_checkins(
     query = (
         db.query(CheckIn)
         .join(ClassSession, CheckIn.session_id == ClassSession.id)
-        .options(joinedload(CheckIn.session), joinedload(CheckIn.student))
+        .options(joinedload(CheckIn.session), joinedload(CheckIn.student), selectinload(CheckIn.risk_signals))
         .filter(CheckIn.status.in_(["flagged", "appealed"]))
     )
     scope = _scope_sessions_for_staff(db, current_user)
@@ -733,10 +752,7 @@ def flagged_checkins(
             id=c.id, session_id=c.session_id, session_name=c.session.name, student_id=c.student_id,
             student_name=c.student.full_name, status=c.status, checked_in_at=c.checked_in_at,
             risk_score=c.risk_score,
-            risk_factors=[
-                FlaggedCheckinRiskFactor(type=rf.type, severity="medium", weight=rf.weight)
-                for rf in _parse_risk_factors(c.risk_factors)
-            ],
+            risk_factors=_flagged_risk_factors(c),
             appeal_reason=c.appeal_reason, appealed_at=c.appealed_at,
         )
         for c in checkins

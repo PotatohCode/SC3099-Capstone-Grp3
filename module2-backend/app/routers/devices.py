@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query, Response, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_current_user, get_db, require_role
@@ -70,6 +71,18 @@ def _register(payload: DeviceRegisterRequest, current_user: User, db: Session) -
     return device, True
 
 
+def _register_once_more_on_race(payload: DeviceRegisterRequest, current_user: User, db: Session) -> tuple[Device, bool]:
+    """Two registrations of the same fingerprint at the same instant both see
+    "not registered yet" and both INSERT; the loser hits the unique index.
+    Retry once: the row now exists, so it's the normal path - updated in
+    place (200) if it's this user's own device, 400 if someone else's."""
+    try:
+        return _register(payload, current_user, db)
+    except IntegrityError:
+        db.rollback()
+        return _register(payload, current_user, db)
+
+
 @router.post("/register", response_model=DeviceResponse, status_code=status.HTTP_201_CREATED)
 def register_device(
     payload: DeviceRegisterRequest,
@@ -77,7 +90,7 @@ def register_device(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    device, created = _register(payload, current_user, db)
+    device, created = _register_once_more_on_race(payload, current_user, db)
     # status_code= on the decorator is just the default for the common
     # case; a re-register of the caller's own fingerprint updates in place
     # rather than creating, so report 200 for that, not a misleading 201.
@@ -92,7 +105,7 @@ def register_device_alias(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    device, created = _register(payload, current_user, db)
+    device, created = _register_once_more_on_race(payload, current_user, db)
     response.status_code = status.HTTP_201_CREATED if created else status.HTTP_200_OK
     return device
 
