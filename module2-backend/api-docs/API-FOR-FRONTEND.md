@@ -71,8 +71,9 @@ Partial update; send only what changes:
 { "full_name": "...", "camera_consent": true, "geolocation_consent": true }
 ```
 → **200** updated `UserResponse`. **This is how consent is recorded.** Call it
-when the student grants camera/location permission. It's required for face
-enrolment, and for consent enforcement on check-in once that's switched on.
+when the student grants camera/location permission, **before submitting the
+check-in**. It's required for face enrolment, and a check-in from a student
+without both consents goes to review (`consent_missing`, see §7).
 
 ### `POST /api/v1/users/me/face/enroll`
 ```json
@@ -367,7 +368,7 @@ under 10,000,000 base64 characters, and the whole request under 15 MB.
 | `403 NOT_ENROLLED` | Not enrolled in the course | |
 | `400 SESSION_NOT_ACTIVE` / `SESSION_WINDOW_CLOSED` | Not open right now | |
 | `400 ALREADY_CHECKED_IN` | Already has a check-in for this session | Offer appeal if it was rejected |
-| `403 CONSENT_REQUIRED` | Only if the backend's consent enforcement is set to `reject` (off by default) | Ask for camera + location permission |
+| `403 CONSENT_REQUIRED` | Only if the backend's consent enforcement is set to `reject` (it's `flag`: missing consent is stored and reviewed, not refused) | Ask for camera + location permission |
 | `403 OUTSIDE_SINGAPORE` | GPS outside Singapore (including Johor Bahru and Batam, just across the straits), or a public IP outside Singapore. **Nothing saved, retry allowed** | "Check-in is only available within Singapore. If you're using a VPN, turn it off and try again." |
 | `400 CHALLENGE_INVALID` | `challenge_id` unknown, expired, already used, or for another session/student. **Nothing saved** | Get a new challenge and redo the steps |
 
@@ -420,7 +421,7 @@ plus the weights below, capped at 1.0.
 | `replay_suspected` | **critical** | 0.30 | Re-used photo or frame (same student) → **rejected** |
 | `rapid_succession` | high | 0 | Device used by another student < 10 min ago → at most flagged |
 | `unusual_time` | low | 0 | > 15 min after start; informational |
-| `consent_missing` | medium | 0 | Only with `CONSENT_ENFORCEMENT=flag` |
+| `consent_missing` | medium | 0 | Camera or location consent not `true` on the account → at most flagged (on by default) |
 | `device_unbound` | medium | 0 | Only with `DEVICE_BINDING_ENFORCEMENT=flag` |
 
 **Critical = rejects on its own.** `risk_level` bands: `LOW` < 0.3 ≤

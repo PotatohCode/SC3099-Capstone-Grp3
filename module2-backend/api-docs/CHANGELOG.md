@@ -14,6 +14,23 @@ below.
 
 ---
 
+## 2026-10-23 — `backend/consent-flag`: consent is enforced (flag)
+
+**Rebuild needed:** `docker compose up -d --build backend`.
+
+| Area | Before | Now | Why |
+|---|---|---|---|
+| Check-in from a student whose `camera_consent` or `geolocation_consent` isn't `true` | Not checked | Stored, but goes to review: `consent_missing` (weight 0) → at most **flagged** | The briefing requires consent before check-in, and the website now records it (`PUT /users/me`, M1 PR #4) |
+
+`CONSENT_ENFORCEMENT` now defaults to `flag`. Never `reject`: the course's
+test fixtures check in without consent and expect `201`. On the normal
+website path nothing changes for students: the site saves both consents
+before submitting (tested end to end). Check-ins sent some other way
+without consent show up in the review queue as "Camera/location consent
+not given". No action needed from any module.
+
+---
+
 ## 2026-10-23 — `backend/enrollment-and-stats-fixes`
 
 **Rebuild needed:** `docker compose up -d --build backend` (includes a
@@ -162,7 +179,7 @@ The defaults are what's running. Invalid values stop the backend at startup.
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `CONSENT_ENFORCEMENT` | `off` | `off` / `flag` / `reject` |
+| `CONSENT_ENFORCEMENT` | `flag` (was `off` until 2026-10-23) | `off` / `flag` / `reject`. Keep it off `reject` (graded fixtures check in without consent) |
 | `DEVICE_BINDING_ENFORCEMENT` | `off` | `off` / `flag` |
 | `LIVENESS_CHALLENGE_ENFORCEMENT` | `off` | `off` / `flag` |
 | `LIVENESS_CHALLENGE_ACTIONS` | `["blink","turn_left","turn_right"]` | Actions a challenge is drawn from; Module 3 must detect every one |
@@ -210,6 +227,7 @@ Interactive docs for every endpoint: http://localhost:8000/docs
 
 | Merged as | Contents |
 |---|---|
+| `backend/consent-flag` | 2026-10-23: consent enforced as `flag` |
 | `backend/enrollment-and-stats-fixes` | 2026-10-23 release above |
 | `backend/docs-errata` (`950af50`) | 2026-10-22 corrections above |
 | `backend/group-feedback` (`ffb466c`) | 2026-10-20 release above |
