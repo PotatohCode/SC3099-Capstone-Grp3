@@ -11,6 +11,7 @@ browser or in URLs.
 """
 from __future__ import annotations
 
+import html
 from typing import Any
 
 import requests
@@ -39,6 +40,18 @@ _FRIENDLY = {
     413: "The upload is too large.",
     429: "Too many requests. Please wait a moment and try again.",
 }
+
+
+def _unescape(value: Any) -> Any:
+    """The backend stores free text HTML-escaped (`R&amp;D`, `&lt;b&gt;`). Turn it
+    back into the text people typed; the UI shows it as plain text, never HTML."""
+    if isinstance(value, str):
+        return html.unescape(value)
+    if isinstance(value, list):
+        return [_unescape(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _unescape(v) for k, v in value.items()}
+    return value
 
 
 def _error_message(response: requests.Response) -> tuple[str, str | None]:
@@ -150,7 +163,7 @@ def request(method: str, path: str, *, raw: bool = False, **kwargs) -> Any:
     if response.status_code == 204 or not response.content:
         return None
     try:
-        return response.json()
+        return _unescape(response.json())
     except ValueError as exc:
         raise ApiError("The backend returned an unreadable response.") from exc
 

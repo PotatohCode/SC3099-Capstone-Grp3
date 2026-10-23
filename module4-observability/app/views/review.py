@@ -19,7 +19,7 @@ def _load() -> list[dict]:
 @st.dialog("Review check-in")
 def _decide(item: dict, decision: str) -> None:
     verb = "Approve" if decision == "approved" else "Reject"
-    st.write(f"**{verb}** {item.get('student_name')}'s check-in for **{item.get('session_name')}**?")
+    st.write(f"**{verb}** {ui.md(item.get('student_name'))}'s check-in for **{ui.md(item.get('session_name'))}**?")
     st.caption("Approved counts as attended. Rejected doesn't, and the student can appeal.")
     notes = st.text_area("Note (recorded in the audit log)", max_chars=2000,
                          placeholder="e.g. Verified in person after class")
@@ -40,7 +40,7 @@ def _card(item: dict) -> None:
         top, actions = st.columns([4, 1.4])
         with top:
             badge = "🗨️ Appealed" if item.get("status") == "appealed" else ui.status_label("flagged")
-            st.markdown(f"**{item.get('student_name')}** · {item.get('session_name')} &nbsp; {badge}")
+            st.markdown(f"**{ui.md(item.get('student_name'))}** · {ui.md(item.get('session_name'))} &nbsp; {badge}")
             st.caption(f"Checked in {ui.fmt_time(item.get('checked_in_at'))} · "
                        f"risk {ui.risk_label(item.get('risk_level'), item.get('risk_score'))}")
             st.markdown("**Why it was flagged:** " + ui.reasons(item.get("risk_factors")))

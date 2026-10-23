@@ -42,7 +42,7 @@ to get an "Explore with sample data" button on the sign-in page (works without a
 |---|:-:|:-:|:-:|---|
 | Today | ✓ | ✓ | ✓ | Needs-review count (top-left), today's sessions with live check-in counts, 7-day trends |
 | Review queue | ✓ | ✓ | ✓ | Flagged and appealed check-ins, appeals then highest risk first, reasons in plain words, approve / reject with a note |
-| Sessions | view | ✓ | ✓ | Create; activate / close / cancel; live attendance, outcome and risk charts, every check-in; per-session export |
+| Sessions | view | ✓ | ✓ | Create (location from the course, or its own, with a map); activate / close / cancel; live attendance, outcome and risk charts, every check-in; per-session export |
 | Courses | | ✓ | ✓ | Attendance per session and per student; students under 75% |
 | Students | | ✓ | ✓ | One student's attendance across your courses and recent check-ins |
 | Exports | session | ✓ | ✓ | CSV (opens in Excel), JSON or PDF, with a course column and optional absent students |
@@ -112,11 +112,24 @@ Signs in as admin, instructor and TA (seeded accounts), opens every page each ro
 picks the seeded course/student/session, opens a session and prepares its export, and checks
 preview mode. Prints `OK`/`FAIL` per page.
 
-## Known issue (backend)
+## Session location
 
-Assigned TAs are enrolled in their course (that is how the backend scopes TA access), and the
-backend's stats and exports count every enrolment as a student. A course with an assigned TA
-therefore shows one extra "student" (at 0% attendance) in its numbers and exports.
+Students are checked against the session's own location if it has one, otherwise the course's
+(backend `services/geofencing.py`). The create-session form:
+
+- **course has a location** → offers it by default and sends no coordinates, so the session
+  follows any later fix to the course's location; "A different location for this session" is
+  the alternative (e.g. an exam hall);
+- **course has no location** → the session's latitude/longitude are required, because without
+  either there'd be no classroom check at all;
+- refuses coordinates outside Singapore (nobody could check in) and shows a map with the
+  check-in radius before creating. Each session's **Location** section shows the same map.
+
+## Names
+
+The backend stores free text HTML-escaped (`R&amp;D`). `api.py` turns responses back into the
+typed text, and pages show it as plain text (`ui.md()` escapes Markdown), so names look right
+and can never inject formatting or HTML.
 
 ## Files
 
