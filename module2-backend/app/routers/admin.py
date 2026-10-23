@@ -18,7 +18,6 @@ from app.core.deps import get_db, require_role
 from app.core.errors import APIError, ErrorCode
 from app.core.security import get_password_hash
 from app.db.models.course import Course
-from app.db.models.enrollment import Enrollment
 from app.db.models.session import ClassSession
 from app.db.models.user import User
 from app.schemas.admin import (
@@ -34,6 +33,7 @@ from app.schemas.admin import (
 from app.schemas.enrollment import EnrollmentCreate, EnrollmentResponse
 from app.services import retention
 from app.services.audit import log_event
+from app.services.enrollment import EnrollOutcome, enroll
 from app.services.sanitize import sanitize_text
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -157,21 +157,9 @@ def admin_create_enrollment(
     if db.get(Course, payload.course_id) is None:
         raise APIError(status.HTTP_404_NOT_FOUND, "Course not found", ErrorCode.COURSE_NOT_FOUND)
 
-    existing = (
-        db.query(Enrollment)
-        .filter(Enrollment.student_id == payload.student_id, Enrollment.course_id == payload.course_id)
-        .first()
-    )
-    if existing is not None:
+    enrollment, outcome = enroll(db, payload.student_id, payload.course_id, actor_id=current_user.id)
+    if outcome == EnrollOutcome.ALREADY_ENROLLED:
         raise APIError(status.HTTP_400_BAD_REQUEST, "Student already enrolled", ErrorCode.ALREADY_ENROLLED)
-
-    enrollment = Enrollment(student_id=payload.student_id, course_id=payload.course_id)
-    db.add(enrollment)
-    db.flush()
-    log_event(
-        db, "enrollment_added", user_id=current_user.id, resource_type="enrollment", resource_id=enrollment.id,
-        details={"student_id": payload.student_id, "course_id": payload.course_id},
-    )
     db.commit()
     db.refresh(enrollment)
     return enrollment
@@ -181,10 +169,10 @@ def admin_create_enrollment(
 def run_retention_sweep(current_user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
     """Phase 7e: anonymizes every user/check-in whose `scheduled_deletion_at`
     has passed (see services/retention.py for why anonymize rather than
-    delete). Admin-triggered rather than an in-process scheduler - no
-    worker/cron service exists in docker-compose.yml, and an HTTP-callable
-    sweep is directly testable the same way every other admin endpoint
-    here is, without waiting out a real 30-day window."""
+    delete). The same sweep also runs automatically every
+    RETENTION_SWEEP_INTERVAL_MINUTES (services/retention_scheduler.py);
+    this endpoint runs it on demand, which also makes it testable without
+    waiting for the next scheduled run."""
     result = retention.run_retention_sweep(db)
     log_event(
         db, "retention_sweep_run", user_id=current_user.id, resource_type="retention",

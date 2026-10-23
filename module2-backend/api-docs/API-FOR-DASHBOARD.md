@@ -1,10 +1,9 @@
 # Module 2 Backend API — For Module 4 (Observability Dashboard)
 
 Read [API-CONVENTIONS.md](API-CONVENTIONS.md) first (auth, error format,
-pagination). For **what changed and what you need to do**, see
-[CHANGES-2026-10-01.md](CHANGES-2026-10-01.md) §1 and the Module 4 guide in
-§4. Last updated 2026-10-20 (student counts exclude TAs; `challenge_reuse`
-violation type).
+pagination). **Your tasks:** the Module 4 table in
+[CHANGES-2026-10-01.md](CHANGES-2026-10-01.md). **Why things changed:**
+[CHANGELOG.md](CHANGELOG.md). Last updated 2026-10-23.
 
 This covers the `/stats/*` analytics, `/export/*` data export, `/audit/*`
 compliance log, and `/metrics` for Prometheus/Grafana. Everything here needs
@@ -12,7 +11,9 @@ compliance log, and `/metrics` for Prometheus/Grafana. Everything here needs
 below). Check-in lists and the review queue are in
 [API-FOR-FRONTEND.md](API-FOR-FRONTEND.md) §7. The dashboard can use them
 the same way (e.g. `GET /checkins/flagged` + `POST /checkins/{id}/review`
-for a review screen).
+for a review screen). Creating and editing sessions is in its §4,
+including the venue rule: leave a session's coordinates out and it uses the
+course's venue.
 
 ---
 
@@ -23,7 +24,7 @@ for a review screen).
 one matching what the graded tests assert. Both are always present and
 always equal, so use whichever you prefer.
 
-**Student counts exclude TAs** (since 2026-10-20). Assigned TAs are
+**Student counts exclude TAs.** Assigned TAs are
 attached to their course as enrollment rows, but `total_students`,
 `total_enrolled`, `student_attendance`, `low_attendance_alerts`, attendance
 rates, the session export summary and `GET /sessions/*`'s `total_enrolled`
@@ -53,11 +54,28 @@ window only).
   session in, or are TA-assigned to; admins see everything.
 - **Windowing:** `approval_rate` / `average_attendance_rate` are all-time;
   only `trends` uses `days`.
+- **`average_attendance_rate`** = the mean, over held sessions in scope, of
+  each session's attended ÷ enrolled students (the same rate as
+  `GET /stats/sessions/{id}`). Sessions whose course has no students are
+  left out.
+- **`trends.attendance_rate_by_day`** = attended ÷ enrolled over the held
+  sessions **scheduled** on that day. `trends.checkins_by_day` is raw
+  check-ins by the day they were made.
+- `total_sessions` / `active_sessions` count every session, held or not.
+- **`flagged_pending` / `flagged_pending_review` count `flagged` only.**
+  The review queue (`GET /checkins/flagged`) also includes `appealed`
+  rows, so its `total` can be higher.
 
-**Attendance rate, everywhere in this file:** `rejected` check-ins
-(blocked fraud) are excluded from every "attendance"/"attended" figure.
-Raw counts (`checked_in`, `checked_in_count`) include every row, rejected
-ones too. Know which one you're graphing.
+**Attendance rate, everywhere in this file:** attended ÷ enrolled students,
+where "attended" means a check-in that isn't `rejected` (blocked fraud).
+`flagged` and `appealed` check-ins count as attended. Raw counts
+(`checked_in`, `checked_in_count`) include every row, rejected ones too.
+Know which one you're graphing.
+
+**Held sessions:** attendance is only measured against
+sessions that are `active` or `closed`. `scheduled` (future) and
+`cancelled` sessions don't count as missed, and don't appear in course or
+student stats.
 
 ### `GET /stats/sessions/{session_id}` — staff who manage the session
 ```json
@@ -92,8 +110,14 @@ auto-rejected). So "high" here means HIGH + CRITICAL.
   "low_attendance_alerts": [{ "student_id", "student_name", "attendance_rate": 0.0, "sessions_missed": 0 }]
 }
 ```
-- `start_date`/`end_date` (optional) filter which check-ins count toward the
-  per-session breakdown.
+- **Held sessions only:** `total_sessions`, `sessions`, every rate and
+  `low_attendance_alerts` cover `active` and `closed` sessions. Upcoming and
+  cancelled sessions are left out, so they don't count as missed.
+- `start_date`/`end_date` (optional) filter which check-ins count, for
+  **every** figure: `sessions`, `student_attendance`,
+  `low_attendance_alerts` and `flagged_checkins`. `total_sessions` (and so
+  each student's denominator) still counts every **held** session in the
+  course, so per-student rates drop when a date range is set.
 - `low_attendance_alerts` uses a **0.75** attendance-rate threshold. That's
   our own default (the spec doesn't give one); ask if you need it
   configurable.
@@ -108,6 +132,8 @@ auto-rejected). So "high" here means HIGH + CRITICAL.
 }
 ```
 Each recent item: `{ "session_name", "course_code", "checked_in_at", "status" }`.
+`total_sessions` and each course's `total_sessions` count **held** sessions
+only, so "attended X / Y" doesn't include classes that haven't happened yet.
 
 **Not in stats:** check-ins rejected for being **outside Singapore** (`403`)
 create **no check-in row**, so they never appear in `/stats/*` or exports.
@@ -146,8 +172,9 @@ Same "manages this session" check as other session-scoped endpoints.
 **CSV safety:** text cells starting with `= + - @` (or a tab or carriage
 return) are prefixed with `'`, so spreadsheets show them as text instead of
 running them as formulas. Example: `'=HYPERLINK(...)`. JSON values are
-unchanged. Names and other free text are HTML-escaped when stored
-(`&lt;`, `&quot;`), so render them as text.
+unchanged. Names (students, courses, sessions, venues) and other free text
+are HTML-escaped when stored (`&lt;`, `&quot;`), so render them as text.
+The download filename keeps only letters, digits, `.`, `_` and `-`.
 
 ---
 
@@ -164,10 +191,12 @@ paginated:
 ```
 **Actions you'll see:**
 - **Auth/users:** `login_success`, `login_failed`, `logout`, `account_locked`,
-  `user_created`, `user_updated`, `user_deletion_requested`, `face_enrolled`
+  `password_changed`, `password_change_failed`, `user_created`,
+  `user_updated`, `user_deletion_requested`, `face_enrolled`
 - **Check-ins:** `checkin_attempted`, `checkin_approved`, `checkin_flagged`,
   `checkin_rejected`, `checkin_rejected_geo`, `checkin_appealed`,
-  `checkin_reviewed`
+  `checkin_reviewed`, `liveness_challenge_verified` (one per liveness
+  attempt, see below)
 - **Admin data:** `session_created/updated/deleted`,
   `enrollment_added/removed`, `device_registered/updated/removed`,
   `course_created/updated/deleted`, `data_exported`, `retention_sweep_run`
@@ -178,11 +207,15 @@ Useful `details` fields:
 | Action | `details` |
 |---|---|
 | `checkin_approved` / `_flagged` / `_rejected` | `risk_score`, **`risk_level`** (LOW/MEDIUM/HIGH/CRITICAL), `status` |
-| `security_violation` | **`violation_type`**: `account_lockout`, `outside_singapore`, `geo_out_of_bounds`, `liveness_failed`, `face_match_failed`, `replay_suspected`, `impossible_travel`, `gps_spoof_suspected`, `rapid_succession`, `challenge_reuse` (a liveness challenge used twice or by another student; `details.reason` = `reused` / `other_student`) |
+| `security_violation` | **`violation_type`**: `account_lockout`, `outside_singapore`, `geo_out_of_bounds`, `liveness_failed`, `face_match_failed`, `replay_suspected`, `impossible_travel`, `gps_spoof_suspected`, `rapid_succession`, `challenge_reuse` (a liveness challenge used twice or by another student; `details.reason` = `reused` / `other_student`), `liveness_spoof` (a liveness attempt judged a spoof), `challenge_frames_mismatch` (a check-in named a verified challenge but sent different frames) |
 | `checkin_rejected_geo` | `reason` (`ip`/`gps`/`gps_and_ip`), `gps_in_singapore`, `ip_country` (no coordinates) |
-| `account_locked` | `failed_attempts`, `lockout_minutes` |
+| `account_locked` | `failed_attempts`, `lockout_minutes` (wrong passwords at login and on the change-password page count together) |
 | `login_failed` | `email`, or `reason: "account_locked"` |
+| `password_change_failed` | `reason`: `password_incorrect` / `account_locked` (never the password) |
+| `liveness_challenge_verified` | `outcome` (`passed`/`failed`/`spoof`/`unverified`), `attempt` (1–3), `sequence`, `steps_passed`, `liveness_score`. `resource_id` = the session |
 | `retention_sweep_run` | `users_anonymized`, `checkins_anonymized`, `trigger: "scheduled"` (hourly, no user) |
+| `enrollment_added` | `student_id`, `course_id`; `via: "bulk"`; `reactivated: true` when a removed student was re-added |
+| `session_created` | `course_id`, `owner_id` (the course's instructor when an admin created it; the actor is still the admin) |
 
 - **Append-only, enforced by the database.** No row can be edited or
   deleted, even with SQL, so it's safe as a permanent activity feed. Don't
@@ -214,8 +247,8 @@ format. The names are literal; ask before relying on a rename.
 | `checkin_success_total` | Counter | — | Check-ins resolved `approved` |
 | `checkins_flagged_total` | Counter | — | Check-ins resolved `flagged` |
 | `risk_score` | Histogram | — | Risk score distribution (0.1 buckets) |
-| `login_failed_total` | Counter | — | Failed logins, **including** attempts blocked by a lockout |
-| `account_lockouts_total` | Counter | — | Accounts locked after 10 consecutive failures |
+| `login_failed_total` | Counter | — | Failed logins, **including** attempts blocked by a lockout (change-password failures aren't counted; they're in the audit log) |
+| `account_lockouts_total` | Counter | — | Accounts locked after 10 consecutive wrong passwords (login and change-password combined) |
 | `checkin_rejected_geo_total` | Counter | `reason` = `ip`/`gps`/`gps_and_ip` | Check-ins refused as outside Singapore |
 | `security_violations_total` | Counter | `violation_type` (as in the audit table) | Every `security_violation` event |
 

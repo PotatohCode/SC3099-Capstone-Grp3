@@ -55,10 +55,9 @@ services:
       FACE_SERVICE_URL: http://face-recognition:8001
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
       # CORS_ORIGINS overrides app/core/config.py's Settings.CORS_ORIGINS default
-      # (pydantic-settings reads this as a JSON list) - needed because the frontend
-      # is reached over the host's LAN IP, not literal "localhost", so the browser's
-      # Origin header won't match the http://localhost:3000-only default.
-      CORS_ORIGINS: '["http://localhost:3000","http://192.168.64.4:3000","http://localhost:8501"]'
+      # (pydantic-settings reads this as a JSON list). The frontend normally calls the
+      # API through the same-origin proxy below, so these only matter for direct calls.
+      CORS_ORIGINS: '["http://localhost:3000","https://localhost:3443","http://${PUBLIC_HOST:-localhost}:3000","https://${PUBLIC_HOST:-localhost}:3443","http://localhost:8501"]'
     depends_on:
       postgres:
         condition: service_healthy
@@ -97,19 +96,37 @@ services:
       dockerfile: Dockerfile
       args:
         # Baked into the client JS bundle at build time (Next.js NEXT_PUBLIC_* rule -
-        # see module1-frontend/Dockerfile). Set to the host's LAN IP, not "localhost",
-        # because this is what resolves correctly from a browser on another device.
-        NEXT_PUBLIC_API_URL: http://192.168.64.4:8000
-        NEXT_PUBLIC_FACE_SERVICE_URL: http://192.168.64.4:8001
+        # see module1-frontend/Dockerfile). "/" makes the app call /api/v1 on whatever
+        # origin served the page; the frontend-proxy service routes /api/* to the backend.
+        NEXT_PUBLIC_API_URL: /
+        NEXT_PUBLIC_FACE_SERVICE_URL: http://${PUBLIC_HOST:-localhost}:8001
     container_name: saiv-frontend
-    ports:
-      - "3000:3000"
-    environment:
-      NEXT_PUBLIC_API_URL: http://192.168.64.4:8000
-      NEXT_PUBLIC_FACE_SERVICE_URL: http://192.168.64.4:8001
+    expose:
+      - "3000"
     depends_on:
       backend:
         condition: service_healthy
+    networks:
+      - saiv-network
+
+  # Single entry point for the student PWA: http://localhost:3000 and
+  # https://localhost:3443 or https://${PUBLIC_HOST}:3443 (self-signed; camera and
+  # geolocation need HTTPS off localhost). Serves the frontend and proxies /api/* to the backend.
+  frontend-proxy:
+    image: caddy:2.8.4-alpine
+    container_name: saiv-frontend-proxy
+    ports:
+      - "3000:3000"
+      - "3443:3443"
+    environment:
+      PUBLIC_HOST: ${PUBLIC_HOST:-localhost}
+      HTTPS_SITES: https://localhost:3443${PUBLIC_HOST:+, https://${PUBLIC_HOST}:3443}
+    volumes:
+      - ./module1-frontend/deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on:
+      - frontend
+      - backend
     networks:
       - saiv-network
 
@@ -125,7 +142,7 @@ services:
       BACKEND_URL: http://backend:8000
       PROMETHEUS_URL: http://prometheus:9090
       # Link opened in the user's browser, so it uses the host port.
-      GRAFANA_PUBLIC_URL: http://localhost:3001
+      GRAFANA_PUBLIC_URL: http://${PUBLIC_HOST:-localhost}:3001
       # "true" adds an "Explore with sample data" button on the sign-in page.
       DEMO_MODE: "false"
     depends_on:
@@ -193,3 +210,4 @@ volumes:
   postgres_data:
   prometheus_data:
   grafana_data:
+  caddy_data:

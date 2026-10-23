@@ -5,7 +5,7 @@
  * /dashboard/*. Redirects unauthenticated users to /auth/login.
  */
 
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { useAuth } from '@/lib/hooks/useAuth'
@@ -26,6 +26,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const { isAuthenticated, isLoading, user, logout } = useAuth()
   const router = useRouter()
   const pathname = usePathname()
+  const [isLoggingOut, setIsLoggingOut] = useState(false)
   const visibleNavLinks = NAV_LINKS.filter((link) => !link.studentOnly || user?.role === 'student')
 
   useEffect(() => {
@@ -70,10 +71,14 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             <span className="hidden text-sm text-gray-500 sm:inline">{user?.full_name}</span>
             <button
               type="button"
-              onClick={logout}
-              className="min-h-[44px] rounded-md border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-100"
+              onClick={async () => {
+                setIsLoggingOut(true)
+                await logout()
+              }}
+              disabled={isLoggingOut}
+              className="min-h-[44px] rounded-md border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-100 disabled:opacity-60"
             >
-              Log out
+              {isLoggingOut ? 'Logging out...' : 'Log out'}
             </button>
           </div>
         </div>

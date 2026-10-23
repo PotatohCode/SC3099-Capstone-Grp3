@@ -97,19 +97,19 @@ class Settings(BaseSettings):
     GEOIP_DB_PATH: str = str(Path(__file__).resolve().parents[1] / "data" / "dbip-country-lite.mmdb")
 
     # --- Check-in enforcement switches (Phase 4) -----------------------------
-    # Built and tested, but OFF by default: each depends on a Module 1 change.
-    # Turn on per environment (env var of the same name) once that ships.
+    # Each depends on a Module 1 change; override per environment with an env
+    # var of the same name.
     #
     # CONSENT_ENFORCEMENT - Briefing: camera + geolocation consent "must be
-    # TRUE before check-in". Needs the frontend to send
+    # TRUE before check-in". The frontend sends
     # PUT /users/me {camera_consent, geolocation_consent} when the student
-    # grants permission (it doesn't yet).
-    #   off    - not checked (current behaviour)
+    # grants permission (since M1 PR #4), so "flag" is the default.
+    #   off    - not checked
     #   flag   - missing consent -> consent_missing, at most "flagged"
     #   reject - missing consent -> 403 CONSENT_REQUIRED. NOT for grading:
     #            the course's test_student checks in without consent and
     #            expects 201.
-    CONSENT_ENFORCEMENT: Literal["off", "flag", "reject"] = "off"
+    CONSENT_ENFORCEMENT: Literal["off", "flag", "reject"] = "flag"
     # DEVICE_BINDING_ENFORCEMENT - Briefing: "check-ins from unknown devices
     # flagged". Applies when the course has require_device_binding (default
     # true). Needs the frontend's per-install random fingerprint first;
@@ -156,6 +156,17 @@ class Settings(BaseSettings):
     LIVENESS_CHALLENGE_ACTIONS: list[str] = ["blink", "turn_left", "turn_right"]
     LIVENESS_CHALLENGE_STEPS: int = Field(default=2, ge=1, le=3)
     LIVENESS_CHALLENGE_TTL_SECONDS: int = Field(default=90, ge=10)
+    # Retries (POST /checkins/challenge/{id}/verify): attempts per student
+    # per session. A Module 3 failure doesn't use one up; a spoof verdict
+    # ends them. Once a student has failed, only a verified pass can approve
+    # the check-in (otherwise it goes to review).
+    LIVENESS_MAX_ATTEMPTS: int = Field(default=3, ge=1)
+    # What a failed verify tells the student:
+    #   per_step - also which step wasn't detected (`failed_step`), when
+    #              Module 3 reports per-step results (`steps_passed`)
+    #   generic  - only that the movements weren't confirmed
+    # Spoof verdicts are never revealed either way.
+    LIVENESS_FEEDBACK: Literal["generic", "per_step"] = "per_step"
     # LIVENESS_CHALLENGE_ENFORCEMENT - on a session that requires liveness:
     #   off  - a check-in without a valid challenge is scored as before
     #          (single-image passive liveness can still approve it)

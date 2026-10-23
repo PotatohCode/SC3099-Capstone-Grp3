@@ -1,13 +1,13 @@
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.deps import get_current_user, get_db, require_role
 from app.core.errors import APIError, ErrorCode
-from app.core.security import verify_password
+from app.core.security import get_password_hash, verify_password
 from app.db.models.course import Course
 from app.db.models.enrollment import Enrollment
 from app.db.models.user import User
@@ -17,13 +17,16 @@ from app.schemas.user import (
     AccountDeletionResponse,
     FaceEnrollRequest,
     FaceEnrollResponse,
+    PasswordChangeRequest,
     UserAdminUpdate,
     UserResponse,
     UserUpdateRequest,
 )
-from app.services import face_client
+from app.services import account_lockout, face_client
 from app.services.audit import log_event
 from app.services.authz import can_edit_course
+from app.services.client_ip import get_client_ip
+from app.services.partial_update import drop_nulls_for_required
 from app.services.sanitize import sanitize_text
 from app.services.uploads import require_image_size
 
@@ -87,6 +90,57 @@ def delete_me(
     return _schedule_deletion(db, current_user, actor_id=current_user.id)
 
 
+@router.post("/me/password", status_code=status.HTTP_204_NO_CONTENT)
+def change_password(
+    payload: PasswordChangeRequest,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """A wrong current password counts toward the same lockout as login
+    (services/account_lockout.py), so a stolen access token can't be used
+    to guess the password here without limit."""
+    ip, ua = get_client_ip(request), request.headers.get("user-agent")
+
+    retry_after = account_lockout.locked_retry_after(db, current_user)
+    if retry_after is not None:
+        log_event(
+            db, "password_change_failed", user_id=current_user.id, resource_type="user",
+            resource_id=current_user.id, ip_address=ip, user_agent=ua, success=False,
+            details={"reason": "account_locked"},
+        )
+        db.commit()
+        raise APIError(
+            status.HTTP_429_TOO_MANY_REQUESTS, "Account locked due to too many failed password attempts",
+            ErrorCode.ACCOUNT_LOCKED, headers={"Retry-After": str(retry_after)},
+        )
+
+    if not verify_password(payload.current_password, current_user.hashed_password):
+        account_lockout.record_failed_password(db, current_user, ip, ua)
+        log_event(
+            db, "password_change_failed", user_id=current_user.id, resource_type="user",
+            resource_id=current_user.id, ip_address=ip, user_agent=ua, success=False,
+            details={"reason": "password_incorrect"},
+        )
+        db.commit()
+        raise APIError(status.HTTP_403_FORBIDDEN, "Password is incorrect", ErrorCode.PASSWORD_INCORRECT)
+
+    if payload.new_password == payload.current_password:
+        raise APIError(
+            status.HTTP_400_BAD_REQUEST, "New password must differ from the current one",
+            ErrorCode.PASSWORD_UNCHANGED,
+        )
+
+    current_user.hashed_password = get_password_hash(payload.new_password)
+    current_user.failed_login_attempts = 0
+    log_event(
+        db, "password_changed", user_id=current_user.id, resource_type="user",
+        resource_id=current_user.id, ip_address=ip, user_agent=ua,
+    )
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.post("/me/face/enroll", response_model=FaceEnrollResponse)
 def enroll_face(
     payload: FaceEnrollRequest,
@@ -100,10 +154,14 @@ def enroll_face(
         )
 
     require_image_size(payload.image)
-    result = face_client.enroll_face(current_user.id, payload.image, current_user.camera_consent)
+    user_id, consent = current_user.id, current_user.camera_consent
+    # Don't hold a DB connection while Module 3 works (see the same step in
+    # routers/checkins.py create_checkin). Nothing is pending here.
+    db.commit()
+    result = face_client.enroll_face(user_id, payload.image, consent)
     if result is None:
-        # Module 3 timed out / errored / is a 501 stub (see KNOWN-ISSUES.md) -
-        # degrade to a real 503, not a crash or a fake success.
+        # Module 3 timed out / errored / answered 4xx or 5xx - degrade to a
+        # real 503, not a crash or a fake success.
         raise APIError(
             status.HTTP_503_SERVICE_UNAVAILABLE, "Face recognition service unavailable",
             ErrorCode.FACE_SERVICE_UNAVAILABLE,
@@ -189,7 +247,7 @@ def update_user(
     if user is None:
         raise APIError(status.HTTP_404_NOT_FOUND, "User not found", ErrorCode.USER_NOT_FOUND)
 
-    updates = payload.model_dump(exclude_unset=True)
+    updates = drop_nulls_for_required(User, payload.model_dump(exclude_unset=True))
     for field, value in updates.items():
         setattr(user, field, value)
 

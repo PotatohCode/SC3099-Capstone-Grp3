@@ -4,56 +4,195 @@
  * Tasks 1.3 & 1.4: WebRTC Camera Access, Frame Capture, and Liveness Challenge UI.
  * Component tree Section 2.1: "camera-capture.tsx [WebRTC + liveness UI]"
  *
- * Decision 5 (Section 9): "Liveness Implementation: UI prompt only; backend validates
- * image (bonus feature)." This component only shows the challenge prompt + countdown
- * and captures a single frame; all liveness scoring happens server-side.
+ * Fetches a server-issued challenge (POST /checkins/challenge) when the student taps
+ * Start, prompts each step and captures a frame burst; falls back to a single photo
+ * when challenges are unavailable. All liveness scoring happens server-side.
  */
 
-import { useEffect, useState } from 'react'
-import { useCameraStream } from '@/lib/hooks/useCameraStream'
-import { hasConsented, setConsent } from '@/lib/utils/consent-tracker'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { useAuth } from '@/lib/hooks/useAuth'
+import { useCameraStream, type CameraStatus } from '@/lib/hooks/useCameraStream'
+import { requestChallenge } from '@/lib/services/checkin.service'
+import { classifyChallengeError, type CheckInErrorView } from '@/lib/checkin/errors'
+import type { CapturedMedia } from '@/lib/checkin/payload'
+import { CAPTURE, planCapture } from '@/lib/liveness/challenge'
+import { abortableSleep, runCapturePlan } from '@/lib/liveness/capture-runner'
+import { decideConsentGate, queryPermission, type ConsentGate } from '@/lib/utils/consent-tracker'
+import { BURST_JPEG, createFrameGrabber, PHOTO_JPEG } from '@/lib/utils/frame-capture'
 
-const COUNTDOWN_SECONDS = 4
+type Phase = 'ready' | 'preparing' | 'countdown' | 'step' | 'photo-countdown' | 'done'
 
 interface CameraCaptureProps {
-  onCapture: (imageBase64: string) => void
+  sessionId: string
+  photoMode: boolean
+  onComplete: (media: CapturedMedia) => void
+  onReselectSession: () => void
 }
 
-export function CameraCapture({ onCapture }: CameraCaptureProps) {
-  const { videoRef, status, error, isStreaming, startStream, captureFrame } = useCameraStream()
-  const [hasConsentedToCamera, setHasConsentedToCamera] = useState(hasConsented('camera'))
-  const [countdown, setCountdown] = useState<number | null>(null)
+/** Short list of the upcoming actions, shown during the countdown. */
+function describeSequence(sequence: string[]): string {
+  return `You'll be asked to: ${sequence.map((action) => action.replace(/_/g, ' ')).join(', then ')}`
+}
 
-  function grantConsentAndStart() {
-    setConsent('camera', true)
-    setHasConsentedToCamera(true)
-    startStream()
-  }
+const INTERRUPTED = "The face check was interrupted. Let's try again."
+const NO_FRAMES = "We couldn't get images from your camera. Please try again."
 
-  // Task 1.4: 3-5 second countdown, then auto-capture.
-  useEffect(() => {
-    if (!isStreaming) return
-    setCountdown(COUNTDOWN_SECONDS)
-  }, [isStreaming])
+export function CameraCapture({ sessionId, photoMode, onComplete, onReselectSession }: CameraCaptureProps) {
+  const { user, saveConsent } = useAuth()
+  const { videoRef, status, error, isStreaming, startStream, stopStream } = useCameraStream()
+  const [gate, setGate] = useState<ConsentGate | null>(null)
+  const [phase, setPhase] = useState<Phase>('ready')
+  const [stepIndex, setStepIndex] = useState(0)
+  const [steps, setSteps] = useState<string[]>([])
+  const [prompt, setPrompt] = useState('')
+  const [countdown, setCountdown] = useState(0)
+  const [message, setMessage] = useState<CheckInErrorView | null>(null)
+  const abortRef = useRef<AbortController | null>(null)
 
-  useEffect(() => {
-    if (countdown === null) return
-    if (countdown <= 0) {
-      const image = captureFrame()
-      if (image) onCapture(image)
-      return
+  const begin = useCallback(async (): Promise<CameraStatus> => {
+    const result = await startStream()
+    if (result === 'streaming') await saveConsent('camera', true)
+    if (result === 'denied') {
+      await saveConsent('camera', false)
+      setGate('blocked')
     }
-    const timer = setTimeout(() => setCountdown((c) => (c ?? 1) - 1), 1000)
-    return () => clearTimeout(timer)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [countdown])
+    return result
+  }, [saveConsent, startStream])
 
-  function handleManualCapture() {
-    const image = captureFrame()
-    if (image) onCapture(image)
+  const initialConsent = useRef(user?.camera_consent)
+
+  useEffect(() => {
+    let cancelled = false
+    queryPermission('camera').then((permission) => {
+      if (!cancelled) setGate(decideConsentGate(initialConsent.current, permission))
+    })
+    return () => {
+      cancelled = true
+      abortRef.current?.abort()
+    }
+  }, [])
+
+  const beginRef = useRef(begin)
+  beginRef.current = begin
+
+  useEffect(() => {
+    if (gate === 'proceed') beginRef.current()
+  }, [gate])
+
+  useEffect(() => {
+    if (phase !== 'countdown' && phase !== 'photo-countdown') return
+    const timer = setInterval(() => setCountdown((c) => Math.max(1, c - 1)), 1000)
+    return () => clearInterval(timer)
+  }, [phase])
+
+  useEffect(() => {
+    if (status === 'error' && abortRef.current) abortRef.current.abort()
+  }, [status])
+
+  useEffect(() => {
+    function handleVisibility() {
+      if (document.visibilityState === 'hidden' && abortRef.current) abortRef.current.abort()
+    }
+    document.addEventListener('visibilitychange', handleVisibility)
+    return () => document.removeEventListener('visibilitychange', handleVisibility)
+  }, [])
+
+  function allowCamera() {
+    setGate('proceed')
   }
 
-  if (!hasConsentedToCamera) {
+  async function retryBlocked() {
+    if ((await begin()) === 'streaming') setGate('proceed')
+  }
+
+  function failCapture(text: string) {
+    abortRef.current = null
+    setPhase('ready')
+    setMessage({ message: text, action: 'retry-capture' })
+  }
+
+  async function countdownFrom(seconds: number, signal: AbortSignal) {
+    setCountdown(seconds)
+    await abortableSleep(seconds * 1000, signal)
+  }
+
+  async function takePhoto(controller: AbortController) {
+    const video = videoRef.current
+    if (!video) return failCapture(NO_FRAMES)
+    setPhase('photo-countdown')
+    await countdownFrom(Math.round(CAPTURE.countdownMs / 1000), controller.signal)
+    const photo = createFrameGrabber(video, PHOTO_JPEG)()
+    if (!photo) return failCapture(NO_FRAMES)
+    stopStream()
+    abortRef.current = null
+    setPhase('done')
+    onComplete({ kind: 'photo', photo })
+  }
+
+  async function start() {
+    const video = videoRef.current
+    if (!video) return
+    setMessage(null)
+    const controller = new AbortController()
+    abortRef.current = controller
+    try {
+      if (photoMode) return await takePhoto(controller)
+      setPhase('preparing')
+      let challenge
+      try {
+        challenge = await requestChallenge(sessionId)
+      } catch (err) {
+        const classified = classifyChallengeError(err)
+        if (classified.fallbackToPhoto) return await takePhoto(controller)
+        abortRef.current = null
+        setPhase('ready')
+        setMessage(classified.view)
+        return
+      }
+      const fetchedAtMs = performance.now()
+      const plan = planCapture(challenge.sequence, challenge.max_frames)
+      if (!plan) return await takePhoto(controller)
+      setSteps(challenge.sequence)
+      setPhase('countdown')
+      setCountdown(Math.round(CAPTURE.countdownMs / 1000))
+      const frames = await runCapturePlan(
+        plan,
+        createFrameGrabber(video, BURST_JPEG),
+        {
+          onStep: (index, step) => {
+            setPhase('step')
+            setStepIndex(index)
+            setPrompt(step.prompt)
+          },
+        },
+        controller.signal
+      )
+      stopStream()
+      abortRef.current = null
+      setPhase('done')
+      onComplete({
+        kind: 'burst',
+        challengeId: challenge.challenge_id,
+        sequence: challenge.sequence,
+        frames,
+        fetchedAtMs,
+        maxFrames: challenge.max_frames,
+      })
+    } catch (err) {
+      const aborted = err instanceof DOMException && err.name === 'AbortError'
+      failCapture(aborted ? INTERRUPTED : NO_FRAMES)
+    }
+  }
+
+  function cancel() {
+    abortRef.current?.abort()
+  }
+
+  if (gate === null) {
+    return <p className="text-sm text-gray-600">Checking camera access...</p>
+  }
+
+  if (gate === 'ask') {
     return (
       <div className="space-y-4 rounded-lg border border-gray-200 bg-white p-5">
         <h2 className="text-lg font-semibold text-gray-900">Camera access required</h2>
@@ -64,7 +203,7 @@ export function CameraCapture({ onCapture }: CameraCaptureProps) {
         </p>
         <button
           type="button"
-          onClick={grantConsentAndStart}
+          onClick={allowCamera}
           className="min-h-[44px] w-full rounded-md bg-blue-700 px-4 py-2 font-medium text-white hover:bg-blue-800 sm:w-auto"
         >
           Allow camera access
@@ -73,13 +212,15 @@ export function CameraCapture({ onCapture }: CameraCaptureProps) {
     )
   }
 
-  if (status === 'denied') {
+  if (gate === 'blocked' || status === 'denied') {
     return (
       <div className="space-y-3 rounded-lg border border-red-200 bg-red-50 p-5">
-        <p className="text-sm text-red-700">{error}</p>
+        <p className="text-sm text-red-700">
+          Camera access is blocked for this site. Turn it on in your browser&apos;s site settings, then tap Try again.
+        </p>
         <button
           type="button"
-          onClick={startStream}
+          onClick={retryBlocked}
           className="min-h-[44px] rounded-md border border-red-300 px-4 py-2 text-sm font-medium text-red-700 hover:bg-red-100"
         >
           Try again
@@ -88,54 +229,112 @@ export function CameraCapture({ onCapture }: CameraCaptureProps) {
     )
   }
 
+  const capturing = phase === 'preparing' || phase === 'countdown' || phase === 'step' || phase === 'photo-countdown'
+
   return (
     <div className="space-y-4">
+      <h2 className="text-lg font-semibold text-gray-900">Face check</h2>
       <div className="relative mx-auto w-full max-w-[640px] overflow-hidden rounded-lg bg-black">
         <video
           ref={videoRef}
-          className="w-full aspect-[4/3] object-cover"
+          className="aspect-[4/3] w-full -scale-x-100 object-cover"
           playsInline
           muted
           aria-label="Live camera preview"
         />
         {status === 'requesting' && (
           <div className="absolute inset-0 flex items-center justify-center bg-black/50 text-white">
-            Requesting camera access...
+            Starting camera...
           </div>
         )}
-        {isStreaming && countdown !== null && (
+        {capturing && (
           <div className="absolute inset-x-0 top-0 bg-black/60 p-3 text-center text-white">
-            <p className="font-medium">Please look at the camera and stay still</p>
-            <p className="text-3xl font-bold" aria-live="assertive">
-              {countdown > 0 ? countdown : 'Capturing...'}
-            </p>
+            {phase === 'preparing' && (
+              <p className="font-medium" aria-live="polite">
+                Getting your check ready...
+              </p>
+            )}
+            {phase === 'countdown' && (
+              <div aria-live="polite">
+                <p className="font-medium">Get ready</p>
+                <p className="text-sm">{describeSequence(steps)}</p>
+                <p className="text-3xl font-bold">{countdown}</p>
+              </div>
+            )}
+            {phase === 'step' && (
+              <div aria-live="assertive">
+                <p className="text-sm">
+                  Step {stepIndex + 1} of {steps.length}
+                </p>
+                <p className="text-2xl font-bold">{prompt}</p>
+              </div>
+            )}
+            {phase === 'photo-countdown' && (
+              <div aria-live="polite">
+                <p className="font-medium">Look at the camera and hold still</p>
+                <p className="text-3xl font-bold">{countdown}</p>
+              </div>
+            )}
+          </div>
+        )}
+        {phase === 'done' && (
+          <div className="absolute inset-0 flex items-center justify-center bg-black/50 text-white">
+            Face check complete
           </div>
         )}
       </div>
 
-      {error && (
+      {error && status === 'error' && (
         <p className="text-sm text-red-600" role="alert">
           {error}
         </p>
       )}
 
-      {status === 'idle' && (
+      {message && (
+        <div className="rounded-md bg-red-50 p-3 text-sm text-red-700" role="alert">
+          {message.message}
+          {message.action === 'reselect-session' && (
+            <button type="button" onClick={onReselectSession} className="ml-2 font-medium underline">
+              Choose another session
+            </button>
+          )}
+        </div>
+      )}
+
+      {phase === 'ready' && isStreaming && (
+        <div className="space-y-3">
+          <p className="text-sm text-gray-600">
+            {photoMode
+              ? "When you're ready, tap Take photo and look at the camera."
+              : "When you're ready, tap Start. You'll be asked to do a few quick actions while we take some photos."}
+          </p>
+          <button
+            type="button"
+            onClick={start}
+            className="min-h-[44px] w-full rounded-md bg-blue-700 px-4 py-2 font-medium text-white hover:bg-blue-800 sm:w-auto"
+          >
+            {photoMode ? 'Take photo' : 'Start'}
+          </button>
+        </div>
+      )}
+
+      {(status === 'idle' || status === 'stopped' || status === 'error') && phase === 'ready' && (
         <button
           type="button"
-          onClick={startStream}
+          onClick={() => begin()}
           className="min-h-[44px] w-full rounded-md bg-blue-700 px-4 py-2 font-medium text-white hover:bg-blue-800 sm:w-auto"
         >
           Start camera
         </button>
       )}
 
-      {isStreaming && (
+      {capturing && (
         <button
           type="button"
-          onClick={handleManualCapture}
-          className="min-h-[44px] w-full rounded-md border border-blue-700 px-4 py-2 font-medium text-blue-700 hover:bg-blue-50 sm:w-auto"
+          onClick={cancel}
+          className="min-h-[44px] rounded-md border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100"
         >
-          Capture now
+          Cancel
         </button>
       )}
     </div>

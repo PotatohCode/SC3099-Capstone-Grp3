@@ -16,11 +16,10 @@ Note the asymmetry between the two tables:
 - `checkins.scheduled_deletion_at` is set automatically at check-in
   creation (see routers/checkins.py's create_checkin), so check-in
   retention is fully live end-to-end.
-- `users.scheduled_deletion_at` is NOT set by anything yet - there is no
-  account-deletion endpoint (self-service or admin) in this codebase.
-  This sweep will correctly find zero eligible users until one exists.
-  That's a deliberate scope boundary, not an oversight - see
-  KNOWN-ISSUES.md.
+- `users.scheduled_deletion_at` is set by account deletion
+  (DELETE /users/me, admin DELETE /users/{id}): 30 days later the user is
+  anonymized, together with their registered devices (names, fingerprints,
+  browser/OS details and public keys identify a person too).
 """
 import uuid
 from datetime import datetime, timezone
@@ -30,6 +29,7 @@ from sqlalchemy.orm import Session
 
 from app.core.security import get_password_hash
 from app.db.models.checkin import CheckIn
+from app.db.models.device import Device
 from app.db.models.liveness_frame_hash import LivenessFrameHash
 from app.db.models.user import User
 
@@ -64,6 +64,24 @@ def anonymize_user(user: User) -> None:
     user.scheduled_deletion_at = None  # mark processed
 
 
+def anonymize_device(device: Device, now: datetime) -> None:
+    """Scrub a deleted user's device. The row stays (check-ins reference it
+    by device_id). The fingerprint is unique and NOT NULL, so it's replaced
+    rather than cleared."""
+    device.device_fingerprint = f"deleted-{device.id}"
+    device.device_name = None
+    device.browser = None
+    device.os_version = None
+    device.app_version = None
+    device.public_key = None
+    device.is_active = False
+    device.is_trusted = False
+    device.trust_score = "low"
+    if device.revoked_at is None:
+        device.revoked_at = now
+    device.revocation_reason = "account deleted"
+
+
 def anonymize_checkin(checkin: CheckIn) -> None:
     """Scrub location + biometric-derived fields; keep the row (and
     risk_signals' FK to it) intact - the audit trail itself (status,
@@ -90,6 +108,9 @@ def run_retention_sweep(db: Session) -> RetentionSweepResult:
     )
     for user in due_users:
         anonymize_user(user)
+    if due_users:
+        for device in db.query(Device).filter(Device.user_id.in_([u.id for u in due_users])).all():
+            anonymize_device(device, now)
 
     due_checkins = (
         db.query(CheckIn).filter(CheckIn.scheduled_deletion_at.isnot(None), CheckIn.scheduled_deletion_at <= now).all()

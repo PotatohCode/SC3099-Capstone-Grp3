@@ -1,0 +1,29 @@
+{
+	local_certs
+	skip_install_trust
+	default_sni {$PUBLIC_HOST:localhost}
+}
+
+(saiv_routes) {
+	request_body {
+		max_size 20MB
+	}
+	handle /api/* {
+		reverse_proxy backend:8000
+	}
+	handle /health {
+		reverse_proxy backend:8000
+	}
+	handle {
+		reverse_proxy frontend:3000
+	}
+}
+
+{$HTTPS_SITES:https://localhost:3443} {
+	tls internal
+	import saiv_routes
+}
+
+http://:3000 {
+	import saiv_routes
+}

@@ -5,9 +5,9 @@ requires: 5s timeout, no auth (internal call), and every failure mode
 (timeout, connection error, non-2xx, malformed JSON) returns None rather
 than raising - callers degrade gracefully instead of failing the check-in.
 
-As of this writing module3-face-recognition is an unimplemented stub (every
-endpoint 501s - see KNOWN-ISSUES.md), so in practice every call here
-currently returns None. That's the exact scenario this pattern exists for.
+Module 3 is implemented now, but it can still be down, slow or overloaded
+(e.g. under the 100-user stress tests), and that's the scenario this
+pattern exists for.
 
 Circuit breaker: a failure (timeout, connection error or 5xx, including a
 DNS lookup failure for an unresolvable host - measured at ~2.5s in this environment, and

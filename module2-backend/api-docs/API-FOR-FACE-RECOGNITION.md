@@ -3,10 +3,9 @@
 Read [API-CONVENTIONS.md](API-CONVENTIONS.md) for general context, but note:
 **this file is the opposite direction from the other two.** Modules 1 and 4
 call *us*; for Module 3, **Module 2 calls you.** This is the contract your
-service implements so our calls succeed. For **what changed and what you
-need to do**, see [CHANGES-2026-10-01.md](CHANGES-2026-10-01.md) §1 and the
-Module 3 guide in §4. Last updated 2026-10-20 (frame-burst liveness and
-server-issued challenges: §3).
+service implements so our calls succeed. **Your tasks:** the Module 3 table
+in [CHANGES-2026-10-01.md](CHANGES-2026-10-01.md). **Why things changed:**
+[CHANGELOG.md](CHANGELOG.md). Last updated 2026-10-23.
 
 ---
 
@@ -16,13 +15,20 @@ server-issued challenges: §3).
   inside docker-compose (`http://localhost:8001` from your machine).
 - **No authentication**: internal service-to-service calls.
 - **Every call is a `POST` with a JSON body**, and we expect JSON back.
-- **5-second timeout** per call, strictly enforced. Exception:
-  `/liveness/check` calls that carry a frame burst get **15 seconds**
-  (`LIVENESS_TIMEOUT_SECONDS`); single-image calls keep 5 s.
+- **5-second timeout** for each step of a call: connecting, sending the
+  request, waiting for your response to start, and the gap between response
+  chunks. It's not a hard cap on the whole call: a reply that trickles in
+  slowly can take longer in total. Your replies are small JSON objects, so in
+  practice a call that isn't answered within ~5 s fails. Exception:
+  `/liveness/check` calls that carry a frame burst get **15 seconds** per
+  step (`LIVENESS_TIMEOUT_SECONDS`); single-image calls keep 5 s.
 - **Concurrency:** the backend handles 100+ simultaneous check-ins, and each
-  check-in with a photo can call `/liveness/check`, `/face/verify` and
-  `/risk/assess`. The hidden stress tests use ~100 concurrent users, so
-  load-test with 50–100 parallel requests.
+  check-in with a photo or a frame burst can call `/liveness/check`,
+  `/face/verify` and `/risk/assess`. On top of that, each liveness **retry**
+  (`POST /checkins/challenge/{id}/verify`, up to 3 per student per session)
+  is one `/liveness/check` frame-burst call. The hidden stress tests use ~100
+  concurrent users, so load-test with 50–100 parallel requests. If you're
+  slow, only the check-ins wait; the rest of the backend stays responsive.
 - **Images:** we forward the base64 exactly as the client sent it (normally
   no `data:` prefix and no whitespace). Anything over 10,000,000 base64
   characters is refused before it reaches you.
@@ -36,7 +42,8 @@ server-issued challenges: §3).
 | **5xx**, timeout, connection error, invalid JSON | Treat as failed **and stop calling that endpoint for 30 s** (circuit breaker per path), then try again |
 
 During the 30 s cooldown we score locally, so none of our endpoints
-hard-fail because you're down. A slow service still gets cut off at 5 s.
+hard-fail because you're down. A service that doesn't start answering
+within 5 s is treated as failed.
 
 ---
 
@@ -74,8 +81,11 @@ hard-fail because you're down. A slow service still gets cut off at 5 s.
 ```json
 { "match_passed": true, "match_score": 0.0, "current_template_hash": "..." }
 ```
-- Called during check-in when the student sent a photo **and** has an
-  enrolled face.
+- Called during check-in when the student sent a photo or a frame burst
+  **and** has an enrolled face. We send the photo, or else the burst's
+  middle frame. With a verified challenge we always send the verified
+  burst's middle frame, so the face that did the movements is the one
+  compared.
 - `current_template_hash` is stored on the check-in row as a record of that
   attempt.
 - **What `match_passed` does now:**
@@ -85,9 +95,12 @@ hard-fail because you're down. A slow service still gets cut off at 5 s.
   - On failure we use `None` → on a face-required session the check-in is
     **flagged for review**, not rejected.
 - **Only return `match_passed: false` when you've actually compared two
-  faces and they differ.** For "no face found" or "can't decide", prefer an
-  error, or return the low score with `face_detected: false`, rather than a
-  confident `false`.
+  faces and they differ.** We read only `match_passed`, `match_score` and
+  `current_template_hash`; any other field (e.g. `face_detected`) is
+  ignored, so a `false` is a hard reject whatever else you send. For "no
+  face found" or "can't decide", return **`match_passed: null`** (→ flagged
+  for review), or a **4xx** (that call alone falls back, and the circuit
+  breaker stays closed).
 
 ### 3. `POST /liveness/check`
 
@@ -95,13 +108,13 @@ Two request shapes. **Keep supporting the first**: the course's public
 tests call you directly with a single image and `"challenge_type":
 "passive"`, and most check-ins still send one photo.
 
-**(a) Single image (unchanged):**
+**(a) Single image:**
 ```json
 { "challenge_response": "base64 image", "challenge_type": "passive" }
 ```
 
-**(b) Frame burst, new (2026-10-20).** Sent when the student's app captured
-a short burst while performing a challenge:
+**(b) Frame burst.** Sent when the student's app captured a short burst
+while performing a challenge:
 ```jsonc
 {
   "challenge_response": "base64 image",          // still sent: the middle frame, so an older build keeps working
@@ -120,8 +133,16 @@ a short burst while performing a challenge:
   | Action | What to detect across the frames |
   |---|---|
   | `blink` | Eyes open → closed → open (eye aspect ratio from the face mesh) |
-  | `turn_left` | Head yaw to the **student's** left past a threshold, then back toward centre. Front cameras mirror the image: handle that on your side |
-  | `turn_right` | Same, to the right |
+  | `turn_left` | Head yaw to the **student's** left past a threshold, then back toward centre. Frames are **not mirrored** (see below), so the face turns toward the **image's right** |
+  | `turn_right` | Same, to the student's right (toward the image's left) |
+
+  **Frames are never mirrored.** The app captures the raw camera image
+  (`getUserMedia` → canvas, no flip), so you see what someone facing the
+  student would see: the student's left is the image's right. If the app
+  ever mirrors its on-screen preview, that's CSS only and doesn't change
+  the frames. Yaw sign conventions differ between libraries, so check yours
+  with a quick test (turn to your own left on camera and log the yaw) rather
+  than assuming the sign.
 
   More actions (`nod`, `open_mouth`) may be added later in the same format.
   Treat an unknown action as "not performed".
@@ -132,8 +153,9 @@ a short burst while performing a challenge:
 {
   "liveness_passed": true,      // as before: your anti-spoof verdict
   "liveness_score": 0.0,        // as before
-  "challenge_passed": true,     // new: were all steps performed, in order? Only needed for shape (b) with challenge_sequence
-  "steps_passed": [true, false] // optional, one per step, for our logs
+  "challenge_passed": true,     // were all steps performed, in order? Only needed for shape (b) with challenge_sequence
+  "steps_passed": [true, false] // one per step, in sequence order. Please send it: we log it, and
+                                // we tell the student which step to redo (the first false one)
 }
 ```
 
@@ -141,28 +163,37 @@ a short burst while performing a challenge:
 
 | Your answer | Outcome |
 |---|---|
-| `challenge_passed: false` | Treated as a **failed liveness check** → check-in **rejected** (the student can appeal) |
-| `challenge_passed: true` | Your `liveness_passed` decides, as today |
+| `challenge_passed: false` | Steps not performed. The student may **retry** (3 attempts per session, a new sequence each time); without a later pass the check-in is **flagged for review**, not rejected |
+| `challenge_passed: true` + `liveness_passed: true` | Passed |
+| `challenge_passed: true` + `liveness_passed: null` | Unverified (no attempt used) |
 | `challenge_passed` missing or `null` (e.g. older build, or you couldn't tell) | **Unverified** → at most **flagged for review**, unless `liveness_passed` is `false` |
-| Call failed / timed out | Unverified, same as today |
+| `liveness_passed: false` (any `challenge_passed`) | Spoof → **no more attempts**, check-in **rejected** (the student can appeal) |
+| Call failed / timed out | Unverified; the student's attempt isn't used up |
+
+**When you're called:** usually by `POST /checkins/challenge/{id}/verify`,
+right after the student performs the challenge and **before** the
+check-in, so they can retry. The check-in then reuses that answer without
+calling you again. If the app skips the verify step, you're called at the
+check-in as before. Same request and response either way.
 
 Your current build ignores the unknown fields and scores
 `challenge_response` as one image. That's safe: without `challenge_passed`
-we never auto-approve a challenged check-in.
+we never auto-approve a challenged check-in. But until you return it,
+every verify answers "unverified", so students can't retry yet.
 - `liveness_passed: false` → **always rejects** the check-in
   (`liveness_failed`, hard reject), whatever the score.
-- `liveness_passed: null` (e.g. no face found), or a failed call → on a
-  session that requires liveness, the check-in is **flagged for review**
-  (`liveness_unverified`), not rejected. Your current `null` for "no face
-  detected" is exactly right.
+- `liveness_passed: null` (e.g. no face found), or a failed call → the
+  check-in is never auto-rejected for it: on a session that requires
+  liveness it's **flagged for review** (`liveness_unverified`). Your current
+  `null` for "no face detected" is exactly right.
 - **Only send `false` when you've determined the image is a spoof**
   (printed photo, screen replay, flat face mesh). Don't default to `false`
   for uncertain cases.
 
 ### 4. `POST /risk/assess`
 
-Only called when the student sent a photo; otherwise we skip it and use a
-local formula.
+Only called when the student sent a photo or a frame burst; otherwise we
+skip it and use a local formula.
 
 **We send:**
 ```json

@@ -23,6 +23,9 @@ from fastapi import HTTPException
 class ErrorCode:
     # 400
     BAD_REQUEST = "BAD_REQUEST"
+    # A value the database can't store: a NUL character in text, or a number
+    # out of range (e.g. offset=10^20). See the handlers in main.py.
+    INVALID_INPUT = "INVALID_INPUT"
     EMAIL_ALREADY_REGISTERED = "EMAIL_ALREADY_REGISTERED"
     WEAK_PASSWORD = "WEAK_PASSWORD"
     ALREADY_ENROLLED = "ALREADY_ENROLLED"
@@ -39,10 +42,11 @@ class ErrorCode:
     REVIEW_NOT_ALLOWED = "REVIEW_NOT_ALLOWED"
     CAMERA_CONSENT_REQUIRED = "CAMERA_CONSENT_REQUIRED"
     CHALLENGE_INVALID = "CHALLENGE_INVALID"
+    NO_FACE_DETECTED = "NO_FACE_DETECTED"
+    PASSWORD_UNCHANGED = "PASSWORD_UNCHANGED"
     # 403 (not 401, so clients don't treat it as an expired session)
     PASSWORD_INCORRECT = "PASSWORD_INCORRECT"
     CONSENT_REQUIRED = "CONSENT_REQUIRED"
-    NO_FACE_DETECTED = "NO_FACE_DETECTED"
     NOT_ENROLLED = "NOT_ENROLLED"
     # 401
     INVALID_TOKEN = "INVALID_TOKEN"
@@ -61,6 +65,8 @@ class ErrorCode:
     ENROLLMENT_NOT_FOUND = "ENROLLMENT_NOT_FOUND"
     DEVICE_NOT_FOUND = "DEVICE_NOT_FOUND"
     CHECKIN_NOT_FOUND = "CHECKIN_NOT_FOUND"
+    # 409
+    LIVENESS_ATTEMPTS_EXHAUSTED = "LIVENESS_ATTEMPTS_EXHAUSTED"
     # 413
     IMAGE_TOO_LARGE = "IMAGE_TOO_LARGE"
     TOO_MANY_FRAMES = "TOO_MANY_FRAMES"
@@ -73,6 +79,9 @@ class ErrorCode:
     # 503
     FACE_SERVICE_UNAVAILABLE = "FACE_SERVICE_UNAVAILABLE"
     CHALLENGE_UNAVAILABLE = "CHALLENGE_UNAVAILABLE"
+    # The database is unreachable (or a transient DB failure such as a
+    # deadlock): retry later. See main.py's OperationalError handler.
+    SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE"
 
 
 # Fallback for any plain `HTTPException(...)` call site not yet migrated to

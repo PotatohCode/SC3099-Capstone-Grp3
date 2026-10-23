@@ -21,6 +21,7 @@ from app.schemas.common import Page, page_limit
 from app.schemas.session import SessionCreate, SessionResponse, SessionUpdate
 from app.services.audit import log_event
 from app.services.authz import require_edit_course, require_manage_session
+from app.services.partial_update import drop_nulls_for_required
 from app.services.roster import active_student_enrollments
 from app.services.sanitize import sanitize_text
 
@@ -238,10 +239,19 @@ def create_session(
     checkin_closes_at = payload.checkin_closes_at or (payload.scheduled_start + timedelta(minutes=30))
     _validate_schedule(payload.scheduled_start, payload.scheduled_end, checkin_opens_at, checkin_closes_at)
 
+    # Session owner: the creator, except when an admin creates a session in
+    # a course with an assigned instructor - then that instructor owns it.
+    # Session-level rules (PATCH/DELETE "must be session owner", session
+    # stats, check-in review) only look at the session's owner, so an
+    # admin-owned session in someone's course was one its instructor could
+    # see but not start, close or review. The audit row still records the
+    # admin as the actor.
+    owner_id = course.instructor_id if current_user.role == "admin" and course.instructor_id else current_user.id
+
     session_obj = ClassSession(
         course_id=course.id,
-        instructor_id=current_user.id,
-        name=payload.name,
+        instructor_id=owner_id,
+        name=sanitize_text(payload.name),
         session_type=payload.session_type,
         description=sanitize_text(payload.description) if payload.description else None,
         scheduled_start=payload.scheduled_start,
@@ -250,7 +260,7 @@ def create_session(
         checkin_closes_at=checkin_closes_at,
         venue_latitude=payload.venue_latitude,
         venue_longitude=payload.venue_longitude,
-        venue_name=payload.venue_name,
+        venue_name=sanitize_text(payload.venue_name) if payload.venue_name else None,
         geofence_radius_meters=payload.geofence_radius_meters,
         require_liveness_check=payload.require_liveness_check,
         require_face_match=payload.require_face_match,
@@ -260,7 +270,7 @@ def create_session(
     db.flush()
     log_event(
         db, "session_created", user_id=current_user.id, resource_type="session", resource_id=session_obj.id,
-        details={"course_id": course.id},
+        details={"course_id": course.id, "owner_id": owner_id},
     )
     db.commit()
     db.refresh(session_obj)
@@ -279,9 +289,10 @@ def update_session(
         raise APIError(status.HTTP_404_NOT_FOUND, "Session not found", ErrorCode.SESSION_NOT_FOUND)
     require_manage_session(db, current_user, session_obj)
 
-    updates = payload.model_dump(exclude_unset=True)
-    if updates.get("description"):
-        updates["description"] = sanitize_text(updates["description"])
+    updates = drop_nulls_for_required(ClassSession, payload.model_dump(exclude_unset=True))
+    for field in ("name", "description", "venue_name"):
+        if updates.get(field):
+            updates[field] = sanitize_text(updates[field])
 
     new_status = updates.get("status")
     for field, value in updates.items():

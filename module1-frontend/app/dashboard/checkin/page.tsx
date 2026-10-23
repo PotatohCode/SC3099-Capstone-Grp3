@@ -4,11 +4,12 @@
  * Task 1.2: Check-In Workflow Pipeline - wizard controller.
  * Component tree Section 2.1: "app/dashboard/checkin/page.tsx [Check-in wizard controller]"
  *
- * 4 steps: session-select -> camera -> location -> confirm (state machine lives in
- * CheckInContext; each step only advances once `canProceedFrom` is satisfied).
+ * 4 steps: session-select -> location -> camera -> confirm (state machine lives in
+ * lib/checkin/wizard-state.ts via CheckInContext).
  */
 
 import { useEffect, useState } from 'react'
+import Link from 'next/link'
 import { useCheckIn } from '@/lib/hooks/useCheckIn'
 import type { CheckInStep } from '@/lib/context/CheckInContext'
 import { useOfflineSync } from '@/lib/hooks/useOfflineSync'
@@ -16,6 +17,8 @@ import { getMySessions } from '@/lib/services/session.service'
 import { submitCheckIn } from '@/lib/services/checkin.service'
 import { getOrCreateDeviceFingerprint } from '@/lib/utils/device-fingerprint'
 import { extractErrorMessage } from '@/lib/utils/http-client'
+import { submitAttempt } from '@/lib/checkin/submit'
+import type { CheckInErrorAction, CheckInErrorView } from '@/lib/checkin/errors'
 import { LoadingSpinner } from '@/components/LoadingSpinner'
 import { StatusBadge, RiskBadge } from '@/components/StatusBadge'
 import { CameraCapture } from './camera-capture'
@@ -24,8 +27,8 @@ import type { SessionSummary } from '@/lib/types'
 
 const STEPS: { key: CheckInStep; label: string }[] = [
   { key: 'session-select', label: 'Session' },
-  { key: 'camera', label: 'Camera' },
   { key: 'location', label: 'Location' },
+  { key: 'camera', label: 'Face check' },
   { key: 'confirm', label: 'Confirm' },
 ]
 
@@ -75,7 +78,7 @@ function StepIndicator({ current }: { current: CheckInStep }) {
 }
 
 function SessionSelectStep() {
-  const { setSession, nextStep } = useCheckIn()
+  const { selectSession } = useCheckIn()
   const [sessions, setSessions] = useState<SessionSummary[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -120,10 +123,7 @@ function SessionSelectStep() {
         <li key={session.id}>
           <button
             type="button"
-            onClick={() => {
-              setSession(session)
-              nextStep()
-            }}
+            onClick={() => selectSession(session)}
             className="min-h-[44px] w-full rounded-lg border border-gray-200 bg-white p-4 text-left hover:border-blue-400 hover:bg-blue-50"
           >
             <p className="font-semibold text-gray-900">{session.name}</p>
@@ -137,48 +137,91 @@ function SessionSelectStep() {
   )
 }
 
+const ACTION_LABELS: Record<Exclude<CheckInErrorAction, 'queue-offline' | 'view-history'>, string> = {
+  'retry-capture': 'Redo face check',
+  'retry-location': 'Update my location',
+  'reselect-session': 'Choose another session',
+}
+
+/** Error panel with the recovery buttons for a failed check-in. */
+function CheckInErrorPanel({ view, onAction }: { view: CheckInErrorView; onAction: (action: CheckInErrorAction) => void }) {
+  const actions = [view.action, view.alternateAction].filter((a): a is CheckInErrorAction => !!a)
+  return (
+    <div className="space-y-3 rounded-lg border border-red-200 bg-red-50 p-5" role="alert">
+      {view.title && <h2 className="text-lg font-semibold text-red-800">{view.title}</h2>}
+      <p className="text-sm text-red-700">{view.message}</p>
+      {view.secondary && <p className="text-sm text-red-700">{view.secondary}</p>}
+      <div className="flex flex-wrap gap-3">
+        {actions.map((action, index) =>
+          action === 'view-history' ? (
+            <Link
+              key={action}
+              href="/dashboard/history"
+              className="flex min-h-[44px] items-center rounded-md bg-blue-700 px-4 py-2 text-sm font-medium text-white hover:bg-blue-800"
+            >
+              Go to history
+            </Link>
+          ) : action === 'queue-offline' ? null : (
+            <button
+              key={action}
+              type="button"
+              onClick={() => onAction(action)}
+              className={
+                index === 0
+                  ? 'min-h-[44px] rounded-md bg-blue-700 px-4 py-2 text-sm font-medium text-white hover:bg-blue-800'
+                  : 'min-h-[44px] rounded-md border border-red-300 px-4 py-2 text-sm font-medium text-red-700 hover:bg-red-100'
+              }
+            >
+              {ACTION_LABELS[action]}
+            </button>
+          )
+        )}
+      </div>
+    </div>
+  )
+}
+
 function ConfirmStep() {
-  const { session, capturedImage, location, result, setResult, previousStep, reset } = useCheckIn()
+  const { session, media, location, result, previousStep, goToStep, retakeLocation, reset, submitSucceeded, submitQueued, submitFailed } =
+    useCheckIn()
   const { isOnline, queueCheckIn } = useOfflineSync()
   const [isSubmitting, setIsSubmitting] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [errorView, setErrorView] = useState<CheckInErrorView | null>(null)
   const [queuedOffline, setQueuedOffline] = useState(false)
 
   async function handleSubmit() {
-    if (!session || !capturedImage || !location) return
+    if (!session || !media || !location) return
     setIsSubmitting(true)
-    setError(null)
+    setErrorView(null)
     setQueuedOffline(false)
-
-    // Task 1.7: include device fingerprint with every check-in submission.
-    const payload = {
-      session_id: session.id,
-      latitude: location.latitude,
-      longitude: location.longitude,
-      location_accuracy_meters: location.accuracy,
-      device_fingerprint: getOrCreateDeviceFingerprint(),
-      liveness_challenge_response: capturedImage,
+    const outcome = await submitAttempt({
+      sessionId: session.id,
+      location,
+      media,
+      fingerprint: getOrCreateDeviceFingerprint(),
+      isOnline,
+      browserOnline: () => navigator.onLine,
+      now: () => performance.now(),
+      submit: submitCheckIn,
+      queue: queueCheckIn,
+    })
+    if (outcome.kind === 'success') {
+      submitSucceeded(outcome.result)
+    } else if (outcome.kind === 'queued') {
+      submitQueued()
+      setQueuedOffline(true)
+    } else {
+      submitFailed(!!outcome.view.challengeInvalid)
+      setErrorView(outcome.view)
     }
+    setIsSubmitting(false)
+  }
 
-    try {
-      if (!isOnline) {
-        await queueCheckIn(payload)
-        setQueuedOffline(true)
-      } else {
-        const response = await submitCheckIn(payload)
-        setResult(response)
-      }
-    } catch (err) {
-      // Network error while "online" (e.g. flaky connection) - fall back to offline queue.
-      if (!navigator.onLine) {
-        await queueCheckIn(payload)
-        setQueuedOffline(true)
-      } else {
-        setError(extractErrorMessage(err, 'Check-in failed. Please try again.'))
-      }
-    } finally {
-      setIsSubmitting(false)
-    }
+  function handleErrorAction(action: CheckInErrorAction) {
+    setErrorView(null)
+    if (action === 'retry-capture') goToStep('camera')
+    else if (action === 'retry-location') retakeLocation()
+    else if (action === 'reselect-session') reset()
   }
 
   if (result) {
@@ -187,7 +230,7 @@ function ConfirmStep() {
         <h2 className="text-lg font-semibold text-gray-900">Check-in submitted</h2>
         <div className="flex flex-wrap items-center gap-2">
           <StatusBadge status={result.status} />
-          <RiskBadge riskScore={result.risk_score} />
+          <RiskBadge riskLevel={result.risk_level} riskScore={result.risk_score} />
         </div>
         {typeof result.distance_from_venue_meters === 'number' && (
           <p className="text-sm text-gray-600">
@@ -224,6 +267,10 @@ function ConfirmStep() {
     )
   }
 
+  if (errorView) {
+    return <CheckInErrorPanel view={errorView} onAction={handleErrorAction} />
+  }
+
   return (
     <div className="space-y-4">
       <div className="rounded-lg border border-gray-200 bg-white p-5">
@@ -234,8 +281,10 @@ function ConfirmStep() {
             <dd className="font-medium text-gray-900">{session?.name}</dd>
           </div>
           <div className="flex justify-between">
-            <dt className="text-gray-500">Liveness photo</dt>
-            <dd className="font-medium text-gray-900">{capturedImage ? 'Captured' : 'Missing'}</dd>
+            <dt className="text-gray-500">Face check</dt>
+            <dd className="font-medium text-gray-900">
+              {!media ? 'Missing' : media.kind === 'burst' ? `Completed (${media.sequence.length} actions)` : 'Photo taken'}
+            </dd>
           </div>
           <div className="flex justify-between">
             <dt className="text-gray-500">Location</dt>
@@ -251,24 +300,19 @@ function ConfirmStep() {
         )}
       </div>
 
-      {error && (
-        <div className="rounded-md bg-red-50 p-3 text-sm text-red-700" role="alert">
-          {error}
-        </div>
-      )}
-
       <div className="flex gap-3">
         <button
           type="button"
           onClick={previousStep}
-          className="min-h-[44px] rounded-md border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100"
+          disabled={isSubmitting}
+          className="min-h-[44px] rounded-md border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 disabled:opacity-60"
         >
           Back
         </button>
         <button
           type="button"
           onClick={handleSubmit}
-          disabled={isSubmitting || !session || !capturedImage || !location}
+          disabled={isSubmitting || !session || !media || !location}
           className="min-h-[44px] flex-1 rounded-md bg-blue-700 px-4 py-2 font-medium text-white hover:bg-blue-800 disabled:opacity-60"
         >
           {isSubmitting ? 'Submitting...' : 'Submit check-in'}
@@ -279,7 +323,7 @@ function ConfirmStep() {
 }
 
 export default function CheckInWizardPage() {
-  const { step, setCapturedImage, setLocation, previousStep, nextStep } = useCheckIn()
+  const { step, photoMode, session, location, setMedia, setLocation, continueFromLocation, previousStep, reset } = useCheckIn()
 
   return (
     <div>
@@ -288,14 +332,9 @@ export default function CheckInWizardPage() {
 
       {step === 'session-select' && <SessionSelectStep />}
 
-      {step === 'camera' && (
+      {step === 'location' && (
         <div className="space-y-4">
-          <CameraCapture
-            onCapture={(image) => {
-              setCapturedImage(image)
-              nextStep()
-            }}
-          />
+          <GeolocationStep knownLocation={location} onLocationConfirmed={setLocation} onContinue={continueFromLocation} />
           <button
             type="button"
             onClick={previousStep}
@@ -306,14 +345,9 @@ export default function CheckInWizardPage() {
         </div>
       )}
 
-      {step === 'location' && (
+      {step === 'camera' && session && (
         <div className="space-y-4">
-          <GeolocationStep
-            onLocationConfirmed={(location) => {
-              setLocation(location)
-              nextStep()
-            }}
-          />
+          <CameraCapture sessionId={session.id} photoMode={photoMode} onComplete={setMedia} onReselectSession={reset} />
           <button
             type="button"
             onClick={previousStep}

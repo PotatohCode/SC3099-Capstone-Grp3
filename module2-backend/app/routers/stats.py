@@ -18,6 +18,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
+from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.deps import get_db, require_role
@@ -51,6 +52,11 @@ router = APIRouter(prefix="/stats", tags=["stats"])
 
 NON_ATTENDANCE_STATUSES = {"rejected"}
 LOW_ATTENDANCE_THRESHOLD = 0.75  # reasoned default - no spec value given
+# Sessions that have taken place (or are taking place). Attendance is only
+# measured against these: a scheduled (future) or cancelled session counted
+# as "missed" by every student, which pulled rates down and raised
+# low-attendance alerts for classes that hadn't happened yet.
+HELD_SESSION_STATUSES = ("active", "closed")
 
 
 def _now() -> datetime:
@@ -132,23 +138,53 @@ def stats_overview(
     week_checkins = [c for c in all_checkins if c.checked_in_at >= week_start]
     approved = [c for c in all_checkins if c.status == "approved"]
     flagged = [c for c in all_checkins if c.status == "flagged"]
-    attended = [c for c in all_checkins if _is_attended(c)]
     high_risk_today = [c for c in today_checkins if c.risk_score >= 0.5]
 
     approval_rate = round(len(approved) / len(all_checkins), 4) if all_checkins else 0.0
-    avg_attendance_rate = round(len(attended) / len(all_checkins), 4) if all_checkins else 0.0
     avg_risk = _avg([c.risk_score for c in all_checkins])
+
+    # Attendance = attended (non-rejected) check-ins / enrolled students, per
+    # held session - the same definition as course and session stats.
+    # Sessions whose course has no students are left out rather than
+    # counted as 0%.
+    held_sessions = sessions_q.filter(ClassSession.status.in_(HELD_SESSION_STATUSES)).all()
+    enrolled_by_course = dict(
+        active_student_enrollments(db)
+        .with_entities(Enrollment.course_id, func.count(Enrollment.id))
+        .filter(Enrollment.course_id.in_({s.course_id for s in held_sessions} or {""}))
+        .group_by(Enrollment.course_id)
+        .all()
+    )
+    attended_by_session: dict = defaultdict(int)
+    for c in all_checkins:
+        if _is_attended(c):
+            attended_by_session[c.session_id] += 1
+    session_rates = [
+        (s, attended_by_session[s.id], enrolled_by_course[s.course_id])
+        for s in held_sessions
+        if enrolled_by_course.get(s.course_id)
+    ]
+    avg_attendance_rate = _avg([attended / enrolled for _, attended, enrolled in session_rates])
 
     daily = defaultdict(list)
     for c in all_checkins:
         if c.checked_in_at >= trend_start:
             daily[c.checked_in_at.date().isoformat()].append(c)
-    checkins_by_day, attendance_rate_by_day = [], []
-    for day in sorted(daily.keys(), reverse=True):
-        day_checkins = daily[day]
-        checkins_by_day.append(DayCount(date=day, count=len(day_checkins)))
-        day_approved = sum(1 for c in day_checkins if c.status == "approved")
-        attendance_rate_by_day.append(DayRate(date=day, rate=round(day_approved / len(day_checkins), 4)))
+    checkins_by_day = [DayCount(date=day, count=len(daily[day])) for day in sorted(daily.keys(), reverse=True)]
+
+    # Per day of the session's scheduled start: attended / expected over
+    # that day's held sessions.
+    day_attended: dict = defaultdict(int)
+    day_expected: dict = defaultdict(int)
+    for s, attended, enrolled in session_rates:
+        if s.scheduled_start >= trend_start:
+            day = s.scheduled_start.date().isoformat()
+            day_attended[day] += attended
+            day_expected[day] += enrolled
+    attendance_rate_by_day = [
+        DayRate(date=day, rate=round(day_attended[day] / day_expected[day], 4))
+        for day in sorted(day_expected.keys(), reverse=True)
+    ]
 
     return StatsOverviewResponse(
         total_sessions=total_sessions, active_sessions=active_sessions, total_courses=total_courses,
@@ -227,7 +263,11 @@ def course_stats(
         raise APIError(404, "Course not found", ErrorCode.COURSE_NOT_FOUND)
     require_edit_course(current_user, course)
 
-    sessions = db.query(ClassSession).filter(ClassSession.course_id == course_id).all()
+    sessions = (
+        db.query(ClassSession)
+        .filter(ClassSession.course_id == course_id, ClassSession.status.in_(HELD_SESSION_STATUSES))
+        .all()
+    )
     total_enrolled = active_student_enrollments(db).filter(Enrollment.course_id == course_id).count()
 
     checkins_by_session = {}
@@ -318,7 +358,10 @@ def student_stats(
     attended_all = 0
     for e in enrollments:
         session_ids = [
-            row[0] for row in db.query(ClassSession.id).filter(ClassSession.course_id == e.course_id).all()
+            row[0]
+            for row in db.query(ClassSession.id)
+            .filter(ClassSession.course_id == e.course_id, ClassSession.status.in_(HELD_SESSION_STATUSES))
+            .all()
         ]
         checkins = (
             db.query(CheckIn)

@@ -2,7 +2,7 @@ from typing import Optional
 
 from pydantic import BaseModel, EmailStr, Field
 
-from app.schemas.common import Role
+from app.schemas.common import PASSWORD_MAX_LENGTH, EscapedName, Role
 from app.schemas.user import UserResponse
 
 
@@ -12,8 +12,10 @@ class RegisterRequest(BaseModel):
     # SECURITY-REQUIREMENTS.md's "Return 422 if too weak" (API-SPECIFICATION.md's
     # prose says 400 for this case, but tests/public/test_security_basic.py
     # asserts 422 - tests win per IMPLEMENTATION-PLAN.md's own stated rule).
-    password: str = Field(min_length=8)
-    full_name: str = Field(min_length=1, max_length=255)
+    # max_length: passlib refuses to hash > 4096 characters (it was a 500),
+    # and bcrypt only uses the first 72 bytes anyway. 128 is generous.
+    password: str = Field(min_length=8, max_length=PASSWORD_MAX_LENGTH)
+    full_name: EscapedName
     # Design deck: "Ignore security restrictions about the roles during
     # registration" - any role, including admin, can self-register.
     role: Role = "student"

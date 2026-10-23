@@ -14,32 +14,31 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react'
 import { useRouter } from 'next/navigation'
 import * as authService from '@/lib/services/auth.service'
-import { registerDevice } from '@/lib/services/device.service'
-import {
-  detectPlatform,
-  getOrCreateDeviceFingerprint,
-} from '@/lib/utils/device-fingerprint'
-import { extractErrorMessage } from '@/lib/utils/http-client'
+import { registerCurrentDevice } from '@/lib/services/device.service'
+import { clearOfflineQueue } from '@/lib/services/offline.service'
+import { loginErrorMessage } from '@/lib/utils/api-error'
+import { recordConsent, type ConsentType } from '@/lib/utils/consent-tracker'
 import {
   clearTokens,
   getAccessToken,
   hasAccessToken,
   setTokens,
 } from '@/lib/utils/token-storage'
-import type { LoginRequest, RegisterRequest, User } from '@/lib/types'
+import type { LoginRequest, User } from '@/lib/types'
 
 interface AuthContextValue {
   user: User | null
   isLoading: boolean
   isAuthenticated: boolean
   login: (payload: LoginRequest) => Promise<void>
-  register: (payload: RegisterRequest) => Promise<User>
-  logout: () => void
+  logout: () => Promise<void>
+  saveConsent: (type: ConsentType, granted: boolean) => Promise<void>
 }
 
 export const AuthContext = createContext<AuthContextValue | undefined>(undefined)
@@ -50,12 +49,7 @@ async function registerDeviceOnce(): Promise<void> {
   if (typeof window === 'undefined') return
   if (window.sessionStorage.getItem(DEVICE_REGISTERED_FLAG) === 'true') return
   try {
-    const fingerprint = getOrCreateDeviceFingerprint()
-    await registerDevice({
-      device_fingerprint: fingerprint,
-      device_name: 'Web Browser',
-      platform: detectPlatform(),
-    })
+    await registerCurrentDevice()
     window.sessionStorage.setItem(DEVICE_REGISTERED_FLAG, 'true')
   } catch {
     // Device registration is best-effort; do not block login if it fails
@@ -66,10 +60,13 @@ async function registerDeviceOnce(): Promise<void> {
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
   const [isLoading, setIsLoading] = useState(true)
+  const userRef = useRef<User | null>(null)
+  userRef.current = user
   const router = useRouter()
 
-  const logout = useCallback(() => {
-    clearTokens()
+  const logout = useCallback(async () => {
+    await clearOfflineQueue().catch(() => undefined)
+    await authService.logoutAndClear()
     setUser(null)
     if (typeof window !== 'undefined') {
       window.sessionStorage.removeItem(DEVICE_REGISTERED_FLAG)
@@ -120,16 +117,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setUser(response.user)
       await registerDeviceOnce()
     } catch (error) {
-      throw new Error(extractErrorMessage(error, 'Login failed. Check your credentials.'))
+      throw new Error(loginErrorMessage(error))
     }
   }, [])
 
-  const register = useCallback(async (payload: RegisterRequest) => {
-    try {
-      return await authService.register(payload)
-    } catch (error) {
-      throw new Error(extractErrorMessage(error, 'Registration failed.'))
-    }
+  const saveConsent = useCallback(async (type: ConsentType, granted: boolean) => {
+    const current = userRef.current
+    const serverValue = type === 'camera' ? current?.camera_consent : current?.geolocation_consent
+    const updated = await recordConsent(type, granted, serverValue)
+    if (updated) setUser(updated)
   }, [])
 
   const value = useMemo<AuthContextValue>(
@@ -138,10 +134,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       isLoading,
       isAuthenticated: !!user && !!getAccessToken(),
       login,
-      register,
       logout,
+      saveConsent,
     }),
-    [user, isLoading, login, register, logout]
+    [user, isLoading, login, logout, saveConsent]
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

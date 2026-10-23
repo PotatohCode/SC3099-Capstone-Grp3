@@ -7,8 +7,8 @@ this router stays thin per IMPLEMENTATION-PLAN.md's own rule.
 See KNOWN-ISSUES.md before touching the decision logic: the hard override
 (liveness explicitly failed, or GPS > 2x geofence radius -> rejected
 regardless of score) is not a pure `risk_score < threshold` comparison,
-and Module 3 is currently a 501 stub so the degrade-gracefully paths are
-what actually run end-to-end today.
+and every Module 3 call has a degrade-gracefully path (timeout, error or
+4xx -> None), so a check-in never fails because the face service is down.
 """
 import base64
 import binascii
@@ -19,7 +19,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Query, Request, status
 from sqlalchemy import func
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.core.config import get_settings
 from app.core.deps import get_current_user, get_db, require_role
@@ -50,6 +50,8 @@ from app.schemas.checkin import (
     FlaggedCheckinRiskFactor,
     LivenessChallengeRequest,
     LivenessChallengeResponse,
+    LivenessVerifyRequest,
+    LivenessVerifyResponse,
     MyCheckinItem,
     RiskFactorItem,
     SessionCheckinItem,
@@ -58,6 +60,7 @@ from app.schemas.common import Page, page_limit
 from app.services import face_client, geofencing, liveness_challenge, risk_scoring, singapore_check
 from app.services.audit import log_event, log_security_violation
 from app.services.client_ip import get_client_ip
+from app.services.liveness_challenge import Outcome
 from app.services.authz import can_manage_session, require_manage_session
 from app.services.rate_limit import enforce_rate_limit
 from app.services.sanitize import sanitize_text
@@ -149,6 +152,17 @@ def _to_full_response(checkin: CheckIn) -> CheckinResponse:
         appeal_reason=checkin.appeal_reason,
         appealed_at=checkin.appealed_at,
     )
+
+
+def _flagged_risk_factors(checkin: CheckIn) -> List[FlaggedCheckinRiskFactor]:
+    """risk_factors with each signal's real severity (critical/high/medium/
+    low), taken from the risk_signals rows written alongside them. "medium"
+    only if a factor somehow has no matching row."""
+    severity_by_type = {s.signal_type: s.severity for s in checkin.risk_signals}
+    return [
+        FlaggedCheckinRiskFactor(type=rf.type, severity=severity_by_type.get(rf.type, "medium"), weight=rf.weight)
+        for rf in _parse_risk_factors(checkin.risk_factors)
+    ]
 
 
 def _scope_sessions_for_staff(db: Session, user: User):
@@ -261,11 +275,15 @@ def create_checkin(
     # app can fetch a new one and retry.
     challenge_sequence: Optional[List[str]] = None
     challenge_attempted = False
+    # Set when the challenge went through POST /challenge/{id}/verify first.
+    verified: Optional[liveness_challenge.ConsumeResult] = None
     if payload.challenge_id:
         challenge_attempted = True
         consumed = liveness_challenge.consume(payload.challenge_id, current_user.id, session_obj.id)
         if consumed.status == liveness_challenge.ConsumeStatus.OK:
             challenge_sequence = consumed.sequence
+            if consumed.outcome is not None:
+                verified = consumed
         elif consumed.status != liveness_challenge.ConsumeStatus.UNAVAILABLE:
             # UNAVAILABLE (Redis down) falls through as "challenged but
             # unverifiable", which caps the outcome at flagged below.
@@ -334,6 +352,14 @@ def create_checkin(
     )
     minutes_after_start = (now - session_obj.scheduled_start).total_seconds() / 60
 
+    # Hand the DB connection back to the pool while Module 3 is called (up to
+    # 5 s per call, 15 s for a frame burst). Holding it across those calls
+    # let ~30 slow check-ins take the whole pool (10 + 20 overflow), so every
+    # other request queued behind them (measured: face service hung + 100
+    # check-ins -> a plain GET took 9.5 s). Nothing is pending at this point,
+    # so this only ends the read transaction; objects reload on next access.
+    db.commit()
+
     # --- Liveness + face match (defensive: 5s timeout, degrade on failure) --
     liveness_passed: Optional[bool] = None
     liveness_score = 0.0
@@ -342,8 +368,36 @@ def create_checkin(
     current_face_hash: Optional[str] = None
 
     challenge_passed: Optional[bool] = None
+    challenge_failed = False
 
-    if primary_image:
+    # A verified pass only counts for the burst it was verified on (compared
+    # by hash; no images are kept). Otherwise someone could pass the
+    # movements with their own face, then send a photo of the enrolled
+    # student for the face match.
+    use_verified = False
+    if verified is not None and verified.outcome == Outcome.PASSED:
+        frames_hash = _submission_hash([_image_hash(f) for f in frames]) if frames else None
+        if frames_hash is not None and frames_hash == verified.frames_hash:
+            use_verified = True
+        else:
+            log_security_violation(
+                db, "challenge_frames_mismatch", user_id=current_user.id, resource_type="session",
+                resource_id=session_obj.id, ip_address=client_ip, user_agent=request.headers.get("user-agent"),
+            )
+
+    if use_verified:
+        liveness_passed = True
+        liveness_score = verified.liveness_score or 0.0
+        challenge_passed = True
+        primary_image = frames[len(frames) // 2]  # the face match runs on the verified burst
+    elif verified is not None and verified.outcome == Outcome.FAILED:
+        challenge_failed = True
+    elif verified is not None and verified.outcome == Outcome.SPOOF:
+        liveness_passed = False
+    elif verified is not None and verified.outcome == Outcome.PASSED:
+        pass  # different burst: the pass doesn't count, liveness unverified
+    elif primary_image:
+        # Never verified (or Module 3 couldn't answer at verify): checked here.
         sent_challenge_type = "sequence" if challenge_attempted else (payload.challenge_type or "passive")
         liveness_result = face_client.check_liveness(
             primary_image, sent_challenge_type, frames=frames or None, challenge_sequence=challenge_sequence
@@ -354,21 +408,37 @@ def create_checkin(
             challenge_passed = liveness_result.get("challenge_passed")
 
         # A challenged check-in needs Module 3 to confirm the steps. Not
-        # performed -> failed liveness (rejected, appealable). No answer
+        # performed -> review (liveness_challenge_failed), never an
+        # auto-reject: at ~5 fps a genuine student can miss them. No answer
         # (older build, Redis down, call failed) -> unverified, so it's never
         # auto-approved; a spoof verdict (False) still stands.
         if challenge_attempted:
             if challenge_passed is False:
-                liveness_passed = False
+                challenge_failed = True
+                if liveness_passed is not False:
+                    liveness_passed = None
             elif challenge_passed is not True and liveness_passed is not False:
                 liveness_passed = None
 
-        if current_user.face_embedding_hash:
-            verify_result = face_client.verify_face(primary_image, current_user.face_embedding_hash)
-            if verify_result is not None:
-                face_match_passed = verify_result.get("match_passed")
-                face_match_score = verify_result.get("match_score")
-                current_face_hash = verify_result.get("current_template_hash")
+    # Earlier verify attempts for this session count whatever this check-in
+    # sends, so skipping the challenge after failing it doesn't help: a
+    # spoof verdict rejects, and after a failed attempt only a verified pass
+    # can approve.
+    attempts = liveness_challenge.attempt_state(current_user.id, session_obj.id)
+    if attempts is not None:
+        if attempts.spoof:
+            liveness_passed = False
+        elif attempts.failed > 0 and not use_verified:
+            challenge_failed = True
+            if liveness_passed is True:
+                liveness_passed = None
+
+    if primary_image and current_user.face_embedding_hash:
+        verify_result = face_client.verify_face(primary_image, current_user.face_embedding_hash)
+        if verify_result is not None:
+            face_match_passed = verify_result.get("match_passed")
+            face_match_score = verify_result.get("match_score")
+            current_face_hash = verify_result.get("current_template_hash")
 
     # LIVENESS_CHALLENGE_ENFORCEMENT=flag: on a liveness-required session,
     # only a passed server-issued challenge counts as verified liveness.
@@ -444,6 +514,7 @@ def create_checkin(
         device_unbound=(
             settings.DEVICE_BINDING_ENFORCEMENT == "flag" and bool(course.require_device_binding) and not device_known
         ),
+        challenge_failed=challenge_failed,
     )
 
     log_event(
@@ -562,7 +633,12 @@ def issue_liveness_challenge(
         raise APIError(status.HTTP_400_BAD_REQUEST, "Check-in window is closed", ErrorCode.SESSION_WINDOW_CLOSED)
 
     try:
-        issued = liveness_challenge.issue(current_user.id, session_obj.id)
+        issued = liveness_challenge.issue(current_user.id, session_obj.id, session_obj.checkin_closes_at)
+    except liveness_challenge.AttemptsExhausted:
+        raise APIError(
+            status.HTTP_409_CONFLICT, "No liveness attempts left for this session; submit the check-in for review",
+            ErrorCode.LIVENESS_ATTEMPTS_EXHAUSTED,
+        )
     except liveness_challenge.ChallengeUnavailable:
         raise APIError(
             status.HTTP_503_SERVICE_UNAVAILABLE, "Liveness challenges are temporarily unavailable",
@@ -570,7 +646,115 @@ def issue_liveness_challenge(
         )
     return LivenessChallengeResponse(
         challenge_id=issued.challenge_id, session_id=session_obj.id, sequence=issued.sequence,
-        expires_at=issued.expires_at, max_frames=settings.MAX_LIVENESS_FRAMES,
+        expires_at=issued.expires_at, max_frames=settings.MAX_LIVENESS_FRAMES, attempts_left=issued.attempts_left,
+    )
+
+
+# =============================================================================
+# POST /checkins/challenge/{challenge_id}/verify
+# =============================================================================
+
+def _classify_liveness(result: Optional[dict]) -> Outcome:
+    """Module 3's answer for a challenged burst -> one verify outcome.
+    Only `liveness_passed: false` is a spoof verdict (API-FOR-FACE-
+    RECOGNITION section 3: never sent for uncertain cases)."""
+    if result is None:
+        return Outcome.UNVERIFIED
+    liveness_passed, challenge_passed = result.get("liveness_passed"), result.get("challenge_passed")
+    if liveness_passed is False:
+        return Outcome.SPOOF
+    if challenge_passed is True and liveness_passed is True:
+        return Outcome.PASSED
+    if challenge_passed is False:
+        return Outcome.FAILED
+    return Outcome.UNVERIFIED
+
+
+def _failed_step(result: Optional[dict], sequence: List[str]) -> Optional[str]:
+    """The first step Module 3 reports as not performed, if it reports them."""
+    steps = (result or {}).get("steps_passed")
+    if not isinstance(steps, list):
+        return None
+    for action, passed in zip(sequence, steps):
+        if passed is False:
+            return action
+    return None
+
+
+@router.post("/challenge/{challenge_id}/verify", response_model=LivenessVerifyResponse)
+def verify_liveness_challenge(
+    challenge_id: str,
+    payload: LivenessVerifyRequest,
+    request: Request,
+    current_user: User = Depends(require_role("student")),
+    db: Session = Depends(get_db),
+):
+    """Checks a challenge's frame burst before the check-in, so the student
+    can retry (services/liveness_challenge.py). Uses up the challenge either
+    way; a retry needs a new one."""
+    enforce_rate_limit(f"rate_limit:{current_user.id}:challenge_verify", CHALLENGES_PER_MINUTE, 60)
+    require_frames_size(payload.frames)
+    client_ip, ua = get_client_ip(request), request.headers.get("user-agent")
+    student_id = current_user.id
+
+    ConsumeStatus = liveness_challenge.ConsumeStatus
+    start = liveness_challenge.begin_verify(challenge_id, student_id)
+    if start.status == ConsumeStatus.UNAVAILABLE:
+        # Redis down: nothing counted; the check-in then goes to review.
+        return LivenessVerifyResponse(result="unverified")
+    if start.status == ConsumeStatus.EXHAUSTED:
+        raise APIError(
+            status.HTTP_409_CONFLICT, "No liveness attempts left for this session; submit the check-in for review",
+            ErrorCode.LIVENESS_ATTEMPTS_EXHAUSTED,
+        )
+    if start.status != ConsumeStatus.OK:
+        if start.status in (ConsumeStatus.REUSED, ConsumeStatus.OTHER_STUDENT):
+            log_security_violation(
+                db, "challenge_reuse", user_id=student_id, resource_type="liveness_challenge",
+                ip_address=client_ip, user_agent=ua, details={"reason": start.status.value},
+            )
+            db.commit()
+        raise APIError(
+            status.HTTP_400_BAD_REQUEST, "Liveness challenge is invalid or expired; request a new one",
+            ErrorCode.CHALLENGE_INVALID,
+        )
+
+    frames = payload.frames
+    # Don't hold a DB connection while Module 3 works (up to 15 s for a burst).
+    db.commit()
+    result = face_client.check_liveness(
+        frames[len(frames) // 2], "sequence", frames=frames, challenge_sequence=start.sequence
+    )
+    outcome = _classify_liveness(result)
+    liveness_score = float((result or {}).get("liveness_score") or 0.0)
+    frames_hash = _submission_hash([_image_hash(f) for f in frames])
+    attempts_left = liveness_challenge.finish_verify(
+        challenge_id, student_id, start, outcome, frames_hash, liveness_score
+    )
+
+    failed_step = _failed_step(result, start.sequence or []) if outcome == Outcome.FAILED else None
+    log_event(
+        db, "liveness_challenge_verified", user_id=student_id, resource_type="session", resource_id=start.session_id,
+        ip_address=client_ip, user_agent=ua, success=outcome == Outcome.PASSED,
+        details={
+            "outcome": outcome.value, "attempt": start.attempt, "sequence": start.sequence,
+            "steps_passed": (result or {}).get("steps_passed"), "liveness_score": liveness_score,
+        },
+    )
+    if outcome == Outcome.SPOOF:
+        log_security_violation(
+            db, "liveness_spoof", user_id=student_id, resource_type="session", resource_id=start.session_id,
+            ip_address=client_ip, user_agent=ua, details={"attempt": start.attempt},
+        )
+    db.commit()
+
+    if outcome == Outcome.SPOOF:
+        # Reported like running out of tries, so the client can't tell.
+        return LivenessVerifyResponse(result="failed", attempts_left=0)
+    return LivenessVerifyResponse(
+        result=outcome.value,
+        attempts_left=attempts_left,
+        failed_step=failed_step if settings.LIVENESS_FEEDBACK == "per_step" else None,
     )
 
 
@@ -715,7 +899,7 @@ def flagged_checkins(
     query = (
         db.query(CheckIn)
         .join(ClassSession, CheckIn.session_id == ClassSession.id)
-        .options(joinedload(CheckIn.session), joinedload(CheckIn.student))
+        .options(joinedload(CheckIn.session), joinedload(CheckIn.student), selectinload(CheckIn.risk_signals))
         .filter(CheckIn.status.in_(["flagged", "appealed"]))
     )
     scope = _scope_sessions_for_staff(db, current_user)
@@ -733,10 +917,7 @@ def flagged_checkins(
             id=c.id, session_id=c.session_id, session_name=c.session.name, student_id=c.student_id,
             student_name=c.student.full_name, status=c.status, checked_in_at=c.checked_in_at,
             risk_score=c.risk_score,
-            risk_factors=[
-                FlaggedCheckinRiskFactor(type=rf.type, severity="medium", weight=rf.weight)
-                for rf in _parse_risk_factors(c.risk_factors)
-            ],
+            risk_factors=_flagged_risk_factors(c),
             appeal_reason=c.appeal_reason, appealed_at=c.appealed_at,
         )
         for c in checkins
