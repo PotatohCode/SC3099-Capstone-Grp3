@@ -11,7 +11,9 @@ compliance log, and `/metrics` for Prometheus/Grafana. Everything here needs
 below). Check-in lists and the review queue are in
 [API-FOR-FRONTEND.md](API-FOR-FRONTEND.md) §7. The dashboard can use them
 the same way (e.g. `GET /checkins/flagged` + `POST /checkins/{id}/review`
-for a review screen).
+for a review screen). Creating and editing sessions is in its §4,
+including the venue rule: leave a session's coordinates out and it uses the
+course's venue.
 
 ---
 
@@ -189,10 +191,12 @@ paginated:
 ```
 **Actions you'll see:**
 - **Auth/users:** `login_success`, `login_failed`, `logout`, `account_locked`,
-  `user_created`, `user_updated`, `user_deletion_requested`, `face_enrolled`
+  `password_changed`, `password_change_failed`, `user_created`,
+  `user_updated`, `user_deletion_requested`, `face_enrolled`
 - **Check-ins:** `checkin_attempted`, `checkin_approved`, `checkin_flagged`,
   `checkin_rejected`, `checkin_rejected_geo`, `checkin_appealed`,
-  `checkin_reviewed`
+  `checkin_reviewed`, `liveness_challenge_verified` (one per liveness
+  attempt, see below)
 - **Admin data:** `session_created/updated/deleted`,
   `enrollment_added/removed`, `device_registered/updated/removed`,
   `course_created/updated/deleted`, `data_exported`, `retention_sweep_run`
@@ -203,10 +207,12 @@ Useful `details` fields:
 | Action | `details` |
 |---|---|
 | `checkin_approved` / `_flagged` / `_rejected` | `risk_score`, **`risk_level`** (LOW/MEDIUM/HIGH/CRITICAL), `status` |
-| `security_violation` | **`violation_type`**: `account_lockout`, `outside_singapore`, `geo_out_of_bounds`, `liveness_failed`, `face_match_failed`, `replay_suspected`, `impossible_travel`, `gps_spoof_suspected`, `rapid_succession`, `challenge_reuse` (a liveness challenge used twice or by another student; `details.reason` = `reused` / `other_student`) |
+| `security_violation` | **`violation_type`**: `account_lockout`, `outside_singapore`, `geo_out_of_bounds`, `liveness_failed`, `face_match_failed`, `replay_suspected`, `impossible_travel`, `gps_spoof_suspected`, `rapid_succession`, `challenge_reuse` (a liveness challenge used twice or by another student; `details.reason` = `reused` / `other_student`), `liveness_spoof` (a liveness attempt judged a spoof), `challenge_frames_mismatch` (a check-in named a verified challenge but sent different frames) |
 | `checkin_rejected_geo` | `reason` (`ip`/`gps`/`gps_and_ip`), `gps_in_singapore`, `ip_country` (no coordinates) |
-| `account_locked` | `failed_attempts`, `lockout_minutes` |
+| `account_locked` | `failed_attempts`, `lockout_minutes` (wrong passwords at login and on the change-password page count together) |
 | `login_failed` | `email`, or `reason: "account_locked"` |
+| `password_change_failed` | `reason`: `password_incorrect` / `account_locked` (never the password) |
+| `liveness_challenge_verified` | `outcome` (`passed`/`failed`/`spoof`/`unverified`), `attempt` (1–3), `sequence`, `steps_passed`, `liveness_score`. `resource_id` = the session |
 | `retention_sweep_run` | `users_anonymized`, `checkins_anonymized`, `trigger: "scheduled"` (hourly, no user) |
 | `enrollment_added` | `student_id`, `course_id`; `via: "bulk"`; `reactivated: true` when a removed student was re-added |
 | `session_created` | `course_id`, `owner_id` (the course's instructor when an admin created it; the actor is still the admin) |
@@ -241,8 +247,8 @@ format. The names are literal; ask before relying on a rename.
 | `checkin_success_total` | Counter | — | Check-ins resolved `approved` |
 | `checkins_flagged_total` | Counter | — | Check-ins resolved `flagged` |
 | `risk_score` | Histogram | — | Risk score distribution (0.1 buckets) |
-| `login_failed_total` | Counter | — | Failed logins, **including** attempts blocked by a lockout |
-| `account_lockouts_total` | Counter | — | Accounts locked after 10 consecutive failures |
+| `login_failed_total` | Counter | — | Failed logins, **including** attempts blocked by a lockout (change-password failures aren't counted; they're in the audit log) |
+| `account_lockouts_total` | Counter | — | Accounts locked after 10 consecutive wrong passwords (login and change-password combined) |
 | `checkin_rejected_geo_total` | Counter | `reason` = `ip`/`gps`/`gps_and_ip` | Check-ins refused as outside Singapore |
 | `security_violations_total` | Counter | `violation_type` (as in the audit table) | Every `security_violation` event |
 

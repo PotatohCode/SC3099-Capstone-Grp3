@@ -1,17 +1,15 @@
-import math
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError
-from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.deps import get_db
 from app.core.errors import APIError, ErrorCode
-from app.core.metrics import account_lockouts_total, login_failed_total
+from app.core.metrics import login_failed_total
 from app.core.security import (
     create_access_token,
     create_refresh_token,
@@ -22,20 +20,14 @@ from app.core.security import (
 from app.db.models.user import User
 from app.schemas.auth import LoginRequest, LoginResponse, LogoutRequest, RefreshRequest, RefreshResponse, RegisterRequest
 from app.schemas.user import UserResponse
-from app.services import token_revocation
-from app.services.audit import log_event, log_security_violation
+from app.services import account_lockout, token_revocation
+from app.services.audit import log_event
 from app.services.client_ip import get_client_ip
 from app.services.rate_limit import enforce_rate_limit, peek_rate_limit, record_hit
 from app.services.sanitize import sanitize_text
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 settings = get_settings()
-
-
-def _utcnow_naive() -> datetime:
-    # users.locked_until is a naive DateTime column holding UTC - same
-    # convention as checkins.py's _now().
-    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
@@ -92,9 +84,9 @@ def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)
     # Per-account lockout - checked BEFORE the password, so a locked
     # account gets 429 even when the correct password is supplied (see
     # config.MAX_FAILED_LOGIN_ATTEMPTS for the requirement).
-    if user is not None and user.locked_until is not None:
-        now = _utcnow_naive()
-        if user.locked_until > now:
+    if user is not None:
+        retry_after = account_lockout.locked_retry_after(db, user)
+        if retry_after is not None:
             login_failed_total.inc()
             log_event(
                 db, "login_failed", user_id=user.id, ip_address=ip, user_agent=ua,
@@ -103,42 +95,15 @@ def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)
             db.commit()
             raise APIError(
                 status.HTTP_429_TOO_MANY_REQUESTS, "Account locked due to too many failed login attempts",
-                ErrorCode.ACCOUNT_LOCKED,
-                headers={"Retry-After": str(max(1, math.ceil((user.locked_until - now).total_seconds())))},
+                ErrorCode.ACCOUNT_LOCKED, headers={"Retry-After": str(retry_after)},
             )
-        # Lock expired - the account starts over with a fresh set of attempts.
-        # Flush explicitly: the atomic UPDATE below increments the DB value,
-        # so an unflushed reset would leave it at MAX and re-lock on the very
-        # next wrong password.
-        user.locked_until = None
-        user.failed_login_attempts = 0
-        db.flush()
 
     if user is None or not verify_password(payload.password, user.hashed_password):
         login_failed_total.inc()
         if ip:
             record_hit(login_key, 3600)
         if user is not None:
-            # Atomic increment so concurrent wrong-password requests can't
-            # lose updates and slip past the threshold.
-            attempts = db.execute(
-                update(User)
-                .where(User.id == user.id)
-                .values(failed_login_attempts=User.failed_login_attempts + 1)
-                .returning(User.failed_login_attempts)
-            ).scalar_one()
-            if attempts >= settings.MAX_FAILED_LOGIN_ATTEMPTS and user.locked_until is None:
-                user.locked_until = _utcnow_naive() + timedelta(minutes=settings.ACCOUNT_LOCKOUT_MINUTES)
-                account_lockouts_total.inc()
-                log_event(
-                    db, "account_locked", user_id=user.id, resource_type="user", resource_id=user.id,
-                    ip_address=ip, user_agent=ua, success=False,
-                    details={"failed_attempts": attempts, "lockout_minutes": settings.ACCOUNT_LOCKOUT_MINUTES},
-                )
-                log_security_violation(
-                    db, "account_lockout", user_id=user.id, resource_type="user", resource_id=user.id,
-                    ip_address=ip, user_agent=ua, details={"failed_attempts": attempts},
-                )
+            account_lockout.record_failed_password(db, user, ip, ua)
         log_event(
             db, "login_failed", user_id=user.id if user else None, ip_address=ip, user_agent=ua,
             success=False, details={"email": payload.email},

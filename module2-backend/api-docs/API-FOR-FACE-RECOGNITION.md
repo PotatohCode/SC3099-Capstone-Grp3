@@ -24,7 +24,9 @@ in [CHANGES-2026-10-01.md](CHANGES-2026-10-01.md). **Why things changed:**
   step (`LIVENESS_TIMEOUT_SECONDS`); single-image calls keep 5 s.
 - **Concurrency:** the backend handles 100+ simultaneous check-ins, and each
   check-in with a photo or a frame burst can call `/liveness/check`,
-  `/face/verify` and `/risk/assess`. The hidden stress tests use ~100
+  `/face/verify` and `/risk/assess`. On top of that, each liveness **retry**
+  (`POST /checkins/challenge/{id}/verify`, up to 3 per student per session)
+  is one `/liveness/check` frame-burst call. The hidden stress tests use ~100
   concurrent users, so load-test with 50–100 parallel requests. If you're
   slow, only the check-ins wait; the rest of the backend stays responsive.
 - **Images:** we forward the base64 exactly as the client sent it (normally
@@ -80,8 +82,10 @@ within 5 s is treated as failed.
 { "match_passed": true, "match_score": 0.0, "current_template_hash": "..." }
 ```
 - Called during check-in when the student sent a photo or a frame burst
-  (we send the photo, or else the burst's middle frame) **and** has an
-  enrolled face.
+  **and** has an enrolled face. We send the photo, or else the burst's
+  middle frame. With a verified challenge we always send the verified
+  burst's middle frame, so the face that did the movements is the one
+  compared.
 - `current_template_hash` is stored on the check-in row as a record of that
   attempt.
 - **What `match_passed` does now:**
@@ -150,7 +154,8 @@ while performing a challenge:
   "liveness_passed": true,      // as before: your anti-spoof verdict
   "liveness_score": 0.0,        // as before
   "challenge_passed": true,     // were all steps performed, in order? Only needed for shape (b) with challenge_sequence
-  "steps_passed": [true, false] // optional, one per step, for our logs
+  "steps_passed": [true, false] // one per step, in sequence order. Please send it: we log it, and
+                                // we tell the student which step to redo (the first false one)
 }
 ```
 
@@ -158,14 +163,23 @@ while performing a challenge:
 
 | Your answer | Outcome |
 |---|---|
-| `challenge_passed: false` | Treated as a **failed liveness check** → check-in **rejected** (the student can appeal) |
-| `challenge_passed: true` | Your `liveness_passed` decides, as today |
+| `challenge_passed: false` | Steps not performed. The student may **retry** (3 attempts per session, a new sequence each time); without a later pass the check-in is **flagged for review**, not rejected |
+| `challenge_passed: true` + `liveness_passed: true` | Passed |
+| `challenge_passed: true` + `liveness_passed: null` | Unverified (no attempt used) |
 | `challenge_passed` missing or `null` (e.g. older build, or you couldn't tell) | **Unverified** → at most **flagged for review**, unless `liveness_passed` is `false` |
-| Call failed / timed out | Unverified, same as today |
+| `liveness_passed: false` (any `challenge_passed`) | Spoof → **no more attempts**, check-in **rejected** (the student can appeal) |
+| Call failed / timed out | Unverified; the student's attempt isn't used up |
+
+**When you're called:** usually by `POST /checkins/challenge/{id}/verify`,
+right after the student performs the challenge and **before** the
+check-in, so they can retry. The check-in then reuses that answer without
+calling you again. If the app skips the verify step, you're called at the
+check-in as before. Same request and response either way.
 
 Your current build ignores the unknown fields and scores
 `challenge_response` as one image. That's safe: without `challenge_passed`
-we never auto-approve a challenged check-in.
+we never auto-approve a challenged check-in. But until you return it,
+every verify answers "unverified", so students can't retry yet.
 - `liveness_passed: false` → **always rejects** the check-in
   (`liveness_failed`, hard reject), whatever the score.
 - `liveness_passed: null` (e.g. no face found), or a failed call → the

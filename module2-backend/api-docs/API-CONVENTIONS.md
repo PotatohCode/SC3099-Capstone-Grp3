@@ -78,10 +78,10 @@ Build error handling on **`code`**, not the `detail` text. Codes you'll see:
 
 | Group | Codes |
 |---|---|
-| Auth | `INVALID_CREDENTIALS`, `ACCOUNT_LOCKED` (429), `ACCOUNT_DISABLED`, `INVALID_TOKEN`, `INVALID_REFRESH_TOKEN`, `PASSWORD_INCORRECT`, `EMAIL_ALREADY_REGISTERED` |
+| Auth | `INVALID_CREDENTIALS`, `ACCOUNT_LOCKED` (429), `ACCOUNT_DISABLED`, `INVALID_TOKEN`, `INVALID_REFRESH_TOKEN`, `PASSWORD_INCORRECT`, `PASSWORD_UNCHANGED` (400), `EMAIL_ALREADY_REGISTERED` |
 | Permissions | `INSUFFICIENT_PERMISSIONS`, `NOT_ENROLLED` |
 | Not found | `*_NOT_FOUND` (course, session, user, student, device, enrollment, checkin) |
-| Check-ins | `ALREADY_CHECKED_IN`, `SESSION_NOT_ACTIVE`, `SESSION_WINDOW_CLOSED`, `OUTSIDE_SINGAPORE`, `CONSENT_REQUIRED` (only if enabled), `ALREADY_APPEALED`, `APPEAL_NOT_ALLOWED`, `APPEAL_WINDOW_EXPIRED`, `REVIEW_NOT_ALLOWED`, `CHALLENGE_INVALID` (400), `CHALLENGE_UNAVAILABLE` (503) |
+| Check-ins | `ALREADY_CHECKED_IN`, `SESSION_NOT_ACTIVE`, `SESSION_WINDOW_CLOSED`, `OUTSIDE_SINGAPORE`, `CONSENT_REQUIRED` (only if enabled), `ALREADY_APPEALED`, `APPEAL_NOT_ALLOWED`, `APPEAL_WINDOW_EXPIRED`, `REVIEW_NOT_ALLOWED`, `CHALLENGE_INVALID` (400), `LIVENESS_ATTEMPTS_EXHAUSTED` (409), `CHALLENGE_UNAVAILABLE` (503) |
 | Sessions/courses | `INVALID_SCHEDULE`, `COURSE_CODE_TAKEN`, `SESSION_NOT_DELETABLE`, `ALREADY_ENROLLED` |
 | Devices/face | `DEVICE_FINGERPRINT_TAKEN`, `CAMERA_CONSENT_REQUIRED`, `NO_FACE_DETECTED`, `FACE_SERVICE_UNAVAILABLE` (503) |
 | Limits | `RATE_LIMITED` (429), `IMAGE_TOO_LARGE` (413), `TOO_MANY_FRAMES` (413), `REQUEST_TOO_LARGE` (413) |
@@ -112,11 +112,12 @@ and registration have per-IP limits.
 
 | Limit | Value | Keyed by | Response |
 |---|---|---|---|
-| Login: consecutive failures on one account | 10, then locked 15 min | account | `429 ACCOUNT_LOCKED`, even with the right password |
+| Wrong passwords on one account (login **and** `POST /users/me/password` count together) | 10 in a row, then locked 15 min | account | `429 ACCOUNT_LOCKED`, even with the right password |
 | Login failures | 100,000/hour | IP | `429 RATE_LIMITED` (course asked for a high value) |
 | Registration | 100,000/hour | IP | `429 RATE_LIMITED` |
 | Check-in submission | 10/minute | user | `429 RATE_LIMITED` |
 | Liveness challenge (`POST /checkins/challenge`) | 30/minute | user | `429 RATE_LIMITED` |
+| Liveness verify (`POST /checkins/challenge/{id}/verify`) | 30/minute, and **3 attempts per session** | user | `429 RATE_LIMITED`; attempts used up → `409 LIVENESS_ATTEMPTS_EXHAUSTED` |
 | Everything else | 1000/hour | user | `429 RATE_LIMITED` |
 
 ## Request and response details

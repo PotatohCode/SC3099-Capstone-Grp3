@@ -48,6 +48,21 @@ class LivenessChallengeResponse(BaseModel):
     sequence: List[str]  # actions in order, e.g. ["blink", "turn_left"]
     expires_at: datetime
     max_frames: int
+    attempts_left: int  # including this one
+
+
+class LivenessVerifyRequest(BaseModel):
+    """POST /checkins/challenge/{id}/verify. Count/size are checked in the
+    router (413), like the check-in's frames."""
+    frames: List[str] = Field(min_length=1)
+
+
+class LivenessVerifyResponse(BaseModel):
+    # passed / failed / unverified. A spoof verdict is reported as "failed"
+    # with attempts_left 0, so it can't be told apart from "out of tries".
+    result: Literal["passed", "failed", "unverified"]
+    attempts_left: Optional[int] = None  # None if it couldn't be read (Redis down)
+    failed_step: Optional[str] = None  # only with LIVENESS_FEEDBACK=per_step
 
 
 class RiskFactorItem(BaseModel):
