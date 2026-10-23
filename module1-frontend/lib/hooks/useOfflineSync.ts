@@ -13,12 +13,16 @@ import {
   syncQueuedCheckIns,
   type SyncResult,
 } from '@/lib/services/offline.service'
+import { needsFaceEnrollment } from '@/lib/face/enrollment'
 import type { CheckInRequest } from '@/lib/types'
 
 export function useOfflineSync() {
   const { user } = useAuth()
   const userIdRef = useRef<string | null>(user?.id ?? null)
   userIdRef.current = user?.id ?? null
+  const blocked = needsFaceEnrollment(user)
+  const blockedRef = useRef(blocked)
+  blockedRef.current = blocked
   const [isOnline, setIsOnline] = useState(true)
   const [queueLength, setQueueLength] = useState(0)
   const [isSyncing, setIsSyncing] = useState(false)
@@ -30,7 +34,7 @@ export function useOfflineSync() {
 
   const syncNow = useCallback(async () => {
     const userId = userIdRef.current
-    if (isSyncing || !userId) return
+    if (isSyncing || !userId || blockedRef.current) return
     setIsSyncing(true)
     try {
       const result = await syncQueuedCheckIns(userId)
@@ -82,6 +86,7 @@ export function useOfflineSync() {
     isOnline,
     queueLength,
     isSyncing,
+    syncBlocked: blocked,
     lastSyncResult,
     syncNow,
     queueCheckIn,

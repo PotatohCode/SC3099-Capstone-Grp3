@@ -72,12 +72,15 @@ export function classifyCheckInError(error: unknown, isOnline: boolean): CheckIn
   return { message: e.detail ?? 'Check-in failed. Please try again.', action: 'retry-capture' }
 }
 
-export type ChallengeErrorResult = { fallbackToPhoto: true } | { fallbackToPhoto: false; view: CheckInErrorView }
+export type ChallengeErrorResult =
+  | { fallbackToPhoto: true; attemptsExhausted?: boolean }
+  | { fallbackToPhoto: false; view: CheckInErrorView }
 
-/** Classifies an error from POST /checkins/challenge; 503 or no response falls back to a single photo. */
+/** Classifies an error from POST /checkins/challenge; 503 or no response fall back to a single photo, and no liveness attempts left ends the check. */
 export function classifyChallengeError(error: unknown): ChallengeErrorResult {
   const e = parseApiError(error)
   if (e.isNetwork || e.status === 503) return { fallbackToPhoto: true }
+  if (e.code === 'LIVENESS_ATTEMPTS_EXHAUSTED') return { fallbackToPhoto: true, attemptsExhausted: true }
   if (e.code && SESSION_ERRORS[e.code]) {
     return { fallbackToPhoto: false, view: { message: SESSION_ERRORS[e.code], action: 'reselect-session' } }
   }

@@ -163,6 +163,7 @@ def assess(
     minutes_after_start: Optional[float] = None,
     consent_missing: bool = False,
     device_unbound: bool = False,
+    challenge_failed: bool = False,
 ) -> RiskAssessment:
     """require_liveness / require_face_match come from the session (and the
     course's require_face_recognition). When a requirement is set:
@@ -223,6 +224,14 @@ def assess(
         hard_reject = True
     elif require_liveness and liveness_passed is None:
         signals.append(RiskSignal("liveness_unverified", "high", weight=0.0))
+        needs_review = True
+
+    if challenge_failed:
+        # The challenge's steps weren't detected (and no later attempt
+        # passed). At ~5 fps a genuine student can miss them, so review,
+        # never auto-reject: weight 0, like the *_unverified signals. A spoof
+        # verdict is liveness_passed=False above, which still rejects.
+        signals.append(RiskSignal("liveness_challenge_failed", "high", weight=0.0))
         needs_review = True
 
     if require_face_match:

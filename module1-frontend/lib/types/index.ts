@@ -96,11 +96,25 @@ export interface LivenessChallenge {
   sequence: string[]
   expires_at: string
   max_frames: number
+  attempts_left?: number | null
+}
+
+export interface VerifyChallengeResponse {
+  result: 'passed' | 'failed' | 'unverified'
+  attempts_left: number | null
+  failed_step?: string | null
 }
 
 export interface UserConsentUpdate {
   camera_consent?: boolean
   geolocation_consent?: boolean
+}
+
+export interface FaceEnrollResponse {
+  success: boolean
+  message: string
+  face_enrolled: boolean
+  quality_score: number
 }
 
 export interface LocationData {

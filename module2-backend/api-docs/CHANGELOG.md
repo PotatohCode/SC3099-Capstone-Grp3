@@ -14,6 +14,54 @@ below.
 
 ---
 
+## 2026-10-23 — `backend/password-change`: liveness retries
+
+**Rebuild needed:** `docker compose up -d --build backend`.
+
+| Area | Before | Now | Why |
+|---|---|---|---|
+| Liveness challenge feedback | Only after the check-in; a missed step failed the check-in | New `POST /checkins/challenge/{id}/verify {frames}` → `{result, attempts_left, failed_step}`. Up to **3 attempts per session**, a new sequence each time | At ~5 fps a genuine student can miss a blink or a turn; they should get to try again (M1's checklist) |
+| Challenge steps not performed | `liveness_failed` → **rejected** | `liveness_challenge_failed` (weight 0) → **flagged** for review, if no later attempt passed | Missing a step isn't proof of fraud. A spoof verdict (`liveness_passed: false`) still rejects, and ends the attempts |
+| Skipping the challenge after failing it | — | Counts anyway: after a failed attempt only a verified pass approves; after a spoof verdict the check-in is rejected | Otherwise a plain check-in would bypass the retry limit |
+| Verified pass at check-in | — | Only counts with **the same frames** (hash compared, images never stored); the face match then uses those frames | Stops passing the movements with one face and sending another person's photo |
+| `POST /checkins/challenge` | — | Also returns `attempts_left`; `409 LIVENESS_ATTEMPTS_EXHAUSTED` when none are left | |
+
+A face-service failure or timeout doesn't use up an attempt. The counter
+resets when the session's check-in window ends. A spoof verdict is
+reported to the app as `failed` with `attempts_left: 0`, so it can't be
+told apart from running out of tries. `failed_step` (from M3's
+`steps_passed`) can be switched off with `LIVENESS_FEEDBACK=generic`.
+
+New audit action `liveness_challenge_verified` (one per attempt) and
+security-violation types `liveness_spoof`, `challenge_frames_mismatch`.
+Until M3 returns `challenge_passed`, every verify answers `unverified` and
+check-ins behave as before. M1, M3: see the checklist rows.
+
+**Docs clarified (no behaviour change):** a session without its own
+coordinates uses the course's venue, and `PATCH /sessions/{id}` with `null`
+coordinates goes back to it (Frontend §4); once a face is enrolled, every
+photo check-in is compared with it, and enrolling again replaces it
+(Frontend §2). Face enrolment is now a **Should** for M1: the group agreed
+students enrol before checking in.
+
+---
+
+## 2026-10-23 — `backend/password-change`: students can change their password
+
+**Rebuild needed:** `docker compose up -d --build backend`.
+
+| Area | Before | Now | Why |
+|---|---|---|---|
+| Changing a password | Not possible | `POST /users/me/password {current_password, new_password}` → `204` | Accounts created in the dashboard get a default password; students need to set their own (asked for by M1's settings page) |
+| Wrong current password | — | `403 PASSWORD_INCORRECT`, and it **counts toward the login lockout** (10 → locked 15 min) | Otherwise a stolen access token would allow unlimited password guesses |
+| Many wrong passwords at the same instant | The lock was audited once per parallel request (e.g. 11 `account_locked` + 11 security violations for 20 parallel wrong logins) | Audited once | The lock is now set with a conditional update, so exactly one request sets it |
+
+New audit actions `password_changed` and `password_change_failed` (never
+containing the password). New error code `PASSWORD_UNCHANGED` (400). M1:
+see the checklist row; M4: the two actions appear in the audit log.
+
+---
+
 ## 2026-10-23 — `backend/consent-flag`: consent is enforced (flag)
 
 **Rebuild needed:** `docker compose up -d --build backend`.
