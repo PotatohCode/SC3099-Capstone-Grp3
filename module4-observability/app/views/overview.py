@@ -24,7 +24,10 @@ def _key_numbers() -> None:
     overview = ui.safe(api.get, "/api/v1/stats/overview", days=7)
     if not overview:
         return
-    needs_review = overview.get("flagged_pending", 0)
+    # The overview's flagged_pending counts `flagged` only; the review queue also
+    # holds appeals, so use the queue's own total to keep the two in step.
+    queue = ui.safe(api.get, "/api/v1/checkins/flagged", limit=1) or {}
+    needs_review = queue.get("total", overview.get("flagged_pending", 0))
     left, *rest = st.columns([1.3, 1, 1, 1])
     with left:
         st.metric("Needs review", needs_review, border=True,
@@ -35,7 +38,8 @@ def _key_numbers() -> None:
     rest[1].metric("Live", overview.get("active_sessions", 0), border=True,
                    help="Sessions currently open for check-in.")
     rest[2].metric("Attendance", ui.pct(overview.get("average_attendance_rate")), border=True,
-                   help="All-time. Rejected (blocked) check-ins are not counted as attendance.")
+                   help="Average over sessions held so far (active or closed): students who attended ÷ "
+                        "students enrolled. Rejected (blocked) check-ins don't count as attended.")
     st.session_state["overview_trends"] = overview.get("trends", {})
 
 
@@ -52,11 +56,11 @@ def _todays_sessions() -> None:
     columns = st.columns(3)
     for index, session in enumerate(sessions):
         with columns[index % 3].container(border=True):
-            st.markdown(f"**{session.get('name')}**")
-            st.caption(f"{session.get('course_code') or ''} · "
+            st.markdown(f"**{ui.md(session.get('name'))}**")
+            st.caption(f"{ui.md(session.get('course_code'))} · "
                        f"{ui.fmt_time(session.get('scheduled_start'), '%H:%M')}–"
                        f"{ui.fmt_time(session.get('scheduled_end'), '%H:%M')}"
-                       f"{' · ' + session['venue_name'] if session.get('venue_name') else ''}")
+                       f"{' · ' + ui.md(session['venue_name']) if session.get('venue_name') else ''}")
             enrolled = session.get("total_enrolled") or 0
             checked = session.get("checked_in_count") or 0
             st.markdown(f"{ui.status_label(session.get('status'))} &nbsp; **{checked}** / {enrolled} checked in")

@@ -19,7 +19,8 @@ def _slug(text: str) -> str:
 
 
 def _absentees(course_id: str, present_ids: set[str], session: dict) -> list[dict]:
-    roster = api.get(f"/api/v1/enrollments/course/{course_id}")
+    # role=student: assigned TAs are enrolled too, but they aren't absent students.
+    roster = api.get(f"/api/v1/enrollments/course/{course_id}", role="student")
     date = ui.fmt_time(session.get("scheduled_start"), "%Y-%m-%d")
     return [{
         "student_id": s["student_id"], "student_name": s["student_name"], "student_email": s["student_email"],
@@ -39,7 +40,10 @@ def _downloads(key: str, report_rows: list[dict], filename: str, title: str, sum
     c.download_button("⬇ PDF report", exports.to_pdf(report_rows, title, summary), f"{filename}.pdf",
                       "application/pdf", key=f"{key}-pdf", use_container_width=True)
     if report_rows:
-        preview = pd.DataFrame(report_rows)[exports.COLUMNS[:-1]].rename(columns=exports.HEADINGS)
+        preview = pd.DataFrame(report_rows)[exports.COLUMNS[:-1]]
+        # Absent students have a blank risk score; keep the column numeric for display.
+        preview["risk_score"] = pd.to_numeric(preview["risk_score"], errors="coerce")
+        preview = preview.rename(columns=exports.HEADINGS)
         st.dataframe(preview, hide_index=True, use_container_width=True)
 
 
