@@ -1,86 +1,69 @@
-/**
- * Task 1.7: Device Fingerprinting & Binding
- * "Create lib/utils/device-fingerprint.ts to collect: user agent, screen size,
- *  time zone, platform" / "Store device_fingerprint in sessionStorage"
- *
- * This is a lightweight, non-cryptographic client fingerprint used purely to help the
- * backend's risk engine recognize returning devices. It intentionally collects only
- * coarse, non-PII device attributes (never camera/mic data, never precise hardware IDs).
- */
+/** Per-install random device id (web-<uuid>) kept in localStorage, plus platform detection for device registration. */
 
-const DEVICE_FINGERPRINT_KEY = 'saiv_device_fingerprint'
+export const DEVICE_FINGERPRINT_KEY = 'saiv_device_fingerprint'
 
-export interface DeviceAttributes {
-  userAgent: string
-  screenWidth: number
-  screenHeight: number
-  timezone: string
-  platform: string
-  language: string
+const VALID_ID = /^web-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+
+let memoryFallback: string | null = null
+
+function uuidFromRandomValues(): string {
+  const bytes = new Uint8Array(16)
+  crypto.getRandomValues(bytes)
+  bytes[6] = (bytes[6] & 0x0f) | 0x40
+  bytes[8] = (bytes[8] & 0x3f) | 0x80
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
 }
 
-function collectDeviceAttributes(): DeviceAttributes {
-  if (typeof window === 'undefined' || typeof navigator === 'undefined') {
-    return {
-      userAgent: 'unknown',
-      screenWidth: 0,
-      screenHeight: 0,
-      timezone: 'unknown',
-      platform: 'unknown',
-      language: 'unknown',
-    }
-  }
+/** Generates a new random id; randomUUID needs a secure context, so getRandomValues is the fallback. */
+export function newDeviceId(): string {
+  const uuid =
+    typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : uuidFromRandomValues()
+  return `web-${uuid.toLowerCase()}`
+}
 
-  return {
-    userAgent: navigator.userAgent,
-    screenWidth: window.screen?.width ?? 0,
-    screenHeight: window.screen?.height ?? 0,
-    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone ?? 'unknown',
-    platform: navigator.platform ?? 'unknown',
-    language: navigator.language ?? 'unknown',
+function readStored(): string | null {
+  try {
+    return window.localStorage.getItem(DEVICE_FINGERPRINT_KEY)
+  } catch {
+    return null
   }
 }
 
-/** Simple deterministic string hash (djb2) - good enough for a client fingerprint. */
-function hashString(input: string): string {
-  let hash = 5381
-  for (let i = 0; i < input.length; i++) {
-    hash = (hash * 33) ^ input.charCodeAt(i)
+function store(id: string): void {
+  memoryFallback = id
+  try {
+    window.localStorage.setItem(DEVICE_FINGERPRINT_KEY, id)
+  } catch {
+    return
   }
-  // Convert to unsigned 32-bit hex, then pad for a stable-looking identifier.
-  return (hash >>> 0).toString(16).padStart(8, '0')
 }
 
-/** Builds a stable fingerprint string from collected device attributes. */
-export function generateDeviceFingerprint(): string {
-  const attrs = collectDeviceAttributes()
-  const raw = [
-    attrs.userAgent,
-    `${attrs.screenWidth}x${attrs.screenHeight}`,
-    attrs.timezone,
-    attrs.platform,
-    attrs.language,
-  ].join('|')
-  return `web-${hashString(raw)}`
+function clearLegacySessionCopy(): void {
+  try {
+    window.sessionStorage.removeItem(DEVICE_FINGERPRINT_KEY)
+  } catch {
+    return
+  }
 }
 
-export function getStoredDeviceFingerprint(): string | null {
-  if (typeof window === 'undefined') return null
-  return window.sessionStorage.getItem(DEVICE_FINGERPRINT_KEY)
-}
-
-export function storeDeviceFingerprint(fingerprint: string): void {
-  if (typeof window === 'undefined') return
-  window.sessionStorage.setItem(DEVICE_FINGERPRINT_KEY, fingerprint)
-}
-
-/** Returns the cached fingerprint, generating and caching one if it doesn't exist yet. */
+/** Returns this install's device id, creating and persisting one if missing or malformed. */
 export function getOrCreateDeviceFingerprint(): string {
-  const existing = getStoredDeviceFingerprint()
-  if (existing) return existing
-  const generated = generateDeviceFingerprint()
-  storeDeviceFingerprint(generated)
-  return generated
+  if (typeof window === 'undefined') return 'web-server'
+  clearLegacySessionCopy()
+  const stored = readStored()
+  if (stored && VALID_ID.test(stored)) return stored
+  if (memoryFallback && VALID_ID.test(memoryFallback)) return memoryFallback
+  const id = newDeviceId()
+  store(id)
+  return id
+}
+
+/** Replaces this install's device id, used when the backend reports the id belongs to another user. */
+export function rotateDeviceFingerprint(): string {
+  const id = newDeviceId()
+  store(id)
+  return id
 }
 
 export function detectPlatform(): 'ios' | 'android' | 'web' | 'desktop' {

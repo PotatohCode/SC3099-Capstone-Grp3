@@ -26,7 +26,7 @@ import { getMyCheckIns } from '@/lib/services/checkin.service'
 import { getMyEnrollments, type MyEnrollment } from '@/lib/services/enrollment.service'
 import { extractErrorMessage } from '@/lib/utils/http-client'
 import { LoadingSpinner } from '@/components/LoadingSpinner'
-import { StatusBadge } from '@/components/StatusBadge'
+import { RiskBadge, StatusBadge } from '@/components/StatusBadge'
 import { StudentOnlyGuard } from '@/components/StudentOnlyGuard'
 import type { CheckInHistoryItem, CheckInStatus } from '@/lib/types'
 
@@ -312,7 +312,10 @@ function HistoryPageContent() {
                       </Link>
                     </td>
                     <td className="whitespace-nowrap px-4 py-3">
-                      <StatusBadge status={item.status} />
+                      <div className="flex flex-col items-start gap-1">
+                        <StatusBadge status={item.status} />
+                        <RiskBadge riskLevel={item.risk_level} riskScore={item.risk_score} />
+                      </div>
                     </td>
                   </tr>
                 )

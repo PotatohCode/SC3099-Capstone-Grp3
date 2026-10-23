@@ -5,7 +5,6 @@
  */
 
 import { useState, type FormEvent } from 'react'
-import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '@/lib/hooks/useAuth'
 import { validateLoginForm, type FieldError } from '@/lib/utils/validators'
@@ -107,10 +106,7 @@ export default function LoginPage() {
         </form>
 
         <p className="mt-6 text-center text-sm text-gray-500">
-          Don&apos;t have an account?{' '}
-          <Link href="/auth/register" className="font-medium text-blue-700 hover:underline">
-            Register
-          </Link>
+          Don&apos;t have an account? Ask your course instructor or administrator.
         </p>
       </div>
     </main>
