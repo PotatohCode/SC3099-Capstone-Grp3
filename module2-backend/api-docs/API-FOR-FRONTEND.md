@@ -317,7 +317,7 @@ Get a random liveness challenge for the next check-in.
 { "session_id": "..." }
 // 201
 { "challenge_id": "...", "session_id": "...", "sequence": ["blink", "turn_left"],
-  "expires_at": "2026-10-20T04:01:30", "max_frames": 30 }
+  "expires_at": "2026-10-20T04:01:30", "max_frames": 30, "attempts_left": 3 }
 ```
 - `sequence`: 2 steps by default, from `blink`, `turn_left`, `turn_right`.
   Left/right are the **student's own** left/right, so prompt them that way.
@@ -333,6 +333,10 @@ Get a random liveness challenge for the next check-in.
   `400 SESSION_NOT_ACTIVE` / `SESSION_WINDOW_CLOSED`. It does **not** check
   "already checked in" or the Singapore rule; those still come from the
   check-in itself. More than 30 per minute → `429 RATE_LIMITED`.
+- `attempts_left`: liveness attempts this student has left **for this
+  session** (3 per session), including the one this challenge is for.
+- `409 LIVENESS_ATTEMPTS_EXHAUSTED`: no attempts left. Don't retry; submit
+  the check-in without a challenge. It goes to review.
 - `503 CHALLENGE_UNAVAILABLE`: challenges are down. Check in with a single
   photo instead.
 
@@ -340,6 +344,45 @@ Get a random liveness challenge for the next check-in.
 8 per step (≈16 frames for 2 steps), as small JPEGs (≈640 px wide), base64
 without the `data:` prefix, oldest first. At most `max_frames` frames, each
 under 10,000,000 base64 characters, and the whole request under 15 MB.
+
+### `POST /api/v1/checkins/challenge/{challenge_id}/verify` — **student only**
+Checks the burst **before** the check-in, so the student can retry if the
+steps weren't caught. Optional: a check-in can still send a challenge
+without verifying it first (checked at check-in, no retry).
+```jsonc
+// request: the burst for this challenge (same format as the check-in's frames)
+{ "frames": ["<base64 frame>", "..."] }
+// 200
+{ "result": "passed" | "failed" | "unverified", "attempts_left": 2, "failed_step": "turn_left" }
+```
+
+| `result` | What to do |
+|---|---|
+| `passed` | Submit `POST /checkins/` with this `challenge_id` and **the exact same frames** |
+| `failed`, `attempts_left` > 0 | "We couldn't confirm the movements, try again": get a **new** challenge (new sequence) and capture again |
+| `failed`, `attempts_left` = 0 | Stop retrying. Submit the check-in with this `challenge_id` and frames; it goes to review |
+| `unverified` | The face service couldn't check it. **No attempt used.** Submit the check-in with this `challenge_id` and frames (it's checked again there; if still unverified, it goes to review) |
+
+- **Same frames at check-in.** A pass only counts for the burst it was
+  verified on (compared by hash; images aren't stored). Different frames,
+  or a photo only → the pass doesn't count and the check-in goes to review.
+  With a verified pass, the face match uses the middle frame of that burst,
+  not a separate photo.
+- `failed_step` (optional): the first step that wasn't detected, e.g.
+  `"turn_left"`, when the face service reports per-step results. May be
+  `null`, and may be switched off server-side, so **don't rely on it**: fall
+  back to the generic message.
+- `attempts_left` is `null` if the backend couldn't read it (rare).
+- **Each challenge is verified once.** Verifying it again, an expired one,
+  or another student's → `400 CHALLENGE_INVALID`. No attempts left →
+  `409 LIVENESS_ATTEMPTS_EXHAUSTED`. Frames: `422` if empty,
+  `413 TOO_MANY_FRAMES` / `IMAGE_TOO_LARGE` as at check-in. More than 30
+  per minute → `429`.
+- **Skipping the challenge doesn't help.** Once a student has failed an
+  attempt in a session, only a verified pass can approve their check-in;
+  otherwise it's flagged (`liveness_challenge_failed`). Some verdicts end
+  the attempts at once (reported as `failed` with `attempts_left: 0`).
+- Until Module 3 ships frame checking, every verify answers `unverified`.
 
 ### `POST /api/v1/checkins/` — **student only**
 ```jsonc
@@ -354,10 +397,12 @@ under 10,000,000 base64 characters, and the whole request under 15 MB.
 - **Two ways to send liveness:** one photo (`liveness_challenge_response`,
   as before), or a challenge burst (`challenge_id` +
   `liveness_challenge_frames`). The photo field keeps working.
-- **Challenge outcome:** the face service checks the frames against the
-  sequence. Steps not performed → `rejected` (`liveness_failed`, appealable).
-  If it can't confirm the steps → at most `flagged` (`liveness_unverified`).
-  Until Module 3 ships frame checking, challenged check-ins are flagged.
+- **Challenge outcome:** with a verified challenge (see `/verify` above),
+  its result is used. Otherwise the face service checks the frames here.
+  Steps not performed → `flagged` for review (`liveness_challenge_failed`),
+  never rejected for that alone. Can't confirm the steps → at most
+  `flagged` (`liveness_unverified`). Until Module 3 ships frame checking,
+  challenged check-ins are flagged.
 - `challenge_type` (lowercase letters and `_`) is only a label stored with
   the check-in when you send frames **without** a challenge.
 - **Send a fresh photo or burst every time.** If **any** image (the photo or
@@ -432,7 +477,8 @@ plus the weights below, capped at 1.0.
 | `gps_spoof_suspected` | medium | 0 | Accuracy < 1 m → at most flagged |
 | `device_unknown` | medium / low | 0.10 / 0.05 | Unregistered / registered but not trusted |
 | `impossible_travel` | high | 0.30 | > 250 km/h from the previous check-in |
-| `liveness_failed` | **critical** | 0.25 | **rejected** (also when challenge steps weren't performed) |
+| `liveness_failed` | **critical** | 0.25 | The face service judged it a spoof → **rejected** |
+| `liveness_challenge_failed` | high | 0 | Challenge steps not detected (and no later attempt passed) → at most flagged |
 | `liveness_unverified` | high | 0 | Liveness required but no result → at most flagged |
 | `face_match_failed` | **critical** | 0.25 | Face-required session, wrong face → **rejected** |
 | `face_match_unverified` | high | 0 | Face required but no comparison → at most flagged |

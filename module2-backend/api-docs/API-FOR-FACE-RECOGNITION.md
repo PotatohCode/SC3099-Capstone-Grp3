@@ -150,7 +150,8 @@ while performing a challenge:
   "liveness_passed": true,      // as before: your anti-spoof verdict
   "liveness_score": 0.0,        // as before
   "challenge_passed": true,     // were all steps performed, in order? Only needed for shape (b) with challenge_sequence
-  "steps_passed": [true, false] // optional, one per step, for our logs
+  "steps_passed": [true, false] // one per step, in sequence order. Please send it: we log it, and
+                                // we tell the student which step to redo (the first false one)
 }
 ```
 
@@ -158,10 +159,18 @@ while performing a challenge:
 
 | Your answer | Outcome |
 |---|---|
-| `challenge_passed: false` | Treated as a **failed liveness check** → check-in **rejected** (the student can appeal) |
-| `challenge_passed: true` | Your `liveness_passed` decides, as today |
+| `challenge_passed: false` | Steps not performed. The student may **retry** (3 attempts per session, a new sequence each time); without a later pass the check-in is **flagged for review**, not rejected |
+| `challenge_passed: true` + `liveness_passed: true` | Passed |
+| `challenge_passed: true` + `liveness_passed: null` | Unverified (no attempt used) |
 | `challenge_passed` missing or `null` (e.g. older build, or you couldn't tell) | **Unverified** → at most **flagged for review**, unless `liveness_passed` is `false` |
-| Call failed / timed out | Unverified, same as today |
+| `liveness_passed: false` (any `challenge_passed`) | Spoof → **no more attempts**, check-in **rejected** (the student can appeal) |
+| Call failed / timed out | Unverified; the student's attempt isn't used up |
+
+**When you're called:** usually by `POST /checkins/challenge/{id}/verify`,
+right after the student performs the challenge and **before** the
+check-in, so they can retry. The check-in then reuses that answer without
+calling you again. If the app skips the verify step, you're called at the
+check-in as before. Same request and response either way.
 
 Your current build ignores the unknown fields and scores
 `challenge_response` as one image. That's safe: without `challenge_passed`

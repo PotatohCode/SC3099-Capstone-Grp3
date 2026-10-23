@@ -193,7 +193,9 @@ paginated:
   `user_updated`, `user_deletion_requested`, `face_enrolled`
 - **Check-ins:** `checkin_attempted`, `checkin_approved`, `checkin_flagged`,
   `checkin_rejected`, `checkin_rejected_geo`, `checkin_appealed`,
-  `checkin_reviewed`
+  `checkin_reviewed`, `liveness_challenge_verified` (one per liveness
+  attempt; `details`: `outcome` passed/failed/spoof/unverified, `attempt`,
+  `sequence`, `steps_passed`)
 - **Admin data:** `session_created/updated/deleted`,
   `enrollment_added/removed`, `device_registered/updated/removed`,
   `course_created/updated/deleted`, `data_exported`, `retention_sweep_run`
@@ -204,7 +206,7 @@ Useful `details` fields:
 | Action | `details` |
 |---|---|
 | `checkin_approved` / `_flagged` / `_rejected` | `risk_score`, **`risk_level`** (LOW/MEDIUM/HIGH/CRITICAL), `status` |
-| `security_violation` | **`violation_type`**: `account_lockout`, `outside_singapore`, `geo_out_of_bounds`, `liveness_failed`, `face_match_failed`, `replay_suspected`, `impossible_travel`, `gps_spoof_suspected`, `rapid_succession`, `challenge_reuse` (a liveness challenge used twice or by another student; `details.reason` = `reused` / `other_student`) |
+| `security_violation` | **`violation_type`**: `account_lockout`, `outside_singapore`, `geo_out_of_bounds`, `liveness_failed`, `face_match_failed`, `replay_suspected`, `impossible_travel`, `gps_spoof_suspected`, `rapid_succession`, `challenge_reuse` (a liveness challenge used twice or by another student; `details.reason` = `reused` / `other_student`), `liveness_spoof` (a liveness attempt judged a spoof), `challenge_frames_mismatch` (a check-in named a verified challenge but sent different frames) |
 | `checkin_rejected_geo` | `reason` (`ip`/`gps`/`gps_and_ip`), `gps_in_singapore`, `ip_country` (no coordinates) |
 | `account_locked` | `failed_attempts`, `lockout_minutes` |
 | `login_failed` | `email`, or `reason: "account_locked"` |

@@ -116,3 +116,6 @@ class AuditAction(str, enum.Enum):
     # lockout (services/account_lockout.py).
     PASSWORD_CHANGED = "password_changed"
     PASSWORD_CHANGE_FAILED = "password_change_failed"
+    # POST /checkins/challenge/{id}/verify: one row per attempt, with the
+    # outcome and Module 3's per-step results (never the frames).
+    LIVENESS_CHALLENGE_VERIFIED = "liveness_challenge_verified"

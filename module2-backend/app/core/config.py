@@ -156,6 +156,17 @@ class Settings(BaseSettings):
     LIVENESS_CHALLENGE_ACTIONS: list[str] = ["blink", "turn_left", "turn_right"]
     LIVENESS_CHALLENGE_STEPS: int = Field(default=2, ge=1, le=3)
     LIVENESS_CHALLENGE_TTL_SECONDS: int = Field(default=90, ge=10)
+    # Retries (POST /checkins/challenge/{id}/verify): attempts per student
+    # per session. A Module 3 failure doesn't use one up; a spoof verdict
+    # ends them. Once a student has failed, only a verified pass can approve
+    # the check-in (otherwise it goes to review).
+    LIVENESS_MAX_ATTEMPTS: int = Field(default=3, ge=1)
+    # What a failed verify tells the student:
+    #   per_step - also which step wasn't detected (`failed_step`), when
+    #              Module 3 reports per-step results (`steps_passed`)
+    #   generic  - only that the movements weren't confirmed
+    # Spoof verdicts are never revealed either way.
+    LIVENESS_FEEDBACK: Literal["generic", "per_step"] = "per_step"
     # LIVENESS_CHALLENGE_ENFORCEMENT - on a session that requires liveness:
     #   off  - a check-in without a valid challenge is scored as before
     #          (single-image passive liveness can still approve it)

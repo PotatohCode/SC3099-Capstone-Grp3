@@ -14,6 +14,31 @@ below.
 
 ---
 
+## 2026-10-23 — `backend/password-change`: liveness retries
+
+**Rebuild needed:** `docker compose up -d --build backend`.
+
+| Area | Before | Now | Why |
+|---|---|---|---|
+| Liveness challenge feedback | Only after the check-in; a missed step failed the check-in | New `POST /checkins/challenge/{id}/verify {frames}` → `{result, attempts_left, failed_step}`. Up to **3 attempts per session**, a new sequence each time | At ~5 fps a genuine student can miss a blink or a turn; they should get to try again (M1's checklist) |
+| Challenge steps not performed | `liveness_failed` → **rejected** | `liveness_challenge_failed` (weight 0) → **flagged** for review, if no later attempt passed | Missing a step isn't proof of fraud. A spoof verdict (`liveness_passed: false`) still rejects, and ends the attempts |
+| Skipping the challenge after failing it | — | Counts anyway: after a failed attempt only a verified pass approves; after a spoof verdict the check-in is rejected | Otherwise a plain check-in would bypass the retry limit |
+| Verified pass at check-in | — | Only counts with **the same frames** (hash compared, images never stored); the face match then uses those frames | Stops passing the movements with one face and sending another person's photo |
+| `POST /checkins/challenge` | — | Also returns `attempts_left`; `409 LIVENESS_ATTEMPTS_EXHAUSTED` when none are left | |
+
+A face-service failure or timeout doesn't use up an attempt. The counter
+resets when the session's check-in window ends. A spoof verdict is
+reported to the app as `failed` with `attempts_left: 0`, so it can't be
+told apart from running out of tries. `failed_step` (from M3's
+`steps_passed`) can be switched off with `LIVENESS_FEEDBACK=generic`.
+
+New audit action `liveness_challenge_verified` (one per attempt) and
+security-violation types `liveness_spoof`, `challenge_frames_mismatch`.
+Until M3 returns `challenge_passed`, every verify answers `unverified` and
+check-ins behave as before. M1, M3: see the checklist rows.
+
+---
+
 ## 2026-10-23 — `backend/password-change`: students can change their password
 
 **Rebuild needed:** `docker compose up -d --build backend`.
