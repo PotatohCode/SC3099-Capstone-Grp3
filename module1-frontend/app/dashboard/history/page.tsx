@@ -233,7 +233,7 @@ function HistoryPageContent() {
           </select>
         </div>
 
-        <div className="flex items-end gap-2">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
           <div>
             <label htmlFor="month-from" className="block text-xs uppercase text-gray-500">
               From

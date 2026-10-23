@@ -103,6 +103,13 @@ export interface UserConsentUpdate {
   geolocation_consent?: boolean
 }
 
+export interface FaceEnrollResponse {
+  success: boolean
+  message: string
+  face_enrolled: boolean
+  quality_score: number
+}
+
 export interface LocationData {
   latitude: number
   longitude: number

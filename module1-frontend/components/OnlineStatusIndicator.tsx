@@ -7,7 +7,7 @@
 import { useOfflineSync } from '@/lib/hooks/useOfflineSync'
 
 export function OnlineStatusIndicator() {
-  const { isOnline, queueLength, isSyncing, syncNow } = useOfflineSync()
+  const { isOnline, queueLength, isSyncing, syncBlocked, syncNow } = useOfflineSync()
 
   if (isOnline && queueLength === 0) {
     return (
@@ -29,7 +29,10 @@ export function OnlineStatusIndicator() {
           {queueLength} check-in{queueLength === 1 ? '' : 's'} pending sync
         </span>
       )}
-      {isOnline && queueLength > 0 && (
+      {queueLength > 0 && syncBlocked && (
+        <span className="text-gray-600">Sync paused until your face is registered</span>
+      )}
+      {isOnline && queueLength > 0 && !syncBlocked && (
         <button
           type="button"
           onClick={() => syncNow()}

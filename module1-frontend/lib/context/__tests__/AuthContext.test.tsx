@@ -77,4 +77,100 @@ describe('AuthContext', () => {
     })
     expect(calls.filter((c) => c.method === 'put')).toHaveLength(1)
   })
+
+  it('saveConsent reports false when the backend did not save the change', async () => {
+    setTokens('a1', 'r1')
+    stubAdapter((req: RecordedRequest) => {
+      if (req.url === '/users/me' && req.method === 'get') return { status: 200, data: student }
+      return { status: 500 }
+    })
+    const { result } = renderHook(() => useAuth(), { wrapper })
+    await settle()
+    await settle()
+    let saved: boolean | undefined
+    await act(async () => {
+      saved = await result.current.saveConsent('camera', true)
+    })
+    expect(saved).toBe(false)
+    expect(result.current.user?.camera_consent).toBe(false)
+  })
+
+  it('reauthenticate checks the password with the signed-in email and keeps the current tokens', async () => {
+    setTokens('a1', 'r1')
+    const calls = stubAdapter((req: RecordedRequest) => {
+      if (req.url === '/users/me') return { status: 200, data: student }
+      if (req.url === '/auth/login') {
+        const body = req.data as { password: string }
+        if (body.password === 'right') return { status: 200, data: { access_token: 'a2', refresh_token: 'r2', token_type: 'bearer', user: student } }
+        return { status: 401, data: { code: 'INVALID_CREDENTIALS' } }
+      }
+      return { status: 404 }
+    })
+    const { result } = renderHook(() => useAuth(), { wrapper })
+    await settle()
+    await settle()
+    await expect(result.current.reauthenticate('wrong')).rejects.toThrow('Incorrect password.')
+    expect(result.current.isAuthenticated).toBe(true)
+    await act(async () => {
+      await result.current.reauthenticate('right')
+    })
+    const logins = calls.filter((c) => c.url === '/auth/login')
+    expect(logins.map((c) => c.data)).toEqual([
+      { email: 's@e.edu', password: 'wrong' },
+      { email: 's@e.edu', password: 'right' },
+    ])
+    expect(logins.every((c) => c.authorization === undefined)).toBe(true)
+    expect(getAccessToken()).toBe('a1')
+  })
+
+  it('reauthenticate rejects a login that returns a different account', async () => {
+    setTokens('a1', 'r1')
+    stubAdapter((req: RecordedRequest) => {
+      if (req.url === '/users/me') return { status: 200, data: student }
+      return { status: 200, data: { access_token: 'a2', refresh_token: 'r2', token_type: 'bearer', user: { ...student, id: 'other' } } }
+    })
+    const { result } = renderHook(() => useAuth(), { wrapper })
+    await settle()
+    await settle()
+    await expect(result.current.reauthenticate('pw')).rejects.toThrow('Password check failed. Please sign in again.')
+    expect(result.current.user?.id).toBe('u1')
+  })
+
+  it('refreshUser reloads the user from GET /users/me', async () => {
+    setTokens('a1', 'r1')
+    let enrolled = false
+    stubAdapter((req: RecordedRequest) => {
+      if (req.url === '/users/me') return { status: 200, data: { ...student, face_enrolled: enrolled } }
+      return { status: 404 }
+    })
+    const { result } = renderHook(() => useAuth(), { wrapper })
+    await settle()
+    await settle()
+    expect(result.current.user?.face_enrolled).toBe(false)
+    enrolled = true
+    await act(async () => {
+      await result.current.refreshUser()
+    })
+    expect(result.current.user?.face_enrolled).toBe(true)
+  })
+
+  it('login and logout clear the dismissed face prompt flag', async () => {
+    stubAdapter((req: RecordedRequest) => {
+      if (req.url === '/auth/login') return { status: 200, data: { access_token: 'a1', refresh_token: 'r1', token_type: 'bearer', user: student } }
+      if (req.url === '/devices/register') return { status: 201, data: {} }
+      return { status: 204 }
+    })
+    const { result } = renderHook(() => useAuth(), { wrapper })
+    await settle()
+    window.sessionStorage.setItem('saiv_face_prompt_dismissed', 'true')
+    await act(async () => {
+      await result.current.login({ email: 's@e.edu', password: 'pw' })
+    })
+    expect(window.sessionStorage.getItem('saiv_face_prompt_dismissed')).toBeNull()
+    window.sessionStorage.setItem('saiv_face_prompt_dismissed', 'true')
+    await act(async () => {
+      await result.current.logout()
+    })
+    expect(window.sessionStorage.getItem('saiv_face_prompt_dismissed')).toBeNull()
+  })
 })
