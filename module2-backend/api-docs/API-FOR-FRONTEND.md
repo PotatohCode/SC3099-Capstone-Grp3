@@ -270,6 +270,13 @@ user owns it.
 everyone with the same phone model. They then can't register devices, and
 two of them checking in within 10 minutes are flagged as `rapid_succession`.
 
+**Recommended: on `DEVICE_FINGERPRINT_TAKEN`, keep the ID rather than generating a new one.**
+It means another student already registered this browser, which is the
+shared-phone case the backend is meant to see. Carry on with the check-in:
+it scores `device_unknown`, and if two students use the same ID within
+10 minutes the second check-in goes to review (`rapid_succession`). A new
+ID would hide that.
+
 ### `GET /api/v1/devices/my-devices` — any authenticated role
 Plain array of `{ id, device_fingerprint, device_name, platform, browser, os_version, app_version, is_trusted, trust_score, is_active, total_checkins, first_seen_at, last_seen_at }`.
 
@@ -478,9 +485,9 @@ Also, for user and device management screens:
 
 ## Things worth designing around
 
-- **The backend address must not be baked to one machine's LAN IP**
-  (`NEXT_PUBLIC_API_URL` is fixed at build time). See the Module 1
-  checklist in [CHANGES-2026-10-01.md](CHANGES-2026-10-01.md).
+- **The backend address is fixed at build time** (`NEXT_PUBLIC_API_URL`).
+  Keep it relative (`/`, through the `frontend-proxy` service), never one
+  machine's LAN IP.
 - **Flagged/rejected are normal outcomes,** not errors. Build the appeal flow
   and "pending review" messaging.
 - **`GET /courses/` and `GET /sessions/active` work without login.**
@@ -492,7 +499,8 @@ Also, for user and device management screens:
   only (it's still safe as text).
 - **A double-tap is safe:** two identical requests at once get one success
   and the normal `400` (e.g. `ALREADY_CHECKED_IN`).
-- **If you add a proxy** (Next.js rewrites, nginx), make it set
-  `X-Forwarded-For` to the real client IP: the backend uses its first
-  address for the Singapore rule, rate limits and audit logs. Never set it
-  from browser code.
+- **The `frontend-proxy` (Caddy) sets `X-Forwarded-For` to the real client
+  IP** and replaces any value the browser sent, so it can't be spoofed
+  through the site. The backend uses its first address for the Singapore
+  rule, rate limits and audit logs. Keep that if you change the proxy, and
+  never set the header from browser code.

@@ -165,7 +165,9 @@ and registration have per-IP limits.
   reasons and review notes. Render it as text, not HTML ("R&D" comes back as
   `R&amp;D`; unescape for display only if you like).
 - **Client IP** = the first `X-Forwarded-For` address if present, otherwise
-  the connection address. Never set that header from browser code.
+  the connection address. Never set that header from browser code. The
+  student site's proxy (`frontend-proxy`, ports 3000/3443) overwrites it
+  with the real client address; direct calls to `:8000` are taken as sent.
 - **CORS** allows `http://localhost:3000` and `http://localhost:8501` (plus
   whatever `CORS_ORIGINS` adds in `docker-compose.yml`). Exposed headers:
   `Retry-After`, `X-Request-ID`.
