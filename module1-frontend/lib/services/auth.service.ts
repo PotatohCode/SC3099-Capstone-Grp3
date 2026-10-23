@@ -23,6 +23,11 @@ export async function updateMe(patch: UserConsentUpdate): Promise<User> {
   return response.data
 }
 
+/** Changes the signed-in user's password (POST /users/me/password, 204); existing tokens stay valid. */
+export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
+  await httpClient.post('/users/me/password', { current_password: currentPassword, new_password: newPassword })
+}
+
 /** Revokes the session on the server (access token via header, refresh token in the body), then always clears local tokens. */
 export async function logoutAndClear(): Promise<void> {
   const refreshToken = getRefreshToken()

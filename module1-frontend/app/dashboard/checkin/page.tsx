@@ -283,7 +283,15 @@ function ConfirmStep() {
           <div className="flex justify-between">
             <dt className="text-gray-500">Face check</dt>
             <dd className="font-medium text-gray-900">
-              {!media ? 'Missing' : media.kind === 'burst' ? `Completed (${media.sequence.length} actions)` : 'Photo taken'}
+              {!media
+                ? 'Missing'
+                : media.kind === 'burst'
+                  ? media.verification === 'passed'
+                    ? `Movements confirmed (${media.sequence.length} actions)`
+                    : `Completed (${media.sequence.length} actions)`
+                  : media.kind === 'photo' && media.verification !== 'review'
+                    ? 'Photo taken'
+                    : 'Not completed'}
             </dd>
           </div>
           <div className="flex justify-between">
@@ -293,6 +301,11 @@ function ConfirmStep() {
             </dd>
           </div>
         </dl>
+        {media?.verification === 'review' && (
+          <p className="mt-3 text-xs text-amber-700" role="status">
+            Your liveliness check was unsuccessful, please approach your instructor to mark your attendance.
+          </p>
+        )}
         {!isOnline && (
           <p className="mt-3 text-xs text-amber-700">
             You&apos;re currently offline - this check-in will be queued and synced automatically.

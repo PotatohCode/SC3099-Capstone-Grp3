@@ -18,6 +18,17 @@ const PROMPTS: Record<string, string> = {
   turn_right: 'Slowly turn your head to your right',
 }
 
+const MISSED_HINTS: Record<string, string> = {
+  blink: "We couldn't see you blink.",
+  turn_left: "We couldn't see you turn your head to your left.",
+  turn_right: "We couldn't see you turn your head to your right.",
+}
+
+/** Returns a hint naming the step that wasn't detected, or null when the step is missing or unknown. */
+export function missedStepHint(step: string | null | undefined): string | null {
+  return step ? MISSED_HINTS[step] ?? null : null
+}
+
 /** Returns the on-screen instruction for a challenge action, with a generic prompt for unknown actions. */
 export function promptFor(action: string): string {
   return PROMPTS[action] ?? `Please do this now: ${action.replace(/_/g, ' ')}`

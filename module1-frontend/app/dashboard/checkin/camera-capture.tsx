@@ -12,15 +12,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAuth } from '@/lib/hooks/useAuth'
 import { useCameraStream, type CameraStatus } from '@/lib/hooks/useCameraStream'
-import { requestChallenge } from '@/lib/services/checkin.service'
+import { requestChallenge, verifyChallenge } from '@/lib/services/checkin.service'
 import { classifyChallengeError, type CheckInErrorView } from '@/lib/checkin/errors'
-import type { CapturedMedia } from '@/lib/checkin/payload'
+import { middleFrame, type CapturedMedia } from '@/lib/checkin/payload'
+
+type BurstMedia = Extract<CapturedMedia, { kind: 'burst' }>
 import { CAPTURE, planCapture } from '@/lib/liveness/challenge'
+import { MAX_ATTEMPTS, attemptsUsed, decideAttempt, startAttempt, undoAttempt, type AttemptDecision, type AttemptOutcome } from '@/lib/liveness/verify'
 import { abortableSleep, runCapturePlan } from '@/lib/liveness/capture-runner'
 import { decideConsentGate, queryPermission, type ConsentGate } from '@/lib/utils/consent-tracker'
 import { BURST_JPEG, createFrameGrabber, PHOTO_JPEG } from '@/lib/utils/frame-capture'
 
-type Phase = 'ready' | 'preparing' | 'countdown' | 'step' | 'photo-countdown' | 'done'
+type Phase = 'ready' | 'preparing' | 'countdown' | 'step' | 'verifying' | 'photo-countdown' | 'done'
 
 interface CameraCaptureProps {
   sessionId: string
@@ -47,7 +50,10 @@ export function CameraCapture({ sessionId, photoMode, onComplete, onReselectSess
   const [prompt, setPrompt] = useState('')
   const [countdown, setCountdown] = useState(0)
   const [message, setMessage] = useState<CheckInErrorView | null>(null)
+  const [attemptNumber, setAttemptNumber] = useState(0)
   const abortRef = useRef<AbortController | null>(null)
+  const statusRef = useRef(status)
+  statusRef.current = status
 
   const begin = useCallback(async (): Promise<CameraStatus> => {
     const result = await startStream()
@@ -129,29 +135,78 @@ export function CameraCapture({ sessionId, photoMode, onComplete, onReselectSess
     onComplete({ kind: 'photo', photo })
   }
 
+  function finishAttempt(decision: AttemptDecision, burst: BurstMedia | null) {
+    abortRef.current = null
+    if (decision.kind === 'retry') {
+      setPhase('ready')
+      setMessage({ message: decision.message, secondary: decision.secondary, action: 'retry-capture' })
+      if (statusRef.current !== 'streaming') void begin()
+      return
+    }
+    stopStream()
+    setPhase('done')
+    if (decision.media === 'burst' && burst) {
+      onComplete({
+        ...burst,
+        fetchedAtMs: decision.restartFreshness ? performance.now() : burst.fetchedAtMs,
+        verification: decision.verification,
+      })
+    } else if (decision.media === 'frame' && burst) {
+      onComplete({ kind: 'photo', photo: middleFrame(burst.frames), verification: 'review' })
+    } else {
+      onComplete({ kind: 'none', verification: 'review' })
+    }
+  }
+
   async function start() {
     const video = videoRef.current
     if (!video) return
     setMessage(null)
     const controller = new AbortController()
     abortRef.current = controller
+    if (photoMode) {
+      try {
+        return await takePhoto(controller)
+      } catch (err) {
+        const aborted = err instanceof DOMException && err.name === 'AbortError'
+        return failCapture(aborted ? INTERRUPTED : NO_FRAMES)
+      }
+    }
+    const userId = user?.id ?? 'anonymous'
+    if (attemptsUsed(userId, sessionId) >= MAX_ATTEMPTS) {
+      return finishAttempt({ kind: 'submit', media: 'none', verification: 'review', restartFreshness: false }, null)
+    }
+    const attempt = startAttempt(userId, sessionId)
+    setAttemptNumber(attempt)
     try {
-      if (photoMode) return await takePhoto(controller)
       setPhase('preparing')
       let challenge
       try {
         challenge = await requestChallenge(sessionId)
       } catch (err) {
         const classified = classifyChallengeError(err)
-        if (classified.fallbackToPhoto) return await takePhoto(controller)
-        abortRef.current = null
-        setPhase('ready')
-        setMessage(classified.view)
-        return
+        if (classified.fallbackToPhoto && classified.attemptsExhausted) {
+          return finishAttempt({ kind: 'submit', media: 'none', verification: 'review', restartFreshness: false }, null)
+        }
+        if (classified.fallbackToPhoto) {
+          undoAttempt(userId, sessionId)
+          return await takePhoto(controller)
+        }
+        if (classified.view.action === 'reselect-session') {
+          undoAttempt(userId, sessionId)
+          abortRef.current = null
+          setPhase('ready')
+          setMessage(classified.view)
+          return
+        }
+        return finishAttempt(decideAttempt({ kind: 'no-capture' }, attempt), null)
       }
       const fetchedAtMs = performance.now()
       const plan = planCapture(challenge.sequence, challenge.max_frames)
-      if (!plan) return await takePhoto(controller)
+      if (!plan) {
+        undoAttempt(userId, sessionId)
+        return await takePhoto(controller)
+      }
       setSteps(challenge.sequence)
       setPhase('countdown')
       setCountdown(Math.round(CAPTURE.countdownMs / 1000))
@@ -167,20 +222,32 @@ export function CameraCapture({ sessionId, photoMode, onComplete, onReselectSess
         },
         controller.signal
       )
-      stopStream()
-      abortRef.current = null
-      setPhase('done')
-      onComplete({
+      const burst: BurstMedia = {
         kind: 'burst',
         challengeId: challenge.challenge_id,
         sequence: challenge.sequence,
         frames,
         fetchedAtMs,
         maxFrames: challenge.max_frames,
-      })
-    } catch (err) {
-      const aborted = err instanceof DOMException && err.name === 'AbortError'
-      failCapture(aborted ? INTERRUPTED : NO_FRAMES)
+      }
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+        stopStream()
+        abortRef.current = null
+        setPhase('done')
+        onComplete(burst)
+        return
+      }
+      abortRef.current = null
+      setPhase('verifying')
+      let outcome: AttemptOutcome
+      try {
+        outcome = { kind: 'verified', response: await verifyChallenge(challenge.challenge_id, frames) }
+      } catch (error) {
+        outcome = { kind: 'verify-error', error }
+      }
+      finishAttempt(decideAttempt(outcome, attempt), burst)
+    } catch {
+      finishAttempt(decideAttempt({ kind: 'no-capture' }, attempt), null)
     }
   }
 
@@ -229,7 +296,8 @@ export function CameraCapture({ sessionId, photoMode, onComplete, onReselectSess
     )
   }
 
-  const capturing = phase === 'preparing' || phase === 'countdown' || phase === 'step' || phase === 'photo-countdown'
+  const capturing =
+    phase === 'preparing' || phase === 'countdown' || phase === 'step' || phase === 'verifying' || phase === 'photo-countdown'
 
   return (
     <div className="space-y-4">
@@ -258,6 +326,7 @@ export function CameraCapture({ sessionId, photoMode, onComplete, onReselectSess
               <div aria-live="polite">
                 <p className="font-medium">Get ready</p>
                 <p className="text-sm">{describeSequence(steps)}</p>
+                {attemptNumber === MAX_ATTEMPTS && <p className="text-sm font-medium">This is your last try.</p>}
                 <p className="text-3xl font-bold">{countdown}</p>
               </div>
             )}
@@ -268,6 +337,11 @@ export function CameraCapture({ sessionId, photoMode, onComplete, onReselectSess
                 </p>
                 <p className="text-2xl font-bold">{prompt}</p>
               </div>
+            )}
+            {phase === 'verifying' && (
+              <p className="font-medium" aria-live="polite">
+                Checking your movements...
+              </p>
             )}
             {phase === 'photo-countdown' && (
               <div aria-live="polite">
@@ -292,7 +366,9 @@ export function CameraCapture({ sessionId, photoMode, onComplete, onReselectSess
 
       {message && (
         <div className="rounded-md bg-red-50 p-3 text-sm text-red-700" role="alert">
+          {message.title && <p className="font-semibold">{message.title}</p>}
           {message.message}
+          {message.secondary && <p className="mt-1 font-medium">{message.secondary}</p>}
           {message.action === 'reselect-session' && (
             <button type="button" onClick={onReselectSession} className="ml-2 font-medium underline">
               Choose another session
@@ -328,7 +404,7 @@ export function CameraCapture({ sessionId, photoMode, onComplete, onReselectSess
         </button>
       )}
 
-      {capturing && (
+      {capturing && phase !== 'verifying' && (
         <button
           type="button"
           onClick={cancel}
