@@ -24,6 +24,7 @@ import { registerCurrentDevice } from '@/lib/services/device.service'
 import { clearOfflineQueue } from '@/lib/services/offline.service'
 import { loginErrorMessage } from '@/lib/utils/api-error'
 import { FACE_PROMPT_DISMISSED_KEY, reauthErrorMessage } from '@/lib/face/enrollment'
+import { resetVerifyCalls } from '@/lib/liveness/verify'
 import { recordConsent, type ConsentType } from '@/lib/utils/consent-tracker'
 import {
   clearTokens,
@@ -71,6 +72,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await clearOfflineQueue().catch(() => undefined)
     await authService.logoutAndClear()
     setUser(null)
+    resetVerifyCalls()
     if (typeof window !== 'undefined') {
       window.sessionStorage.removeItem(DEVICE_REGISTERED_FLAG)
       window.sessionStorage.removeItem(FACE_PROMPT_DISMISSED_KEY)
@@ -118,6 +120,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const response = await authService.login(payload)
       setTokens(response.access_token, response.refresh_token)
+      resetVerifyCalls()
       window.sessionStorage.removeItem(FACE_PROMPT_DISMISSED_KEY)
       setUser(response.user)
       await registerDeviceOnce()

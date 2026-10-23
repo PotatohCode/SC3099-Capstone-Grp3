@@ -1,10 +1,11 @@
 'use client'
 
-/** Student settings: shows face identity status and runs the Update Face Identity flow. */
+/** Student settings: face identity status and update flow, and the change password form. */
 
 import { useState } from 'react'
 import { useAuth } from '@/lib/hooks/useAuth'
 import { FaceEnrollmentFlow } from '@/app/dashboard/settings/face-enrollment'
+import { ChangePasswordForm } from '@/app/dashboard/settings/change-password'
 
 export default function SettingsPage() {
   const { user } = useAuth()
@@ -41,6 +42,13 @@ export default function SettingsPage() {
             {enrolled ? 'Update face identity' : 'Register face identity'}
           </button>
         )}
+      </section>
+
+      <section aria-labelledby="change-password-heading" className="rounded-lg border border-gray-200 bg-white p-5">
+        <h2 id="change-password-heading" className="text-lg font-semibold text-gray-900">
+          Change password
+        </h2>
+        <ChangePasswordForm />
       </section>
     </div>
   )

@@ -96,6 +96,13 @@ export interface LivenessChallenge {
   sequence: string[]
   expires_at: string
   max_frames: number
+  attempts_left?: number | null
+}
+
+export interface VerifyChallengeResponse {
+  result: 'passed' | 'failed' | 'unverified'
+  attempts_left: number | null
+  failed_step?: string | null
 }
 
 export interface UserConsentUpdate {

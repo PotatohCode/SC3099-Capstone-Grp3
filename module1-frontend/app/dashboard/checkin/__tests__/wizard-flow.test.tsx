@@ -5,6 +5,7 @@ import { CheckInProvider } from '@/lib/context/CheckInContext'
 import type { CheckInRequest } from '@/lib/types'
 import { installCamera, installGeolocation, installPermissions } from '@/test/browser-mocks'
 import { stubAdapter, type RecordedRequest, type StubReply } from '@/test/axios-stub'
+import { resetVerifyCalls } from '@/lib/liveness/verify'
 
 jest.mock('@/lib/hooks/useAuth', () => ({
   useAuth: () => ({
@@ -42,9 +43,12 @@ async function flush(ms = 0) {
   })
 }
 
-function backend(checkinReplies: StubReply[]) {
+function backend(checkinReplies: StubReply[], verifyReplies: StubReply[] = []) {
   let challengeCount = 0
   return stubAdapter((req: RecordedRequest) => {
+    if (req.url?.startsWith('/checkins/challenge/') && req.url.endsWith('/verify')) {
+      return verifyReplies.shift() ?? { status: 200, data: { result: 'passed', attempts_left: 2, failed_step: null } }
+    }
     if (req.url === '/sessions/my-sessions') return { status: 200, data: [session] }
     if (req.url === '/checkins/challenge') {
       challengeCount++
@@ -70,6 +74,7 @@ async function runToConfirm() {
 
 describe('check-in wizard', () => {
   beforeEach(() => {
+    resetVerifyCalls()
     jest.useFakeTimers()
     installCamera()
     installPermissions('granted')
@@ -85,7 +90,7 @@ describe('check-in wizard', () => {
     render(<CheckInProvider><CheckInWizardPage /></CheckInProvider>)
     await flush()
     await runToConfirm()
-    expect(screen.getByText('Completed (2 actions)')).toBeTruthy()
+    expect(screen.getByText('Movements confirmed (2 actions)')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Submit check-in' }))
     await flush()
     const submit = calls.find((c) => c.url === '/checkins/')!.data as CheckInRequest
@@ -178,6 +183,163 @@ describe('check-in wizard', () => {
     expect(calls.filter((c) => c.url === '/checkins/')).toHaveLength(0)
   })
 
+  it('verifies the burst first and submits the same challenge and exact frames when it passes', async () => {
+    const calls = backend(
+      [{ status: 201, data: { id: 'c1', status: 'approved', risk_score: 0.1, risk_level: 'LOW' } }],
+      [{ status: 200, data: { result: 'passed', attempts_left: 2, failed_step: null } }]
+    )
+    render(<CheckInProvider><CheckInWizardPage /></CheckInProvider>)
+    await flush()
+    await runToConfirm()
+    expect(screen.getByText('Movements confirmed (2 actions)')).toBeTruthy()
+    expect(screen.queryByText(/will be reviewed/)).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Submit check-in' }))
+    await flush()
+    const urls = calls.map((c) => c.url)
+    expect(urls.indexOf('/checkins/challenge/ch-1/verify')).toBeGreaterThan(-1)
+    expect(urls.indexOf('/checkins/challenge/ch-1/verify')).toBeLessThan(urls.indexOf('/checkins/'))
+    const verified = (calls.find((c) => c.url === '/checkins/challenge/ch-1/verify')!.data as { frames: string[] }).frames
+    const submit = calls.find((c) => c.url === '/checkins/')!.data as CheckInRequest
+    expect(submit.challenge_id).toBe('ch-1')
+    expect(submit.liveness_challenge_frames).toEqual(verified)
+    expect(screen.getByText('Check-in submitted')).toBeTruthy()
+  })
+
+  it('asks for another Start twice when the face service cannot confirm, then submits the third burst for review', async () => {
+    const unverified = { status: 200, data: { result: 'unverified', attempts_left: 3 } }
+    const calls = backend([{ status: 201, data: { id: 'c1', status: 'flagged', risk_score: 0.5, risk_level: 'HIGH' } }], [unverified, unverified, unverified])
+    render(<CheckInProvider><CheckInWizardPage /></CheckInProvider>)
+    await flush()
+    fireEvent.click(await screen.findByRole('button', { name: /Lecture 7/ }))
+    await flush()
+    await flush()
+    fireEvent.click(await screen.findByRole('button', { name: 'Start' }))
+    await flush(7500)
+    expect(screen.getByText('Unsuccessful capture, please retry.')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Start' }))
+    await flush(7500)
+    expect(screen.getByText('Unsuccessful capture, please retry.')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Start' }))
+    await flush(7500)
+    expect(
+      screen.getByText('Your liveliness check was unsuccessful, please approach your instructor to mark your attendance.')
+    ).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Submit check-in' }))
+    await flush()
+    const verified = (calls.filter((c) => c.url?.endsWith('/verify'))[2].data as { frames: string[] }).frames
+    const submit = calls.find((c) => c.url === '/checkins/')!.data as CheckInRequest
+    expect(submit.challenge_id).toBe('ch-3')
+    expect(submit.liveness_challenge_frames).toEqual(verified)
+  })
+
+  it('retries with a new challenge after a failed verify and submits only the passing burst', async () => {
+    const calls = backend(
+      [{ status: 201, data: { id: 'c1', status: 'approved', risk_score: 0.1, risk_level: 'LOW' } }],
+      [
+        { status: 200, data: { result: 'failed', attempts_left: 2, failed_step: 'turn_right' } },
+        { status: 200, data: { result: 'passed', attempts_left: 1, failed_step: null } },
+      ]
+    )
+    render(<CheckInProvider><CheckInWizardPage /></CheckInProvider>)
+    await flush()
+    fireEvent.click(await screen.findByRole('button', { name: /Lecture 7/ }))
+    await flush()
+    await flush()
+    fireEvent.click(await screen.findByRole('button', { name: 'Start' }))
+    await flush(7500)
+    expect(screen.getByText('Unsuccessful capture, please retry.')).toBeTruthy()
+    expect(screen.getByText(/We couldn't see you turn your head to your right\. 2 tries left\./)).toBeTruthy()
+    expect(calls.some((c) => c.url === '/checkins/')).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: 'Start' }))
+    await flush(7500)
+    expect(screen.getByText('Review & submit')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Submit check-in' }))
+    await flush()
+    const submit = calls.find((c) => c.url === '/checkins/')!.data as CheckInRequest
+    expect(submit.challenge_id).toBe('ch-2')
+    const second = (calls.find((c) => c.url === '/checkins/challenge/ch-2/verify')!.data as { frames: string[] }).frames
+    expect(submit.liveness_challenge_frames).toEqual(second)
+  })
+
+  it('after the third failed try jumps to review and submits that burst with the unsuccessful message', async () => {
+    const calls = backend(
+      [{ status: 201, data: { id: 'c1', status: 'flagged', risk_score: 0.5, risk_level: 'HIGH' } }],
+      [
+        { status: 200, data: { result: 'failed', attempts_left: 2 } },
+        { status: 200, data: { result: 'failed', attempts_left: 1 } },
+        { status: 200, data: { result: 'failed', attempts_left: 0 } },
+      ]
+    )
+    render(<CheckInProvider><CheckInWizardPage /></CheckInProvider>)
+    await flush()
+    fireEvent.click(await screen.findByRole('button', { name: /Lecture 7/ }))
+    await flush()
+    await flush()
+    fireEvent.click(await screen.findByRole('button', { name: 'Start' }))
+    await flush(7500)
+    fireEvent.click(screen.getByRole('button', { name: 'Start' }))
+    await flush(7500)
+    fireEvent.click(screen.getByRole('button', { name: 'Start' }))
+    await flush(7500)
+    expect(screen.getByText('Review & submit')).toBeTruthy()
+    expect(
+      screen.getByText('Your liveliness check was unsuccessful, please approach your instructor to mark your attendance.')
+    ).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Submit check-in' }))
+    await flush()
+    expect(calls.filter((c) => c.url?.endsWith('/verify'))).toHaveLength(3)
+    const submit = calls.find((c) => c.url === '/checkins/')!.data as CheckInRequest
+    expect(submit.challenge_id).toBe('ch-3')
+  })
+
+  it('submits without an image for review when no tries are left for a new challenge', async () => {
+    const calls = stubAdapter((req: RecordedRequest) => {
+      if (req.url === '/sessions/my-sessions') return { status: 200, data: [session] }
+      if (req.url === '/checkins/challenge') return { status: 409, data: { code: 'LIVENESS_ATTEMPTS_EXHAUSTED' } }
+      if (req.url === '/checkins/') return { status: 201, data: { id: 'c1', status: 'flagged', risk_score: 0.6, risk_level: 'HIGH' } }
+      return { status: 404 }
+    })
+    render(<CheckInProvider><CheckInWizardPage /></CheckInProvider>)
+    await flush()
+    fireEvent.click(await screen.findByRole('button', { name: /Lecture 7/ }))
+    await flush()
+    await flush()
+    fireEvent.click(await screen.findByRole('button', { name: 'Start' }))
+    await flush(100)
+    expect(screen.getByText('Not completed')).toBeTruthy()
+    expect(
+      screen.getByText('Your liveliness check was unsuccessful, please approach your instructor to mark your attendance.')
+    ).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Submit check-in' }))
+    await flush()
+    const submit = calls.find((c) => c.url === '/checkins/')!.data as CheckInRequest
+    expect(submit.liveness_challenge_response).toBeUndefined()
+    expect(submit.liveness_challenge_frames).toBeUndefined()
+    expect(submit.challenge_id).toBeUndefined()
+  })
+
+  it('Back from review after the third fail cannot start a fourth face check', async () => {
+    const unverified = { status: 200, data: { result: 'unverified', attempts_left: 3 } }
+    const calls = backend([], [unverified, unverified, unverified, { status: 200, data: { result: 'passed', attempts_left: 2 } }])
+    render(<CheckInProvider><CheckInWizardPage /></CheckInProvider>)
+    await flush()
+    fireEvent.click(await screen.findByRole('button', { name: /Lecture 7/ }))
+    await flush()
+    await flush()
+    for (let i = 0; i < 3; i++) {
+      fireEvent.click(await screen.findByRole('button', { name: 'Start' }))
+      await flush(7500)
+    }
+    expect(screen.getByText('Review & submit')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }))
+    await flush()
+    fireEvent.click(await screen.findByRole('button', { name: 'Start' }))
+    await flush(100)
+    expect(screen.getByText('Review & submit')).toBeTruthy()
+    expect(screen.getByText('Not completed')).toBeTruthy()
+    expect(calls.filter((c) => c.url === '/checkins/challenge')).toHaveLength(3)
+  })
+
   it('queues the check-in with one image when offline', async () => {
     const calls = backend([])
     render(<CheckInProvider><CheckInWizardPage /></CheckInProvider>)
@@ -228,6 +390,7 @@ describe('check-in wizard', () => {
         challengeCount++
         return { status: 201, data: { challenge_id: `ch-${challengeCount}`, session_id: 's1', sequence: ['blink'], expires_at: '', max_frames: 30 } }
       }
+      if (req.url?.endsWith('/verify')) return { status: 200, data: { result: 'passed', attempts_left: 2 } }
       return { status: 201, data: { id: 'c1', status: 'approved' } }
     })
     const { default: httpClient } = await import('@/lib/utils/http-client')

@@ -4,6 +4,7 @@ import { AuthProvider } from '@/lib/context/AuthContext'
 import { useAuth } from '@/lib/hooks/useAuth'
 import { getAccessToken, setTokens } from '@/lib/utils/token-storage'
 import { stubAdapter, type RecordedRequest } from '@/test/axios-stub'
+import { startAttempt } from '@/lib/liveness/verify'
 
 const clearOfflineQueue = jest.fn(async () => undefined)
 jest.mock('@/lib/services/offline.service', () => ({ clearOfflineQueue: () => clearOfflineQueue() }))
@@ -152,6 +153,25 @@ describe('AuthContext', () => {
       await result.current.refreshUser()
     })
     expect(result.current.user?.face_enrolled).toBe(true)
+  })
+
+  it('login and logout clear the liveness verify counts', async () => {
+    stubAdapter((req: RecordedRequest) => {
+      if (req.url === '/auth/login') return { status: 200, data: { access_token: 'a1', refresh_token: 'r1', token_type: 'bearer', user: student } }
+      if (req.url === '/devices/register') return { status: 201, data: {} }
+      return { status: 204 }
+    })
+    const { result } = renderHook(() => useAuth(), { wrapper })
+    await settle()
+    startAttempt('u1', 's1')
+    await act(async () => {
+      await result.current.login({ email: 's@e.edu', password: 'pw' })
+    })
+    expect(startAttempt('u1', 's1')).toBe(1)
+    await act(async () => {
+      await result.current.logout()
+    })
+    expect(startAttempt('u1', 's1')).toBe(1)
   })
 
   it('login and logout clear the dismissed face prompt flag', async () => {
