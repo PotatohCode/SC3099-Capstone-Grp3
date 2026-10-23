@@ -24,7 +24,9 @@ in [CHANGES-2026-10-01.md](CHANGES-2026-10-01.md). **Why things changed:**
   step (`LIVENESS_TIMEOUT_SECONDS`); single-image calls keep 5 s.
 - **Concurrency:** the backend handles 100+ simultaneous check-ins, and each
   check-in with a photo or a frame burst can call `/liveness/check`,
-  `/face/verify` and `/risk/assess`. The hidden stress tests use ~100
+  `/face/verify` and `/risk/assess`. On top of that, each liveness **retry**
+  (`POST /checkins/challenge/{id}/verify`, up to 3 per student per session)
+  is one `/liveness/check` frame-burst call. The hidden stress tests use ~100
   concurrent users, so load-test with 50–100 parallel requests. If you're
   slow, only the check-ins wait; the rest of the backend stays responsive.
 - **Images:** we forward the base64 exactly as the client sent it (normally
@@ -80,8 +82,10 @@ within 5 s is treated as failed.
 { "match_passed": true, "match_score": 0.0, "current_template_hash": "..." }
 ```
 - Called during check-in when the student sent a photo or a frame burst
-  (we send the photo, or else the burst's middle frame) **and** has an
-  enrolled face.
+  **and** has an enrolled face. We send the photo, or else the burst's
+  middle frame. With a verified challenge we always send the verified
+  burst's middle frame, so the face that did the movements is the one
+  compared.
 - `current_template_hash` is stored on the check-in row as a record of that
   attempt.
 - **What `match_passed` does now:**
@@ -174,7 +178,8 @@ check-in as before. Same request and response either way.
 
 Your current build ignores the unknown fields and scores
 `challenge_response` as one image. That's safe: without `challenge_passed`
-we never auto-approve a challenged check-in.
+we never auto-approve a challenged check-in. But until you return it,
+every verify answers "unverified", so students can't retry yet.
 - `liveness_passed: false` → **always rejects** the check-in
   (`liveness_failed`, hard reject), whatever the score.
 - `liveness_passed: null` (e.g. no face found), or a failed call → the

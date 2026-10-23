@@ -32,7 +32,7 @@ malformed email.
 |---|---|---|
 | `401 INVALID_CREDENTIALS` | Wrong email or password | "Incorrect email or password" |
 | `403 ACCOUNT_DISABLED` | Account deactivated or deleted | "This account is disabled" |
-| `429 ACCOUNT_LOCKED` + `Retry-After` | 10 consecutive wrong passwords; locked 15 min, **even with the correct password** | "Too many failed sign-in attempts. Locked for N minutes", with `N = ceil(Retry-After / 60)` |
+| `429 ACCOUNT_LOCKED` + `Retry-After` | 10 consecutive wrong passwords (here or on the change-password page); locked 15 min, **even with the correct password** | "Too many failed sign-in attempts. Locked for N minutes", with `N = ceil(Retry-After / 60)` |
 
 `http-client.ts` already puts `Retry-After` in `error.rateLimit.retryAfterSeconds`.
 A `429` from login in practice always means `ACCOUNT_LOCKED`.
@@ -88,8 +88,11 @@ without both consents goes to review (`consent_missing`, see §7).
 | `413 IMAGE_TOO_LARGE` | Image over 10,000,000 base64 characters |
 | `503 FACE_SERVICE_UNAVAILABLE` | Module 3 failed: it didn't answer in time (~5 s), returned an error, or is temporarily skipped after earlier failures (30 s). Let the user retry |
 
-Without an enrolled face, check-ins on face-required sessions are always
-`flagged`, so an enrolment step matters.
+Once enrolled, **every check-in with a photo or burst is compared** with the
+stored face; the match score feeds the risk score, and on face-required
+sessions a mismatch rejects. Without an enrolled face, check-ins on
+face-required sessions are always `flagged`, so an enrolment step matters.
+Enrolling again replaces the stored face.
 
 ### `POST /api/v1/users/me/password` — any authenticated role
 ```json
@@ -226,11 +229,18 @@ assigned TAs aren't included.
   with no assigned instructor, the admin stays the owner.
 - `name` / `venue_name` are stored HTML-escaped; `geofence_radius_meters`
   must be > 0.
+- **Venue:** leave `venue_latitude`/`venue_longitude`/`geofence_radius_meters`
+  out to use the **course's** venue (check-ins are measured against it, and
+  it follows later changes to the course). Send both coordinates or
+  neither: each one falls back to the course separately.
 
 ### `PATCH /api/v1/sessions/{id}` — instructor or admin who manages it
 Partial update plus `status`. `status: "active"` stamps `actual_start`;
 `"closed"` stamps `actual_end`. Use these for "start/end session" controls.
-`null` for a required field is ignored.
+`null` for a required field is ignored; for an optional one it clears it.
+E.g. `venue_latitude`/`venue_longitude`/`geofence_radius_meters: null` → the
+session uses the course's venue again (that's also the default when they're
+never set).
 
 ### `DELETE /api/v1/sessions/{id}` — instructor or admin who manages it
 **204**, a real delete, but **400 SESSION_NOT_DELETABLE** unless
@@ -401,13 +411,15 @@ without verifying it first (checked at check-in, no retry).
   its result is used. Otherwise the face service checks the frames here.
   Steps not performed → `flagged` for review (`liveness_challenge_failed`),
   never rejected for that alone. Can't confirm the steps → at most
-  `flagged` (`liveness_unverified`). Until Module 3 ships frame checking,
-  challenged check-ins are flagged.
+  `flagged` (`liveness_unverified`). Judged a spoof (here or in any verify
+  attempt for this session) → `rejected` (`liveness_failed`). Until Module 3
+  ships frame checking, challenged check-ins are flagged.
 - `challenge_type` (lowercase letters and `_`) is only a label stored with
   the check-in when you send frames **without** a challenge.
 - **Send a fresh photo or burst every time.** If **any** image (the photo or
   any one frame) was used in an earlier check-in by the same student, the
-  check-in is rejected (`replay_suspected`).
+  check-in is rejected (`replay_suspected`). Resending the burst you just
+  verified is fine: a verify doesn't count as a use.
 - **Send full-precision GPS and the real accuracy** from the Geolocation API.
   An accuracy under 1 m is treated as a mocked location
   (`gps_spoof_suspected`, flagged).
@@ -532,7 +544,7 @@ weight}`, where `severity` ∈ `critical|high|medium|low` (table above).
 | `PATCH /api/v1/admin/users/{id}/deactivate` | — | → `{id, email, is_active: false, message}` |
 | `PATCH /api/v1/admin/users/{id}/activate` | — | Also **clears a login lockout** and **cancels a pending account deletion** |
 | `DELETE /api/v1/users/{id}` | — | Admin account deletion (no password); **202** |
-| `POST /api/v1/admin/users/bulk` | `{"users": [{"email","password","full_name","role"}]}` | **201** → `{created, failed, users, errors}` |
+| `POST /api/v1/admin/users/bulk` | `{"users": [{"email","password","full_name","role"}]}` | **201** → `{created, failed, users, errors}`. Users can then set their own password with `POST /users/me/password` (§2) |
 | `PATCH /api/v1/admin/sessions/{id}/status` | `{"status": "active"}` | Bypasses session ownership |
 | `POST /api/v1/admin/enrollments/` | `{"student_id","course_id"}` | Bypasses course ownership |
 | `POST /api/v1/admin/retention/run` | — | Runs the retention sweep now (it also runs automatically every hour) |

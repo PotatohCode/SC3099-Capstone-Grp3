@@ -112,11 +112,12 @@ and registration have per-IP limits.
 
 | Limit | Value | Keyed by | Response |
 |---|---|---|---|
-| Login: consecutive failures on one account | 10, then locked 15 min | account | `429 ACCOUNT_LOCKED`, even with the right password |
+| Wrong passwords on one account (login **and** `POST /users/me/password` count together) | 10 in a row, then locked 15 min | account | `429 ACCOUNT_LOCKED`, even with the right password |
 | Login failures | 100,000/hour | IP | `429 RATE_LIMITED` (course asked for a high value) |
 | Registration | 100,000/hour | IP | `429 RATE_LIMITED` |
 | Check-in submission | 10/minute | user | `429 RATE_LIMITED` |
 | Liveness challenge (`POST /checkins/challenge`) | 30/minute | user | `429 RATE_LIMITED` |
+| Liveness verify (`POST /checkins/challenge/{id}/verify`) | 30/minute, and **3 attempts per session** | user | `429 RATE_LIMITED`; attempts used up → `409 LIVENESS_ATTEMPTS_EXHAUSTED` |
 | Everything else | 1000/hour | user | `429 RATE_LIMITED` |
 
 ## Request and response details

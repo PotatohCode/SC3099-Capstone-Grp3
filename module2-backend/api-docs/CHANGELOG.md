@@ -37,6 +37,13 @@ security-violation types `liveness_spoof`, `challenge_frames_mismatch`.
 Until M3 returns `challenge_passed`, every verify answers `unverified` and
 check-ins behave as before. M1, M3: see the checklist rows.
 
+**Docs clarified (no behaviour change):** a session without its own
+coordinates uses the course's venue, and `PATCH /sessions/{id}` with `null`
+coordinates goes back to it (Frontend §4); once a face is enrolled, every
+photo check-in is compared with it, and enrolling again replaces it
+(Frontend §2). Face enrolment is now a **Should** for M1: the group agreed
+students enrol before checking in.
+
 ---
 
 ## 2026-10-23 — `backend/password-change`: students can change their password
