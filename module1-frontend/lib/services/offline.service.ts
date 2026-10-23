@@ -12,11 +12,15 @@
 import localforage from 'localforage'
 import type { CheckInRequest, CheckInResponse } from '@/lib/types'
 import { submitCheckIn } from '@/lib/services/checkin.service'
+import { classifyCheckInError } from '@/lib/checkin/errors'
+import { toOfflinePayload } from '@/lib/checkin/payload'
+import { parseApiError } from '@/lib/utils/api-error'
 
 export type QueuedCheckInStatus = 'pending' | 'syncing' | 'failed'
 
 export interface QueuedCheckIn {
   localId: string
+  userId?: string
   payload: CheckInRequest
   queuedAt: string
   status: QueuedCheckInStatus
@@ -72,11 +76,12 @@ async function hydrateFromSessionBackupIfEmpty(): Promise<void> {
   }
 }
 
-export async function queueCheckIn(payload: CheckInRequest): Promise<QueuedCheckIn> {
+export async function queueCheckIn(payload: CheckInRequest, userId: string): Promise<QueuedCheckIn> {
   await hydrateFromSessionBackupIfEmpty()
   const item: QueuedCheckIn = {
     localId: generateLocalId(),
-    payload,
+    userId,
+    payload: toOfflinePayload(payload),
     queuedAt: new Date().toISOString(),
     status: 'pending',
     attempts: 0,
@@ -111,16 +116,35 @@ export interface SyncResult {
   responses: CheckInResponse[]
 }
 
-/**
- * Attempts to submit every queued check-in via POST /checkins/ (Network-Only endpoint).
- * Successfully submitted items are removed from the queue; failures are kept with an
- * incremented attempt count and error message for later retry.
- */
-export async function syncQueuedCheckIns(): Promise<SyncResult> {
+/** True when a failed sync may be retried later (no response, 401, 429 or 5xx); any other server answer is final. */
+export function isRetryableSyncError(error: unknown): boolean {
+  const parsed = parseApiError(error)
+  if (parsed.isNetwork || parsed.status === null) return true
+  return parsed.status === 401 || parsed.status === 429 || parsed.status >= 500
+}
+
+let syncInFlight: Promise<SyncResult> | null = null
+
+/** Sends this user's queued check-ins once (concurrent calls share one run); final server answers remove items, retryable failures stay queued. */
+export function syncQueuedCheckIns(userId: string): Promise<SyncResult> {
+  if (!syncInFlight) {
+    syncInFlight = runSync(userId).finally(() => {
+      syncInFlight = null
+    })
+  }
+  return syncInFlight
+}
+
+async function runSync(userId: string): Promise<SyncResult> {
   const items = await getQueuedCheckIns()
   const result: SyncResult = { succeeded: 0, failed: 0, responses: [] }
 
   for (const item of items) {
+    if (!item.userId) {
+      await removeQueuedCheckIn(item.localId)
+      continue
+    }
+    if (item.userId !== userId) continue
     item.status = 'syncing'
     await updateQueuedCheckIn(item)
     try {
@@ -130,9 +154,13 @@ export async function syncQueuedCheckIns(): Promise<SyncResult> {
       await removeQueuedCheckIn(item.localId)
     } catch (error) {
       result.failed += 1
+      if (!isRetryableSyncError(error)) {
+        await removeQueuedCheckIn(item.localId)
+        continue
+      }
       item.status = 'failed'
       item.attempts += 1
-      item.lastError = error instanceof Error ? error.message : 'Sync failed'
+      item.lastError = classifyCheckInError(error, true).message
       await updateQueuedCheckIn(item)
     }
   }

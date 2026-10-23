@@ -232,13 +232,13 @@ function CheckInDetailContent() {
       </DetailCard>
 
       <DetailCard title="Location">
-        {checkin.latitude !== undefined && checkin.longitude !== undefined && (
+        {typeof checkin.latitude === 'number' && typeof checkin.longitude === 'number' && (
           <Field label="Coordinates" value={`${checkin.latitude.toFixed(5)}, ${checkin.longitude.toFixed(5)}`} />
         )}
-        {checkin.location_accuracy_meters !== undefined && (
+        {typeof checkin.location_accuracy_meters === 'number' && (
           <Field label="GPS accuracy" value={`±${checkin.location_accuracy_meters.toFixed(0)} m`} />
         )}
-        {checkin.distance_from_venue_meters !== undefined && (
+        {typeof checkin.distance_from_venue_meters === 'number' && (
           <Field label="Distance from venue" value={`${checkin.distance_from_venue_meters.toFixed(0)} m`} />
         )}
       </DetailCard>
@@ -263,7 +263,7 @@ function CheckInDetailContent() {
       <DetailCard title="Risk assessment">
         <div className="flex items-center justify-between py-1 text-sm">
           <span className="text-gray-500">Risk score</span>
-          <RiskBadge riskScore={checkin.risk_score} />
+          <RiskBadge riskLevel={checkin.risk_level} riskScore={checkin.risk_score} />
         </div>
         {checkin.risk_factors && checkin.risk_factors.length > 0 && (
           <ul className="mt-2 space-y-1">

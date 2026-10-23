@@ -4,131 +4,85 @@
  * Task 1.2: Check-In Workflow Pipeline - "Implement state machine: only proceed if
  * each step complete."
  * Decision 2 (Section 9): CheckInContext holds wizard state across the 4 steps:
- *   1. session-select  2. camera  3. location  4. confirm
+ *   1. session-select  2. location  3. camera  4. confirm
  *
- * Privacy note: `capturedImage` lives only in memory (React state) for the duration of
+ * Privacy note: captured media lives only in memory (React state) for the duration of
  * the wizard and is cleared on submit/reset - it is never written to any storage layer.
  */
 
-import { createContext, useCallback, useMemo, useState, type ReactNode } from 'react'
-import type { CheckInResponse, SessionSummary } from '@/lib/types'
+import { createContext, useCallback, useMemo, useReducer, type ReactNode } from 'react'
+import type { CapturedMedia } from '@/lib/checkin/payload'
+import {
+  initialWizardState,
+  shouldUsePhotoMode,
+  wizardReducer,
+  type CheckInStep,
+} from '@/lib/checkin/wizard-state'
+import type { CheckInResponse, LocationData, SessionSummary } from '@/lib/types'
 
-export type CheckInStep = 'session-select' | 'camera' | 'location' | 'confirm'
-
-const STEP_ORDER: CheckInStep[] = ['session-select', 'camera', 'location', 'confirm']
-
-export interface LocationData {
-  latitude: number
-  longitude: number
-  accuracy: number
-}
+export type { CheckInStep }
 
 interface CheckInContextValue {
   step: CheckInStep
   session: SessionSummary | null
-  capturedImage: string | null
   location: LocationData | null
+  media: CapturedMedia | null
   result: CheckInResponse | null
-  setSession: (session: SessionSummary) => void
-  setCapturedImage: (image: string | null) => void
-  setLocation: (location: LocationData | null) => void
-  setResult: (result: CheckInResponse | null) => void
+  photoMode: boolean
+  selectSession: (session: SessionSummary) => void
+  setLocation: (location: LocationData) => void
+  setMedia: (media: CapturedMedia) => void
   goToStep: (step: CheckInStep) => void
-  nextStep: () => void
+  continueFromLocation: () => void
+  retakeLocation: () => void
   previousStep: () => void
-  canProceedFrom: (step: CheckInStep) => boolean
+  submitSucceeded: (result: CheckInResponse) => void
+  submitQueued: () => void
+  submitFailed: (challengeInvalid: boolean) => void
   reset: () => void
 }
 
 export const CheckInContext = createContext<CheckInContextValue | undefined>(undefined)
 
 export function CheckInProvider({ children }: { children: ReactNode }) {
-  const [step, setStep] = useState<CheckInStep>('session-select')
-  const [session, setSessionState] = useState<SessionSummary | null>(null)
-  const [capturedImage, setCapturedImage] = useState<string | null>(null)
-  const [location, setLocation] = useState<LocationData | null>(null)
-  const [result, setResult] = useState<CheckInResponse | null>(null)
+  const [state, dispatch] = useReducer(wizardReducer, initialWizardState)
 
-  const canProceedFrom = useCallback(
-    (targetStep: CheckInStep): boolean => {
-      switch (targetStep) {
-        case 'session-select':
-          return session !== null
-        case 'camera':
-          return capturedImage !== null
-        case 'location':
-          return location !== null
-        case 'confirm':
-          return true
-        default:
-          return false
-      }
-    },
-    [session, capturedImage, location]
+  const selectSession = useCallback((session: SessionSummary) => dispatch({ type: 'SELECT_SESSION', session }), [])
+  const setLocation = useCallback((location: LocationData) => dispatch({ type: 'SET_LOCATION', location }), [])
+  const setMedia = useCallback((media: CapturedMedia) => dispatch({ type: 'SET_MEDIA', media }), [])
+  const goToStep = useCallback((step: CheckInStep) => dispatch({ type: 'GO_TO', step }), [])
+  const previousStep = useCallback(() => dispatch({ type: 'BACK' }), [])
+  const continueFromLocation = useCallback(() => dispatch({ type: 'CONTINUE' }), [])
+  const retakeLocation = useCallback(() => dispatch({ type: 'RETAKE_LOCATION' }), [])
+  const submitSucceeded = useCallback((result: CheckInResponse) => dispatch({ type: 'SUBMIT_SUCCEEDED', result }), [])
+  const submitQueued = useCallback(() => dispatch({ type: 'SUBMIT_QUEUED' }), [])
+  const submitFailed = useCallback(
+    (challengeInvalid: boolean) => dispatch({ type: 'SUBMIT_FAILED', challengeInvalid }),
+    []
   )
-
-  const setSession = useCallback((newSession: SessionSummary) => {
-    setSessionState(newSession)
-  }, [])
-
-  const goToStep = useCallback((target: CheckInStep) => {
-    setStep(target)
-  }, [])
-
-  const nextStep = useCallback(() => {
-    setStep((current) => {
-      const index = STEP_ORDER.indexOf(current)
-      const next = STEP_ORDER[Math.min(index + 1, STEP_ORDER.length - 1)]
-      return next
-    })
-  }, [])
-
-  const previousStep = useCallback(() => {
-    setStep((current) => {
-      const index = STEP_ORDER.indexOf(current)
-      const prev = STEP_ORDER[Math.max(index - 1, 0)]
-      return prev
-    })
-  }, [])
-
-  const reset = useCallback(() => {
-    setStep('session-select')
-    setSessionState(null)
-    setCapturedImage(null)
-    setLocation(null)
-    setResult(null)
-  }, [])
+  const reset = useCallback(() => dispatch({ type: 'RESET' }), [])
 
   const value = useMemo<CheckInContextValue>(
     () => ({
-      step,
-      session,
-      capturedImage,
-      location,
-      result,
-      setSession,
-      setCapturedImage,
+      step: state.step,
+      session: state.session,
+      location: state.location,
+      media: state.media,
+      result: state.result,
+      photoMode: shouldUsePhotoMode(state),
+      selectSession,
       setLocation,
-      setResult,
+      setMedia,
       goToStep,
-      nextStep,
+      continueFromLocation,
+      retakeLocation,
       previousStep,
-      canProceedFrom,
+      submitSucceeded,
+      submitQueued,
+      submitFailed,
       reset,
     }),
-    [
-      step,
-      session,
-      capturedImage,
-      location,
-      result,
-      setSession,
-      goToStep,
-      nextStep,
-      previousStep,
-      canProceedFrom,
-      reset,
-    ]
+    [state, selectSession, setLocation, setMedia, goToStep, continueFromLocation, retakeLocation, previousStep, submitSucceeded, submitQueued, submitFailed, reset]
   )
 
   return <CheckInContext.Provider value={value}>{children}</CheckInContext.Provider>

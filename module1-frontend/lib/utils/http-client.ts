@@ -4,7 +4,7 @@
  *
  *   Request Interceptor:
  *     - Attach Authorization: Bearer <access_token> header
- *     - Skip for public endpoints (/auth/login, /auth/register, /auth/refresh)
+ *     - Skip for public endpoints (/auth/login, /auth/refresh)
  *   Response Interceptor:
  *     - 401 Unauthorized -> POST /auth/refresh (once, silent)
  *         - Success: retry original request with new token

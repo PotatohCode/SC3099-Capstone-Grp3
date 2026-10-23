@@ -23,4 +23,4 @@ export const API_BASE_URL = `${API_ROOT_URL}/api/v1`
 
 // Public endpoints that must NOT receive an Authorization header and must never be
 // intercepted for silent token refresh (Task 1.6 / Section 2.2 request interceptor rule).
-export const PUBLIC_AUTH_PATHS = ['/auth/login', '/auth/register', '/auth/refresh']
+export const PUBLIC_AUTH_PATHS = ['/auth/login', '/auth/refresh']

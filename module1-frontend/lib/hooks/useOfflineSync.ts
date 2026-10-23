@@ -5,7 +5,8 @@
  * Component tree Section 2.1: "useOfflineSync() [Queue management + SW communication]"
  */
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { useAuth } from '@/lib/hooks/useAuth'
 import {
   getQueueLength,
   queueCheckIn as queueCheckInService,
@@ -15,6 +16,9 @@ import {
 import type { CheckInRequest } from '@/lib/types'
 
 export function useOfflineSync() {
+  const { user } = useAuth()
+  const userIdRef = useRef<string | null>(user?.id ?? null)
+  userIdRef.current = user?.id ?? null
   const [isOnline, setIsOnline] = useState(true)
   const [queueLength, setQueueLength] = useState(0)
   const [isSyncing, setIsSyncing] = useState(false)
@@ -25,10 +29,11 @@ export function useOfflineSync() {
   }, [])
 
   const syncNow = useCallback(async () => {
-    if (isSyncing) return
+    const userId = userIdRef.current
+    if (isSyncing || !userId) return
     setIsSyncing(true)
     try {
-      const result = await syncQueuedCheckIns()
+      const result = await syncQueuedCheckIns(userId)
       setLastSyncResult(result)
       await refreshQueueLength()
       return result
@@ -39,12 +44,17 @@ export function useOfflineSync() {
 
   const queueCheckIn = useCallback(
     async (payload: CheckInRequest) => {
-      const item = await queueCheckInService(payload)
+      const userId = userIdRef.current
+      if (!userId) throw new Error('Not signed in')
+      const item = await queueCheckInService(payload, userId)
       await refreshQueueLength()
       return item
     },
     [refreshQueueLength]
   )
+
+  const syncNowRef = useRef(syncNow)
+  syncNowRef.current = syncNow
 
   useEffect(() => {
     setIsOnline(typeof navigator !== 'undefined' ? navigator.onLine : true)
@@ -53,7 +63,7 @@ export function useOfflineSync() {
     function handleOnline() {
       setIsOnline(true)
       // Task 1.8: "Implement offline check-in queue + sync on reconnect"
-      syncNow()
+      syncNowRef.current()
     }
     function handleOffline() {
       setIsOnline(false)

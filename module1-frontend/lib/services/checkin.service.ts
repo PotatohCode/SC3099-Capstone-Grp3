@@ -13,11 +13,18 @@ import type {
   CheckInHistoryItem,
   CheckInRequest,
   CheckInResponse,
+  LivenessChallenge,
   PaginatedResponse,
 } from '@/lib/types'
 
 export async function submitCheckIn(payload: CheckInRequest): Promise<CheckInResponse> {
   const response = await httpClient.post<CheckInResponse>('/checkins/', payload)
+  return response.data
+}
+
+/** Requests a single-use liveness challenge for the session (POST /checkins/challenge). */
+export async function requestChallenge(sessionId: string): Promise<LivenessChallenge> {
+  const response = await httpClient.post<LivenessChallenge>('/checkins/challenge', { session_id: sessionId })
   return response.data
 }
 

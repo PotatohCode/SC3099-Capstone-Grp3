@@ -30,13 +30,6 @@ export interface RefreshResponse {
   token_type: string
 }
 
-export interface RegisterRequest {
-  email: string
-  password: string
-  full_name: string
-  role: UserRole
-}
-
 export interface LoginRequest {
   email: string
   password: string
@@ -82,14 +75,38 @@ export interface RiskFactor {
   severity?: string
 }
 
+export type RiskLevel = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL'
+
 export interface CheckInRequest {
   session_id: string
   latitude: number
   longitude: number
-  location_accuracy_meters: number
+  location_accuracy_meters?: number
   device_fingerprint: string
   liveness_challenge_response?: string
+  liveness_challenge_frames?: string[]
+  challenge_id?: string
+  challenge_type?: string
   qr_code?: string
+}
+
+export interface LivenessChallenge {
+  challenge_id: string
+  session_id: string
+  sequence: string[]
+  expires_at: string
+  max_frames: number
+}
+
+export interface UserConsentUpdate {
+  camera_consent?: boolean
+  geolocation_consent?: boolean
+}
+
+export interface LocationData {
+  latitude: number
+  longitude: number
+  accuracy?: number
 }
 
 export interface CheckInResponse {
@@ -100,16 +117,17 @@ export interface CheckInResponse {
   status: CheckInStatus
   checked_in_at: string
   verified_at?: string | null
-  latitude?: number
-  longitude?: number
-  location_accuracy_meters?: number
-  distance_from_venue_meters?: number
+  latitude?: number | null
+  longitude?: number | null
+  location_accuracy_meters?: number | null
+  distance_from_venue_meters?: number | null
   liveness_passed?: boolean | null
   liveness_score?: number | null
   face_match_passed?: boolean | null
   face_match_score?: number | null
   face_embedding_hash?: string | null
   risk_score?: number
+  risk_level?: RiskLevel | null
   risk_factors?: RiskFactor[]
   qr_code_verified?: boolean
   reviewed_by_id?: string | null
@@ -127,6 +145,7 @@ export interface CheckInHistoryItem {
   status: CheckInStatus
   checked_in_at: string
   risk_score?: number
+  risk_level?: RiskLevel | null
   appeal_reason?: string | null
   appealed_at?: string | null
 }

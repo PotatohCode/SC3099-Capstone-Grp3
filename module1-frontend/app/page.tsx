@@ -38,12 +38,6 @@ export default function Home() {
         >
           Log in
         </Link>
-        <Link
-          href="/auth/register"
-          className="flex min-h-[44px] items-center justify-center rounded-md border border-blue-700 px-6 py-2 font-medium text-blue-700 hover:bg-blue-50"
-        >
-          Create account
-        </Link>
       </div>
     </main>
   )
