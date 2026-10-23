@@ -91,6 +91,24 @@ without both consents goes to review (`consent_missing`, see §7).
 Without an enrolled face, check-ins on face-required sessions are always
 `flagged`, so an enrolment step matters.
 
+### `POST /api/v1/users/me/password` — any authenticated role
+```json
+{ "current_password": "<current password>", "new_password": "<new password>" }
+```
+→ **204** (no body). The new password works at the next login. Tokens
+already issued stay valid until they expire, so there's no need to log the
+user out.
+
+| Response | Meaning |
+|---|---|
+| `422` | `new_password` under 8 or over 128 characters (same rules as sign-up), or a field missing |
+| `400 PASSWORD_UNCHANGED` | `new_password` is the same as the current one |
+| `403 PASSWORD_INCORRECT` | Wrong `current_password`. Deliberately not 401, so your 401 → refresh → logout logic doesn't fire |
+| `429 ACCOUNT_LOCKED` + `Retry-After` | Too many wrong passwords. **Wrong passwords here count toward the same lockout as login** (10 → locked 15 min, login included). Show the same message as on the login page |
+
+Useful for accounts created by an admin with a default password: a
+settings page where the student sets their own.
+
 ### `DELETE /api/v1/users/me` — any authenticated role (right to deletion)
 ```json
 { "password": "<current password>" }

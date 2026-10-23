@@ -3,7 +3,7 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
-from app.schemas.common import EscapedName, Role
+from app.schemas.common import PASSWORD_MAX_LENGTH, EscapedName, Role
 
 
 class UserResponse(BaseModel):
@@ -52,6 +52,13 @@ class AccountDeletionRequest(BaseModel):
     """DELETE /users/me: the current password, so a stolen access token
     alone can't delete an account."""
     password: str = Field(min_length=1)
+
+
+class PasswordChangeRequest(BaseModel):
+    """POST /users/me/password. new_password follows RegisterRequest's rules
+    (422 if too short or too long)."""
+    current_password: str = Field(min_length=1, max_length=PASSWORD_MAX_LENGTH)
+    new_password: str = Field(min_length=8, max_length=PASSWORD_MAX_LENGTH)
 
 
 class AccountDeletionResponse(BaseModel):

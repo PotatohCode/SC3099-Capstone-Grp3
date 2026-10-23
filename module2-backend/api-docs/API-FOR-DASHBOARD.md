@@ -189,7 +189,8 @@ paginated:
 ```
 **Actions you'll see:**
 - **Auth/users:** `login_success`, `login_failed`, `logout`, `account_locked`,
-  `user_created`, `user_updated`, `user_deletion_requested`, `face_enrolled`
+  `password_changed`, `password_change_failed`, `user_created`,
+  `user_updated`, `user_deletion_requested`, `face_enrolled`
 - **Check-ins:** `checkin_attempted`, `checkin_approved`, `checkin_flagged`,
   `checkin_rejected`, `checkin_rejected_geo`, `checkin_appealed`,
   `checkin_reviewed`

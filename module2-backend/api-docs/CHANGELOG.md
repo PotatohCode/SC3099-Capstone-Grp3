@@ -14,6 +14,22 @@ below.
 
 ---
 
+## 2026-10-23 — `backend/password-change`: students can change their password
+
+**Rebuild needed:** `docker compose up -d --build backend`.
+
+| Area | Before | Now | Why |
+|---|---|---|---|
+| Changing a password | Not possible | `POST /users/me/password {current_password, new_password}` → `204` | Accounts created in the dashboard get a default password; students need to set their own (asked for by M1's settings page) |
+| Wrong current password | — | `403 PASSWORD_INCORRECT`, and it **counts toward the login lockout** (10 → locked 15 min) | Otherwise a stolen access token would allow unlimited password guesses |
+| Many wrong passwords at the same instant | The lock was audited once per parallel request (e.g. 11 `account_locked` + 11 security violations for 20 parallel wrong logins) | Audited once | The lock is now set with a conditional update, so exactly one request sets it |
+
+New audit actions `password_changed` and `password_change_failed` (never
+containing the password). New error code `PASSWORD_UNCHANGED` (400). M1:
+see the checklist row; M4: the two actions appear in the audit log.
+
+---
+
 ## 2026-10-23 — `backend/consent-flag`: consent is enforced (flag)
 
 **Rebuild needed:** `docker compose up -d --build backend`.

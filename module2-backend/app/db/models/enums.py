@@ -112,3 +112,7 @@ class AuditAction(str, enum.Enum):
     # Phase 7e: the retention sweep's own audit entry (one row per sweep
     # run, not per anonymized record - see services/retention.py).
     RETENTION_SWEEP_RUN = "retention_sweep_run"
+    # POST /users/me/password. A failure also counts toward the login
+    # lockout (services/account_lockout.py).
+    PASSWORD_CHANGED = "password_changed"
+    PASSWORD_CHANGE_FAILED = "password_change_failed"
