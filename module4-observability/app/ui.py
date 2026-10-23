@@ -154,6 +154,15 @@ def as_percent(frame: pd.DataFrame, *columns: str) -> pd.DataFrame:
     return frame
 
 
+_MD_SPECIAL = "\\`*_{}[]()<>#+-.!|~:$"
+
+
+def md(text) -> str:
+    """User-entered text made safe inside st.markdown/st.subheader/captions:
+    shown exactly as typed, never as formatting, links or HTML."""
+    return "".join("\\" + ch if ch in _MD_SPECIAL else ch for ch in str(text or ""))
+
+
 def pct(value) -> str:
     return "—" if value is None else f"{float(value):.0%}"
 
@@ -170,9 +179,19 @@ def risk_label(level: str | None, score: float | None = None) -> str:
     return f"{icon} {level.title()}{score_text}" if level else "—"
 
 
+SEVERITY_ICONS = {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "⚪"}
+
+
 def reasons(factors: list | None) -> str:
-    """Risk factors -> 'Outside the classroom area · Unregistered device'."""
-    names = [RISK_REASONS.get(f.get("type"), f.get("type", "").replace("_", " ")) for f in factors or []]
+    """Risk factors -> 'Outside the classroom area · Unregistered device'.
+    Factors from the review queue carry a severity; those get an icon, worst first."""
+    order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+    factors = sorted(factors or [], key=lambda f: order.get(f.get("severity"), 4))
+    names = []
+    for f in factors:
+        name = RISK_REASONS.get(f.get("type"), (f.get("type") or "").replace("_", " "))
+        icon = SEVERITY_ICONS.get(f.get("severity"))
+        names.append(f"{icon} {name}" if icon else name)
     return " · ".join(names) if names else "No risk signals"
 
 
@@ -211,6 +230,41 @@ def line_chart(frame: pd.DataFrame, x: str, y: str, x_title: str, y_title: str,
                   labels={x: x_title, y: y_title})
     fig.update_xaxes(title=x_title)
     st.plotly_chart(_finish(fig, y_title, percent), use_container_width=True, config={"displayModeBar": False})
+
+
+# ---------------------------------------------------------------------------
+# Location map
+# ---------------------------------------------------------------------------
+
+# Rough Singapore bounds. The backend refuses check-ins from outside Singapore,
+# so a venue outside this box could never be checked in to.
+SG_LAT, SG_LON = (1.15, 1.48), (103.6, 104.1)
+
+
+def in_singapore(lat: float, lon: float) -> bool:
+    return SG_LAT[0] <= lat <= SG_LAT[1] and SG_LON[0] <= lon <= SG_LON[1]
+
+
+def location_map(lat: float, lon: float, radius_m: float, label: str = "", height: int = 260) -> None:
+    """Venue pin plus the check-in radius circle, to check a location before use."""
+    import pydeck as pdk
+
+    point = [{"lat": lat, "lon": lon, "radius": radius_m, "label": label or "Venue"}]
+    zoom = 17 if radius_m <= 100 else 16 if radius_m <= 300 else 15 if radius_m <= 700 else 14
+    st.pydeck_chart(pdk.Deck(
+        map_style=None,
+        initial_view_state=pdk.ViewState(latitude=lat, longitude=lon, zoom=zoom),
+        layers=[
+            pdk.Layer("ScatterplotLayer", point, get_position="[lon, lat]", get_radius="radius",
+                      radius_units="meters", get_fill_color=[15, 118, 110, 45],
+                      get_line_color=[15, 118, 110, 220], stroked=True, line_width_min_pixels=2),
+            pdk.Layer("ScatterplotLayer", point, get_position="[lon, lat]", get_radius=4,
+                      radius_units="pixels", get_fill_color=[185, 28, 28, 255]),
+        ],
+        tooltip={"text": "{label}\nCheck-in radius: {radius} m"},
+    ), height=height, use_container_width=True)
+    st.caption(f"📍 {lat:.5f}, {lon:.5f} · students must be within **{radius_m:.0f} m** of the pin "
+               f"([open in Google Maps](https://www.google.com/maps?q={lat},{lon})).")
 
 
 # ---------------------------------------------------------------------------
