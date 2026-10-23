@@ -6,7 +6,8 @@ For how each endpoint behaves now, see the API docs
 ([conventions](API-CONVENTIONS.md), [frontend](API-FOR-FRONTEND.md),
 [face recognition](API-FOR-FACE-RECOGNITION.md),
 [dashboard](API-FOR-DASHBOARD.md)). They describe the current behaviour;
-this file only explains the changes.
+this file only explains the changes. Checklist tasks the other modules have
+finished are under [Completed team tasks](#completed-team-tasks).
 
 The course's public test suite passes in full (92/92) after every release
 below.
@@ -126,6 +127,34 @@ testing showed ~100 simultaneous users broke the backend.
 
 ---
 
+## Completed team tasks
+
+Tasks from the [checklist](CHANGES-2026-10-01.md) that the other modules
+have finished, newest first. Moved here so the checklist only shows what's
+left.
+
+### Module 1 — Frontend: PR #4 (`52112ca`, merged 2026-10-23)
+
+| Was | Task | Done how |
+|---|---|---|
+| **Must** | Stop baking `192.168.64.4` into the build | Differently from the checklist: a Caddy proxy (`frontend-proxy`) serves the site on `http://localhost:3000` and `https://localhost:3443` (`https://<PUBLIC_HOST>:3443` when `PUBLIC_HOST` is set) and routes `/api/*` to the backend, so the app calls the API on the same origin. `CORS_ORIGINS` updated in the same commit |
+| **Must** | Handle `429 ACCOUNT_LOCKED` on login | Shows the wait in minutes from `Retry-After` |
+| **Must** | Handle `403 OUTSIDE_SINGAPORE` on check-in | Explains the rule and offers a retry |
+| **Should** | Random per-install device fingerprint | `web-<uuid>` in `localStorage`. It's replaced when taken; keeping it is an optional follow-up (see the checklist) |
+| **Should** | Send consent to the backend | `PUT /users/me` once the browser grants permission |
+| **Should** | Liveness challenge flow | `POST /checkins/challenge`, step prompts with a countdown, frame burst with `challenge_id`; single photo if challenges are unavailable. Frames are not flipped |
+| **Should** | Fresh photo every check-in, real GPS accuracy | New capture per attempt; accuracy only sent when the browser reports one |
+| **Decide** | Keep or remove the public sign-up page | Removed (accounts are created in the dashboard) |
+| Optional | Show CRITICAL as "Critical" | Badge uses `risk_level` |
+| Optional | Logout calls `POST /auth/logout` | Tokens revoked, then cleared locally |
+
+### Module 4 — Dashboard: PR #3 (`a604ee8`, merged 2026-10-20)
+
+Grafana provisioning, OTel collector start-up, the new risk signals, session
+rules and trailing-slash redirects.
+
+---
+
 ## Backend settings
 
 Environment variables on the `backend` service in `docker-compose.yml`.
@@ -148,7 +177,7 @@ The defaults are what's running. Invalid values stop the backend at startup.
 | `LOCATION_STORAGE_DECIMALS` | `4` | Stored coordinate precision |
 | `PII_RETENTION_DAYS` | `30` | Check-in data and deleted accounts |
 | `RETENTION_SWEEP_INTERVAL_MINUTES` | `60` | `0` disables the automatic sweep |
-| `CORS_ORIGINS` | `localhost:3000`, `:8501` (+ LAN IP in compose) | Allowed browser origins |
+| `CORS_ORIGINS` | `localhost:3000`, `:8501` (compose adds `https://localhost:3443` and the `PUBLIC_HOST` origins) | Allowed browser origins. The student site calls the API through its same-origin proxy, so this only matters for direct calls |
 
 ---
 
