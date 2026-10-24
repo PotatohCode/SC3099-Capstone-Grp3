@@ -62,10 +62,14 @@ app.add_middleware(
 # METRICS (GET /metrics, scraped by module4-observability/prometheus.yml)
 # =============================================================================
 #
-# Names start with face_ instead of reusing the backend's
-# http_request_duration_seconds: Module 4's system-health dashboard sums that
-# name across every scrape job, so face-service latency (seconds, under load)
-# would be mixed into the backend's API latency and error-rate panels.
+# Names and labels follow the spec in module4-observability/README.md ("Face
+# service metrics (for Module 3)"), which its System Health dashboard
+# queries. Don't rename without checking that dashboard. Extra label values
+# (not_compared, not_assessed) don't break its queries.
+#
+# None of these reuse the backend's http_request_duration_seconds: the same
+# dashboard sums that name across every scrape job, so face-service latency
+# would be mixed into the backend's API panels.
 #
 # Each uvicorn worker process keeps its own counters, and a scrape reaches only
 # one worker. When PROMETHEUS_MULTIPROC_DIR is set (the Dockerfile sets it),
@@ -73,69 +77,87 @@ app.add_middleware(
 # reports their sum. Without it (e.g. a local single-process run), the normal
 # in-process registry is used.
 
+face_requests_total = Counter(
+    "face_requests_total", "Face service requests", ["endpoint", "status"],
+)
 face_request_duration_seconds = Histogram(
     "face_request_duration_seconds",
     "Face service request latency in seconds",
-    ["method", "path", "status_code"],
+    ["endpoint"],
     # 5 s and 15 s are the backend's timeouts (single image / frame burst).
     buckets=(0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 15, 30, 60),
 )
-face_enroll_total = Counter("face_enroll_total", "Face enrollments by outcome", ["outcome"])
-face_verify_total = Counter("face_verify_total", "Face verifications by outcome", ["outcome"])
-face_liveness_total = Counter("face_liveness_total", "Liveness checks by outcome", ["outcome"])
+face_verify_total = Counter(
+    "face_verify_total", "Face verifications; result = match / no_match / not_compared", ["result"],
+)
+liveness_checks_total = Counter(
+    "liveness_checks_total", "Liveness checks; result = pass / fail / not_assessed", ["result"],
+)
+face_enroll_total = Counter("face_enroll_total", "Successful face enrollments")
 
 
 class MetricsMiddleware(BaseHTTPMiddleware):
     """
-    Records face_request_duration_seconds for every request. The path label
-    is the route template (e.g. "/face/verify"), not the raw URL, and
-    requests that match no route are labelled "unmatched", so random URLs
-    can't create unbounded label values.
+    Records face_requests_total and face_request_duration_seconds for every
+    request. The endpoint label is the route template (e.g. "/face/verify"),
+    not the raw URL, and requests that match no route are labelled
+    "unmatched", so random URLs can't create unbounded label values.
     """
 
     async def dispatch(self, request: Request, call_next):
         start = time.perf_counter()
         response = await call_next(request)
         route = request.scope.get("route")
-        face_request_duration_seconds.labels(
-            method=request.method,
-            path=getattr(route, "path", None) or "unmatched",
-            status_code=str(response.status_code),
-        ).observe(time.perf_counter() - start)
+        endpoint = getattr(route, "path", None) or "unmatched"
+        face_requests_total.labels(endpoint=endpoint, status=str(response.status_code)).inc()
+        face_request_duration_seconds.labels(endpoint=endpoint).observe(time.perf_counter() - start)
         return response
 
 
 app.add_middleware(MetricsMiddleware)
 
 
-def _count_outcome(counter, outcome_of):
+def _record_result(record):
     """
-    Decorator for a sync endpoint: once it returns, increment `counter`
-    with outcome=outcome_of(response). This keeps counting out of the
-    endpoints' many early returns. functools.wraps preserves the endpoint's
-    signature and docstring, which FastAPI reads for request parsing and
-    /docs.
+    Decorator for a sync endpoint: once it returns, call record(response) to
+    update the outcome counters. This keeps counting out of the endpoints'
+    many early returns. functools.wraps preserves the endpoint's signature
+    and docstring, which FastAPI reads for request parsing and /docs.
     """
     def decorator(endpoint):
         @functools.wraps(endpoint)
         def wrapper(*args, **kwargs):
             response = endpoint(*args, **kwargs)
-            counter.labels(outcome=outcome_of(response)).inc()
+            record(response)
             return response
         return wrapper
     return decorator
 
 
-def _enroll_outcome(response):
-    return "success" if response.enrollment_successful else "failed"
+def _record_enroll(response):
+    if response.enrollment_successful:
+        face_enroll_total.inc()
 
 
-def _verify_outcome(response):
-    return {True: "match", False: "no_match"}.get(response.match_passed, "not_compared")
+def _record_verify(response):
+    result = {True: "match", False: "no_match"}.get(response.match_passed, "not_compared")
+    face_verify_total.labels(result=result).inc()
 
 
-def _liveness_outcome(response):
-    return {True: "passed", False: "failed"}.get(response.liveness_passed, "not_assessed")
+def _record_liveness(response):
+    """
+    One verdict per check, the way the backend reads it (checkins.py
+    _classify_liveness): fail if the anti-spoof check or the challenge
+    failed; pass if liveness passed and, for a burst with a challenge, the
+    challenge was actually judged; otherwise not_assessed.
+    """
+    if response.liveness_passed is False or response.challenge_passed is False:
+        result = "fail"
+    elif response.liveness_passed is True and response.details.get("challenge") != "insufficient_frames":
+        result = "pass"
+    else:
+        result = "not_assessed"
+    liveness_checks_total.labels(result=result).inc()
 
 
 # =============================================================================
@@ -303,7 +325,7 @@ _QUALITY_FACE_AREA_RATIO_TARGET = 0.15  # face covering ~15% of frame -> full ma
 
 
 @app.post("/face/enroll", response_model=FaceEnrollResponse, status_code=201)
-@_count_outcome(face_enroll_total, _enroll_outcome)
+@_record_result(_record_enroll)
 def enroll_face(request: FaceEnrollRequest):
     """
     Enroll a user's face for future verification.
@@ -421,7 +443,7 @@ def enroll_face(request: FaceEnrollRequest):
 # =============================================================================
 
 @app.post("/face/verify", response_model=FaceVerifyResponse)
-@_count_outcome(face_verify_total, _verify_outcome)
+@_record_result(_record_verify)
 def verify_face(request: FaceVerifyRequest):
     """
     Verify a face against an enrolled template.
@@ -547,7 +569,7 @@ def match_face(request: FaceVerifyRequest):
 # =============================================================================
 
 @app.post("/liveness/check", response_model=LivenessResponse)
-@_count_outcome(face_liveness_total, _liveness_outcome)
+@_record_result(_record_liveness)
 def check_liveness(request: LivenessRequest):
     """
     Perform liveness detection on submitted image.
@@ -971,6 +993,14 @@ def decode_base64_image(base64_string: str) -> np.ndarray:
 _model_lock = threading.Lock()
 _face_detector = mp.solutions.face_detection.FaceDetection(model_selection=0, min_detection_confidence=0.5)
 _face_mesh_static = mp.solutions.face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1, min_detection_confidence=0.5)
+# Frame bursts only (_frame_features): refine_landmarks tracks the eyelids far
+# more closely. Measured on real recordings, a blink's lowest EAR dropped to a
+# median 0.21 of open (squints 0.37-0.53) vs 0.69 with the standard mesh
+# (squints 0.70-0.80, overlapping blinks). ~1 ms more per frame. The passive
+# check and single images keep _face_mesh_static, so their scores don't change.
+_face_mesh_refined = mp.solutions.face_mesh.FaceMesh(
+    static_image_mode=True, max_num_faces=1, min_detection_confidence=0.5, refine_landmarks=True
+)
 
 
 def detect_face(image_array):
@@ -1260,9 +1290,14 @@ def _frame_features(image_array):
     ear: eye aspect ratio averaged over both eyes, from pixel coordinates
     (landmarks are normalized separately in x and y, so they're scaled back
     first or a non-square frame would distort the ratio).
+
+    face_width: distance between the two face edges as a share of the frame
+    width (how big the face is in the frame).
+
+    Uses _face_mesh_refined (refine_landmarks) for the eyelid accuracy.
     """
     with _model_lock:
-        results = _face_mesh_static.process(image_array)
+        results = _face_mesh_refined.process(image_array)
     if not results.multi_face_landmarks:
         return None
 
@@ -1279,7 +1314,7 @@ def _frame_features(image_array):
         return np.array([landmarks[index].x * width, landmarks[index].y * height])
 
     ear = float(np.mean([_eye_aspect_ratio([pixel(i) for i in eye]) for eye in _EYES]))
-    return {"yaw": yaw, "ear": ear}
+    return {"yaw": yaw, "ear": ear, "face_width": face_width}
 
 
 # --- Challenge step detection (frame bursts) ---
@@ -1291,12 +1326,27 @@ def _frame_features(image_array):
 
 # Blink: eyes count as closed below this share of the student's own open-eye
 # EAR, and as open again above the second share. Relative to the student, not
-# a fixed EAR, since eye shape varies between people.
-_BLINK_CLOSED_RATIO = 0.6
+# a fixed EAR, since eye shape varies between people. Chosen on 46 real
+# recordings (2026-10-24) with the refined eyelid landmarks: genuine blinks'
+# lowest EAR was a median 0.21 of open (27 of 29 at or under 0.30), squints
+# 0.37-0.53. 0.33 caught the most blinks with no squint counted; 0.40
+# started counting squints.
+_BLINK_CLOSED_RATIO = 0.33
 _BLINK_OPEN_RATIO = 0.85
 # Share of a burst's face frames assumed to show open eyes when estimating
 # the student's open-eye EAR (its 80th percentile).
 _OPEN_EAR_PERCENTILE = 80
+# Eyes are only judged on frames facing roughly toward the camera. With the
+# head turned, the eye's outline is foreshortened and EAR inflates: measured
+# on real recordings, ~0.25 facing the camera vs 0.35-0.45 at yaw ~0.6-1.3
+# (0.5-0.6 with the standard mesh), which made normal open eyes read as
+# "closed".
+_BLINK_MAX_YAW = 0.25
+# ...and only when the face is big enough to place the eyelid points
+# reliably: face width as a share of the frame width. A face on a phone held
+# up to the camera (69-104 px of 640) gave EAR noise of 0.07-0.15 that looked
+# like a blink; real faces at arm's length were 183-259 px.
+_BLINK_MIN_FACE_WIDTH = 0.2
 
 # Turn: yaw must move at least this far from where the step started, then
 # give back at least this share of the furthest turn ("then back toward
@@ -1304,14 +1354,35 @@ _OPEN_EAR_PERCENTILE = 80
 _TURN_MIN_YAW = 0.15
 _TURN_RETURN_FRACTION = 0.4
 # Frames are raw (not mirrored): the student's left is the image's right, so
-# a turn to the student's left should move the nose toward the image's right
-# (+yaw). NOT YET CONFIRMED with a real recording; flip to -1 if it reads the
-# other way.
+# a turn to the student's left moves the nose toward the image's right
+# (+yaw). Confirmed on real recordings (2026-10-24: turning to one's own left
+# read +0.52 to +0.94).
 _YAW_SIGN_STUDENT_LEFT = 1
 
 # Fewer frames with a face than this per step: not enough to judge, so
 # challenge_passed stays None instead of a confident False.
 _MIN_FACE_FRAMES_PER_STEP = 3
+
+
+def _eyes_measurable(features):
+    """True for a frame whose eyes can be judged: a face turned no further
+    than _BLINK_MAX_YAW and at least _BLINK_MIN_FACE_WIDTH of the frame wide."""
+    return (
+        features is not None
+        and abs(features["yaw"]) <= _BLINK_MAX_YAW
+        and features["face_width"] >= _BLINK_MIN_FACE_WIDTH
+    )
+
+
+def open_eye_ear(frame_features):
+    """
+    The student's open-eye EAR for a burst: the _OPEN_EAR_PERCENTILE-th
+    percentile over frames whose eyes can be judged (_eyes_measurable; most
+    of them show open eyes). Turned frames are left out because their EAR is
+    inflated, tiny faces because it's noise. None if no frame qualifies.
+    """
+    ears = [features["ear"] for features in frame_features if _eyes_measurable(features)]
+    return float(np.percentile(ears, _OPEN_EAR_PERCENTILE)) if ears else None
 
 
 def detect_blink(frame_features, start, open_ear):
@@ -1326,19 +1397,22 @@ def detect_blink(frame_features, start, open_ear):
     ---
     Implemented across a frame burst rather than one image (one image can't
     show a blink). `frame_features` is the burst's per-frame list from
-    _frame_features (None where no face was found, ignored here); `open_ear`
-    is the student's open-eye EAR. Looks from index `start` for eyes open,
-    then at least one closed frame, then open again, and returns the index
-    of the frame where they're open again, or None. One closed frame is
-    enough on purpose: at ~5 fps a normal blink often lands in a single
-    frame.
+    _frame_features; `open_ear` is the student's open-eye EAR
+    (open_eye_ear). Looks from index `start` for eyes open, then at least
+    one closed frame, then open again, and returns the index of the frame
+    where they're open again, or None. One closed frame is enough on
+    purpose: at ~5 fps a normal blink often lands in a single frame.
+    Frames whose eyes can't be judged (no face, turned, or too small - see
+    _eyes_measurable) are skipped.
     """
+    if open_ear is None:
+        return None
     closed_below = open_ear * _BLINK_CLOSED_RATIO
     open_above = open_ear * _BLINK_OPEN_RATIO
     seen_open = seen_closed = False
     for index in range(start, len(frame_features)):
         features = frame_features[index]
-        if features is None:
+        if not _eyes_measurable(features):
             continue
         ear = features["ear"]
         if not seen_open:
@@ -1411,7 +1485,7 @@ def evaluate_challenge(frame_features, sequence):
     if not sequence or len(faces) < _MIN_FACE_FRAMES_PER_STEP * len(sequence):
         return None, None
 
-    open_ear = float(np.percentile([features["ear"] for features in faces], _OPEN_EAR_PERCENTILE))
+    open_ear = open_eye_ear(frame_features)
     steps_passed = []
     cursor = 0
     for action in sequence:

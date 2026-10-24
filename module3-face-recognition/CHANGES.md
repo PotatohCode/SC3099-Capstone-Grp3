@@ -9,7 +9,12 @@ again. Newest first. The backend's side of the contract is in
 
 ## To be decided
 
-### Face match and liveness can look at different people (proxy sign-in)
+### Face match and liveness can look at different people (proxy sign-in) — DEFERRED
+
+**Status (2026-10-24): deferred, not blocking the merge.** Only possible by
+bypassing the app with hand-built API requests; not with the real app and a
+normal camera. Recorded here as a known limitation; come back to it if
+needed (e.g. if hidden tests turn out to send crafted bursts).
 
 **Problem:** nothing checks that the face that performs the challenge is the
 face that gets matched against the enrolled student. Face match uses one
@@ -49,18 +54,125 @@ frames are sent, or require the verify step for any check-in naming a
 challenge. These close the skip-verify path but not the spliced middle
 frame.
 
-**Timing:** the detectors (2026-10-23 (2)) now return `challenge_passed:
-true`, so this build has the gap. **Settle it before merging this branch into
-`main`.**
+**How realistic is it?**
+- **With the real app: practically no.** The app records every frame itself
+  from one live camera at a fixed rhythm; the student can't choose what goes
+  in the burst. Getting A's face into the middle frame would mean holding up
+  a photo/phone of A at exactly the first frame of the second step, then
+  pulling it away and doing the step - it needs the frame timing and would
+  likely fail. The natural camera attacks are already handled: a held-up
+  photo has no movement (challenge fails - tested), a video of A almost never
+  matches the random sequence, and B doing it with their own face fails the
+  face match.
+- **By bypassing the app:** A shares their login; B requests a challenge from
+  the API, assembles frames (own clips of the steps + a photo of A as the
+  middle frame) within the challenge's 90 s lifetime, and posts them with a
+  small script. The burst being short doesn't help: the server only ever sees
+  a list of images. A deliberate, technical attack.
 
-**Decision needed:**
-1. Build the Module 3 check with the recommended return (`null` on a
-   mismatch)? Or one of the other options in the table?
-2. Also ask the backend for their side (face match on a frame whenever
-   frames are sent / require verify for challenged check-ins)? Not enough on
-   its own: it doesn't catch a spliced middle frame.
+**Cost of the full check:** ~0.35 s per extra dlib embedding. Middle frame +
+one frame per step (reusing the front-facing one) = +2–3 embeddings, so a
+passing burst goes from ~0.6–0.9 s to ~1.3–1.9 s (+0.35 s more with a separate
+photo). Roughly **halves burst throughput** (2 workers: ~3 → ~1.2–1.5 bursts/s,
+i.e. ~45 → ~20 bursts inside the backend's 15 s). Single images unaffected.
 
-### Hangs with 2 workers on Windows - check on Linux/Docker
+**Options if we come back to it:**
+1. **Full check** as proposed above, run only when the challenge would
+   otherwise pass (failed attempts cost nothing extra). Return `null` on a
+   mismatch (table above).
+2. **Free partial check:** MediaPipe already gives each frame's face position
+   and size; flag a frame whose face jumps relative to its neighbours. No
+   extra compute; catches crude splices, not a carefully aligned photo.
+3. **Backend side:** face match on a frame whenever frames are sent, or
+   require verify for challenged check-ins. Closes the photo-field path only.
+4. **Accept it** as a known limitation (current choice).
+
+### Turn as the last step: the return to centre often isn't recorded
+
+**Current choice (2026-10-24): keep the contract as written** - a turn
+counts only if the head turns past the threshold **and then comes back
+toward centre** (API-FOR-FACE-RECOGNITION.md §3). It works when the student
+turns **fast** (turn and back inside the step's frames); a **slow** turn as
+the last step usually fails.
+
+**Why:** the app records each step for only ~1.4 s (8 frames every 0.2 s,
+starting 0.5 s after the prompt) and nothing after the last step. Its prompt
+says "**Slowly** turn your head", so a student is often still turning when
+recording stops; the look-back happens after it. A turn as the first step is
+usually fine: the return shows up in the next step's frames (~1 s later).
+Seeing the turn itself is never the problem - only the return.
+
+**Evidence** (real recordings, single `turn_left` step):
+
+| Recording | Yaw over the frames | Result |
+|---|---|---|
+| Slow turn, app timing | 0.04 → 0.13 → 0.26 → 0.37 → 0.52 (still rising at the last frame) | Not found (no return) |
+| Slow turn + 5 extra frames, "Look back" prompt | up to 1.05, back to 0.56 in the extra frames | Found |
+| Fast turn, app timing | 0.24 → 0.94 → 0.59 → 0.02 | Found |
+
+**Options:**
+1. **Keep as is** (current): fast turns pass, slow last-step turns fail →
+   the student gets "We couldn't see you turn your head…" and a retry (3 per
+   session), then review.
+2. **Frontend records ~1 s more after the last step** with a "Look back at
+   the camera" prompt. Tested: passes. Frontend-only change (`CAPTURE` in
+   `module1-frontend/lib/liveness/challenge.ts`); 2 steps × 8 + 5 = 21
+   frames, within the backend's 30-frame cap.
+3. **Frontend prompt wording only:** "Turn your head left, then look back" /
+   drop "Slowly". Cheapest, but relies on students being quick.
+4. **Drop the return requirement** (a turn counts once it's far enough).
+   Needs the backend to change their doc wording (no backend code). Adds
+   little security loss: movement is measured from where each step starts,
+   and the random sequence is what stops recorded videos. A message for the
+   backend was drafted.
+5. **Drop it only for the last step.** Fixes the failing case, but harder to
+   explain in the contract.
+
+**Related finding:** in the fast recording the head was already turning at
+the step's first frame (yaw +0.24). Turns are measured from the step's first
+frame, so a student who is *fully* turned by then would only show the
+return, which reads as the wrong direction → step missed. Option if it shows
+up in more recordings: measure turns from the student's facing-the-camera
+position (the burst's frames closest to centre) instead.
+
+### Blink at 5 fps: many real blinks are only half-captured — MOSTLY RESOLVED
+
+**Update (2026-10-24, later):** the main cause was the standard face mesh's
+eyelid points not closing fully, not the frame rate. With refined landmarks
+(2026-10-24 (5)) 26 of 29 genuine blinks are found and no squint counts, so
+**the frontend blink options below are no longer needed**. Remaining misses:
+eyes already closed in the step's first frames (2 recordings - fixable on our
+side, see 2026-10-24 (5)) and one blink caught only half-shut. The text below
+is the analysis from before that change.
+
+**Status (2026-10-24, earlier):** our side tuned as far as it safely went
+(2026-10-24 (4)); ~40% of genuine blink attempts still missed the blink (9
+of 23 recordings).
+
+**Why:** a blink lasts ~0.1–0.4 s and the app takes a frame every 0.2 s, so
+frames mostly catch eyes half-shut. Genuine blinks dipped to only 0.53–0.86
+of the open-eye level; a squint dipped to 0.79. The two overlap, so no
+threshold separates them: 0.75 is the loosest that still rejects the squint.
+Also seen: blinking fast through the whole step leaves no frame with
+normally open eyes before the dip, so open → closed → open never shows.
+
+**Options (frontend, `module1-frontend/lib/liveness/challenge.ts`):**
+1. **Prompt "Close your eyes for a second, then open them"** instead of
+   "Blink a few times". A held closure gives several fully-shut frames.
+   Cheapest; also avoids the fast-blinking pattern.
+2. **10 fps during blink steps** (16 frames instead of 8). 2 steps = 16 + 8
+   = 24 frames, within the 30-frame cap.
+3. Both.
+
+To send together with the turn timing ("Turn as the last step" above).
+
+### Hangs with 2 workers on Windows — RESOLVED (Windows only)
+
+**2026-10-24: no hangs in the Docker container** (9 burst runs of 20/40/60
+at once, 4 mixed runs of 60/100, 0 errors, every request answered). It was
+Windows-specific; `WEB_CONCURRENCY=2` stays. See 2026-10-24 (6). Running 2
+workers on a Windows dev machine can still hang under heavy load - use 1
+worker locally if load-testing there.
 
 Load-testing frame bursts on Windows with 2 workers: 40 bursts at once
 sometimes left some requests with no answer at all until the client's 120 s
@@ -71,6 +183,239 @@ listening socket on Windows; production runs in Linux Docker, which wasn't
 available to test. **Run `burst` load tests against the Docker container
 before relying on `WEB_CONCURRENCY=2`.** If it also hangs there, drop to 1
 worker.
+
+---
+
+## 2026-10-24 (6) — Load test in the Docker container (the real deployment)
+
+Built and run with `docker compose up -d --build face-recognition` (includes
+everything up to 2026-10-24 (5)). Docker Desktop VM: 12 CPUs, 3.8 GB.
+Checked first: 2 uvicorn workers under one main process (`exec` in the CMD
+works), `WEB_CONCURRENCY=2` and `PROMETHEUS_MULTIPROC_DIR` set, public tests
+15/15 against the container, `/metrics` totals identical across scrapes.
+
+New tool `load_test.py` (replaces the scripts lost from a temp folder):
+`load_test.py mixed N` (image calls like check-ins) and `load_test.py burst
+N` (16-frame bursts like the verify step), reporting against the backend's
+5 s / 15 s timeouts.
+
+**Bursts** (16 frames, 3 runs each):
+
+| At once | Total time | Over 15 s | Errors |
+|---|---|---|---|
+| 20 | 5.6–7.3 s | 0 | 0 |
+| 40 | 12.0–12.7 s | 0 | 0 |
+| 60 | 15.7–18.0 s | 6–34 of 60 | 0 |
+
+→ ~3.3 bursts/s; about **45–50 bursts at once** fit inside the 15 s budget.
+
+**Mixed image calls** (equal thirds of `/liveness/check`, `/face/verify`,
+`/risk/assess`; 2 runs each):
+
+| At once | Total time | Image calls over 5 s | `/risk/assess` p95 | Errors |
+|---|---|---|---|---|
+| 60 | 3.0 s | 0 of 40 | ~1 s | 0 |
+| 100 | 4.7–5.3 s | 0–12 of 67 | ~2 s | 0 |
+
+→ ~13–14 image requests/s, **~4× the Windows numbers** in the 2026-10-22
+entry (dlib is much faster in the Linux container). A check-in with a photo
+makes ~2 image calls, so **about 30–35 check-ins arriving at the same moment**
+finish inside 5 s (the Windows estimate was 8–10). The hidden stress test's
+~100 concurrent check-ins will still push some calls past 5 s; the backend
+then scores those locally and flags them for review.
+
+**No hangs:** all runs answered every request. The Windows hang with 2
+workers doesn't happen in Docker ("To be decided" item resolved).
+
+**Memory:** 874 MB idle, 1.3 GB after the load runs (container limit 3.5 GB).
+More workers would add throughput (12 CPUs available) at roughly +400–650 MB
+each - 3 would fit, 4 would be tight.
+
+---
+
+## 2026-10-24 (5) — Refined eyelid landmarks for frame bursts; blink threshold 0.33
+
+**Finding:** with the standard face mesh, even fully closed eyes only read
+~0.72–0.75 of the open level, so blinks (0.53–0.91) and squints (0.70–0.80)
+overlapped and no threshold could separate them. MediaPipe's
+`refine_landmarks` mode tracks the eyelids much more closely. Re-measured on
+the saved recordings:
+
+| Lowest eye reading ÷ open | Standard mesh | Refined mesh |
+|---|---|---|
+| Genuine blinks (29) | median 0.69, 0.53–0.91 | **median 0.21**, 27 of 29 ≤ 0.30 |
+| Eyes held closed (3) | 0.72–0.75 | **0.19–0.20** |
+| Squints (4) | 0.70–0.80 | **0.37–0.53** |
+| Doing nothing | 0.93 | 0.95 |
+| Time per frame | 7.6 ms | 8.6 ms |
+
+**Changes:**
+- New `_face_mesh_refined` (`refine_landmarks=True`), used only by
+  `_frame_features` (frame bursts). The passive check and single images keep
+  `_face_mesh_static`, so their scores - and the public tests - don't change.
+- `_BLINK_CLOSED_RATIO` 0.75 → **0.33**, chosen by trying values on all 46
+  recordings:
+
+  | Closed below | 0.25 | 0.30 | **0.33** | 0.35 | 0.40 |
+  |---|---|---|---|---|---|
+  | Recordings OK (of 46) | 36 | 39 | **40** | 40 | 39 |
+  | Squints counted as a blink (of 4) | 0 | 0 | **0** | 0 | 2 |
+
+  0.33 rather than 0.35: more margin below the shallowest squint (0.37).
+- Turned frames still inflate EAR with the refined mesh (~0.25 facing vs
+  0.35–0.45 turned), so they stay excluded from eye judging.
+- Unit tests updated to the new numbers (a typical blink at 0.30 of open
+  counts, a squint at 0.37 doesn't). 40 passed; public tests 15/15.
+
+**Result:** 40 of 46 recordings OK (was 24 of 35 at 0.75). The 6 left:
+
+| Recording | Cause |
+|---|---|
+| `154426` | Blink found; turned to the student's **left** for a `turn_right` - correct rejection (to relabel as a wrong-direction fail) |
+| `154019` | Eyes closed in every frame, no turn - correct rejection (to relabel as fail) |
+| `150353` | Slow turn without a look-back (kept on purpose, "To be decided") |
+| `153757`, `153905` | Eyes already closed in the blink step's first frames, then open: no "open" frame before the closure, so open → closed → open never shows. Possible fix: also accept closed → open at the start of a blink step (safe now that "closed" no longer overlaps squints) |
+| `153123` | Both blinks caught only half-shut (lowest 0.49 of open); its last-step turn also has no look-back |
+
+---
+
+## 2026-10-24 (4) — Blink threshold tuned on 35 real recordings; tiny faces not judged
+
+Recorded with `record_burst.py`: 23 genuine blink attempts, the six 2-step
+orders, and failures (do nothing, wrong order, wrong direction, squint, a
+photo on a phone, eyes closed throughout).
+
+**Measured:** lowest eye reading during a genuine blink, as a share of the
+open-eye level: **0.53–0.86** (5 fps rarely catches fully shut eyes).
+Squint: 0.79. Doing nothing: 0.93.
+
+| "Closed" below | 0.60 (old) | 0.65 | 0.70 | **0.75 (new)** | 0.80 |
+|---|---|---|---|---|---|
+| Genuine blinks found | 5/23 | 6/23 | 11/23 | **14/23** | 16/23 |
+| Squint counted as a blink | no | no | no | **no** | yes |
+
+**Changes:**
+- `_BLINK_CLOSED_RATIO` 0.6 → **0.75**: the loosest value that still rejects
+  the squint. Only one squint sample backs it - record more before trusting
+  the margin.
+- **Eyes of a small face aren't judged** (`_BLINK_MIN_FACE_WIDTH` = 0.2 of the
+  frame width; `_frame_features` now also returns `face_width`;
+  `_facing_camera` → `_eyes_measurable`). The photo-on-a-phone face was
+  69–104 px of 640 and its EAR noise (0.07–0.15) was credited as a blink;
+  real faces at arm's length were 183–259 px.
+
+**Result** (`--analyze-all`, 35 recordings): **24 OK** (was 14). All six
+deliberate failures still fail; the photo no longer gets its blink credited.
+Remaining 11 mismatches: 9 genuine blinks that dipped only to 0.77–0.86 or
+blinked fast through the whole step (see "To be decided" → "Blink at 5 fps"),
+the slow turn without a look-back (kept on purpose), and `154019` (open-eye
+level 0.19 - probably another eyes-closed test; to confirm).
+
+**Tests:** 3 new (a dip to 0.70 of open counts; a squint at 0.79 doesn't;
+eyes of a tiny face aren't judged). 40 passed.
+
+**`record_burst.py` output:** eye labels are now relative ("normal" / "lower"
+/ "CLOSED"), with the reason when a frame isn't judged (turned / face too
+small) and the face width; steps after a failed step say "not checked";
+a turn that barely moved says "no clear turn" instead of "OPPOSITE". Also
+relabelled `153928` (eyes closed throughout) to `--expect fail`.
+
+---
+
+## 2026-10-24 (3) — Eyes judged only when facing the camera; turn direction confirmed
+
+First real recordings (`record_burst.py`), single `turn_left` steps.
+
+**Turn direction confirmed:** turning to one's own left reads positive yaw
+(+0.52 to +0.94), so `_YAW_SIGN_STUDENT_LEFT = 1` is right.
+
+**Eye fix:** with the head turned far, the eye's outline is foreshortened and
+EAR inflates - about 0.26 facing the camera vs 0.5–0.6 at yaw ~0.9–1.0. The
+open-eye baseline was taken over the whole burst, turned frames included, so
+in one recording it came out at 0.519 and normal open eyes facing the camera
+read as "closed". In a challenge mixing a blink and a turn (4 of the 6
+possible 2-step sequences) that would have:
+- missed real blinks (normal open eyes never reached "open") - and the
+  student would be told "We couldn't see you blink", or
+- credited a fake blink from turning back and forth (turned = high, facing =
+  "closed", turned = high).
+
+Now eyes are only judged on frames facing roughly toward the camera
+(`|yaw| <= _BLINK_MAX_YAW`, 0.25): `open_eye_ear` uses only those frames for
+the baseline, and `detect_blink` skips turned frames. A blink is done facing
+the camera anyway. Turn detection is unchanged.
+
+**Effect on the recording:** baseline 0.519 → 0.272; the open eyes facing the
+camera now read "open", turned frames "(turned, not judged)".
+
+**Tests:** 4 new unit tests (baseline ignores turned frames; no frame facing
+the camera → no blink; a blink after a big turn is found; turning back and
+forth isn't a blink) - each fails under the old behaviour. 37 passed.
+`--analyze-all` on the three recordings: 2 OK, 1 MISMATCH - the slow turn
+without a look-back, kept as is on purpose (see "To be decided" → "Turn as
+the last step").
+
+`record_burst.py` now uses the same rule (`open_eye_ear`) and marks turned
+frames in its table.
+
+---
+
+## 2026-10-24 (2) — `record_burst.py`: recording tool for tuning the detectors
+
+A dev tool (not part of the service, like `diagnose_*.py`). Records a
+challenge burst from the webcam exactly the way the student app does (3 s
+countdown, 0.5 s lead-in per step, 8 frames per step every 200 ms, 0.5 s gap,
+max 640 px wide, JPEG quality 70 - from `module1-frontend/lib/liveness/
+challenge.ts` and `lib/utils/frame-capture.ts`), then runs our detectors on
+it and prints per-frame yaw / EAR, where each step was found, whether the
+turn direction matches `_YAW_SIGN_STUDENT_LEFT`, and OK / MISMATCH against
+the `--expect` you gave.
+
+- Bursts are saved under `tests/fixtures/bursts/` (git-ignored: they contain
+  faces). The preview is mirrored like a selfie camera; saved frames are raw.
+- `--analyze-all` re-runs every saved burst after a threshold change, so a
+  set of recordings only has to be made once.
+- `--extra N` keeps recording N frames after the last step (to test that
+  frontend option).
+- Checked without a camera: argument checks, the capture timing (16 frames at
+  3.5–4.9 s and 5.9–7.3 s, as in the app), and save/analyse on a burst built
+  from sample photos.
+
+---
+
+## 2026-10-24 — Metric names now match Module 4's dashboard
+
+Module 4's System Health dashboard has face-service panels whose queries
+follow the spec in `module4-observability/README.md` ("Face service metrics
+(for Module 3)", written 2026-10-20). Our metrics (2026-10-22 (2)) used other
+names and labels, so most panels stayed empty. Renamed to match; the backend's
+docs never specified names (only that `GET /metrics` exists), so nothing
+conflicts, and the backend doesn't read our metrics.
+
+| Metric | Labels | Counts | Was |
+|---|---|---|---|
+| `face_requests_total` | `endpoint`, `status` | Every request | (missing) |
+| `face_request_duration_seconds` | `endpoint` | Latency histogram, buckets include 5 s / 15 s | labels `method`, `path`, `status_code` |
+| `face_verify_total` | `result`: `match` / `no_match` / `not_compared` | `/face/verify` | label `outcome` |
+| `liveness_checks_total` | `result`: `pass` / `fail` / `not_assessed` | `/liveness/check` | `face_liveness_total`, label `outcome` |
+| `face_enroll_total` | — | **Successful** enrollments only (the panel is titled "Enrolments") | label `outcome` incl. failures |
+
+- `endpoint` is the route (`/face/verify`, …), or `unmatched` for unknown URLs.
+- `not_compared` / `not_assessed` are extra values beyond Module 4's spec;
+  their queries filter on `match`/`no_match` and `pass`/`fail`, so the extras
+  don't affect them.
+- **Liveness verdict** (`_record_liveness`), the same way the backend reads
+  it: `fail` if `liveness_passed` or `challenge_passed` is `false`; `pass` if
+  `liveness_passed` is `true` (and, for a burst with a challenge, the
+  challenge was actually judged); otherwise `not_assessed`.
+- The decorator is now `_record_result(record)` with `_record_enroll`,
+  `_record_verify`, `_record_liveness`.
+
+**Checked** (2 workers, multiprocess metrics on): a known mix of requests gave
+exactly the expected counts - 1 enrollment (the failed one not counted);
+verify 1 match / 1 no-match / 1 not-compared; liveness 1 pass, 1 fail (a
+still-photo burst), 2 not-assessed; per-endpoint request counts and latency.
+Unit tests 33 passed; public tests 15/15.
 
 ---
 
@@ -132,8 +477,8 @@ blink can't be seen in one image.
   false`, `steps_passed: [false, false]`.
 
 **Not done yet:** tuning on real recordings, confirming the turn direction,
-and the face-consistency check (see "To be decided"; this build returns
-`challenge_passed: true`, so that must be settled before merging).
+and the face-consistency check (see "To be decided"; deferred on
+2026-10-24 as a known limitation - it needs hand-built API requests).
 
 ---
 
