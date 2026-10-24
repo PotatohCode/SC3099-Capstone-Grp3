@@ -7,6 +7,202 @@ again. Newest first. The backend's side of the contract is in
 
 ---
 
+## To be decided
+
+### Face match and liveness can look at different people (proxy sign-in)
+
+**Problem:** nothing checks that the face that performs the challenge is the
+face that gets matched against the enrolled student. Face match uses one
+image; the challenge is judged across all the frames. The real frontend takes
+everything from one camera, but a hand-crafted request can mix people:
+
+- **Skip-verify path** (challenge sent straight to `POST /checkins/`): face
+  match runs on the photo if one is sent (`checkins.py`, `primary_image`),
+  the challenge on the frames. Friend B sends a photo of absent student A
+  and performs the steps live: both pass.
+- **Verify path** (`POST /checkins/challenge/{id}/verify`, then the
+  check-in): the backend already closed the photo swap - face match runs on
+  the verified burst's middle frame, and different frames at check-in are
+  caught (`challenge_frames_mismatch`). But the frames are client data too: a
+  burst of B doing the steps with a picture of A as the **middle frame**
+  passes both.
+
+The replay check doesn't help: it only flags images A has submitted before.
+
+**Proposed fix (Module 3, no API change):** in the burst path, compute face
+embeddings for a few key frames - the middle frame (what the backend
+matches), the most front-facing frame, one frame inside each detected step -
+plus the photo if it isn't one of the frames. If any is clearly a different
+person, don't confirm the challenge. About 2–4 extra embeddings (~0.7–1.4 s)
+per burst. Belongs with the step detectors.
+
+**What to return on a mismatch** (options discussed):
+
+| Return | Backend outcome | Notes |
+|---|---|---|
+| `challenge_passed: false` | Retry, then flagged | Misleading: tells the student to redo a step they did |
+| `liveness_passed: false` | Rejected, no more attempts | Too harsh if the comparison is wrong (lighting, a mid-turn frame) |
+| **`challenge_passed: null`, `liveness_passed: null`** (recommended) | Flagged for review, no attempt used | Never auto-approved, never wrongly rejected; add `details.frames_match_photo: false` |
+
+**Alternatives on the backend side:** run face match on a frame whenever
+frames are sent, or require the verify step for any check-in naming a
+challenge. These close the skip-verify path but not the spliced middle
+frame.
+
+**Timing:** the detectors (2026-10-23 (2)) now return `challenge_passed:
+true`, so this build has the gap. **Settle it before merging this branch into
+`main`.**
+
+**Decision needed:**
+1. Build the Module 3 check with the recommended return (`null` on a
+   mismatch)? Or one of the other options in the table?
+2. Also ask the backend for their side (face match on a frame whenever
+   frames are sent / require verify for challenged check-ins)? Not enough on
+   its own: it doesn't catch a spliced middle frame.
+
+### Hangs with 2 workers on Windows - check on Linux/Docker
+
+Load-testing frame bursts on Windows with 2 workers: 40 bursts at once
+sometimes left some requests with no answer at all until the client's 120 s
+timeout (2 of 4 runs: 8 and 26 of 40), while other runs finished cleanly in
+~15 s. With 1 worker it never happened (4 runs, up to 60 bursts, 0 errors,
+just slower). Likely the known trouble with several processes sharing one
+listening socket on Windows; production runs in Linux Docker, which wasn't
+available to test. **Run `burst` load tests against the Docker container
+before relying on `WEB_CONCURRENCY=2`.** If it also hangs there, drop to 1
+worker.
+
+---
+
+## 2026-10-23 (2) — Blink and head-turn detection (step 2 of active liveness)
+
+Frame bursts with a `challenge_sequence` now get a real `challenge_passed`
+and `steps_passed`. **Thresholds are starting values, not yet tuned on real
+recordings** (step 3).
+
+**Per frame** (`_frame_features`): head yaw (as before) plus the eye aspect
+ratio (EAR): height of the eye opening over its width, averaged over both
+eyes. Roughly 0.25–0.35 open, under 0.15 closed.
+
+**Steps:**
+
+| Action | Counts as done when | Function |
+|---|---|---|
+| `blink` | Eyes open → at least one closed frame → open again. Closed = EAR below 60% of the student's own open-eye EAR (the burst's 80th percentile); open = above 85%. One closed frame is enough: at ~5 fps a blink often lands in a single frame | `detect_blink` |
+| `turn_left` / `turn_right` | Yaw moves at least 0.15 in the right direction from where the step started, then gives back at least 40% of the furthest point ("then back toward centre"). The wrong direction never counts | `detect_head_turn` |
+| anything else | Never (the contract: unknown action = not performed) | `_detect_step` |
+
+**Order** (`evaluate_challenge`): each step is searched for only after the
+previous one ended, so one movement can't count twice and steps done in the
+wrong order fail. Once a step fails, every later step is `false` too. The
+backend tells the student to redo the first `false` one.
+
+**When we answer `null` instead:** no sequence, or fewer than 3 frames with a
+face per step (e.g. a 2-step challenge with under 6 usable frames). A bad
+camera shouldn't cost a student an attempt.
+
+**Direction:** `_YAW_SIGN_STUDENT_LEFT = 1` assumes a turn to the student's
+left moves the nose toward the image's right (frames are raw). **Unconfirmed
+until checked on a real recording** - if it's the other way, flip it to -1;
+the tests are written to follow it.
+
+**Tunable constants** (top of the "Challenge step detection" section in
+`main.py`): `_BLINK_CLOSED_RATIO` 0.6, `_BLINK_OPEN_RATIO` 0.85,
+`_OPEN_EAR_PERCENTILE` 80, `_TURN_MIN_YAW` 0.15, `_TURN_RETURN_FRACTION` 0.4,
+`_MIN_FACE_FRAMES_PER_STEP` 3.
+
+**The starter's `detect_blink` stub** is now the real blink detector; it takes
+the burst's per-frame measurements instead of one face's landmarks, since a
+blink can't be seen in one image.
+
+**Checked:**
+- 24 new unit tests in `tests/test_liveness_challenge.py` (made-up per-frame
+  values, no camera): blink found / missed / squint / needs reopening; turn
+  with and without return, too small, wrong direction, measured from the
+  step's start; steps in order, wrong order, missing step, unknown action,
+  too few frames, one movement not counted twice; the endpoint with blank
+  frames. All pass, with the existing `tests/test_main.py` (33 passed, 2
+  skipped for missing photos). Note `tests/` is git-ignored in this module,
+  so these exist only locally.
+- `tests/test_main.py` had three outdated expectations, now fixed:
+  `/health` returns more than `status`, and no-face liveness/verify return
+  `null` (since `d6e8cff` and the 2026-10-22 verify change).
+- Public tests 15/15.
+- A burst of 16 identical frames (a still photo held up) → `challenge_passed:
+  false`, `steps_passed: [false, false]`.
+
+**Not done yet:** tuning on real recordings, confirming the turn direction,
+and the face-consistency check (see "To be decided"; this build returns
+`challenge_passed: true`, so that must be settled before merging).
+
+---
+
+## 2026-10-23 — Liveness frame bursts (step 1 of active liveness)
+
+`/liveness/check` now accepts the frame-burst request from
+API-FOR-FACE-RECOGNITION.md §3. The challenge itself isn't judged yet:
+`challenge_passed` and `steps_passed` are always `null`, which the backend
+treats as "unverified" (flagged for review, no attempt used up). Nothing gets
+auto-approved or wrongly rejected in the meantime.
+
+**Request** (`LivenessRequest`): new optional `frames` (list of base64) and
+`challenge_sequence` (e.g. `["blink", "turn_left"]`). `challenge_type` is free
+text (`"passive"`, `"sequence"`, or a client label).
+
+**Response** (`LivenessResponse`): new `challenge_passed` and `steps_passed`,
+both `null` for now and for single images.
+
+**How a burst is handled** (`_check_liveness_burst`):
+1. Decode each frame. Frames that won't decode are skipped, never an error
+   (a 4xx would only make the backend treat the attempt as unverified).
+2. For each frame, run FaceMesh and measure head yaw (`_frame_features`).
+3. Pick the most front-facing frame (smallest yaw) and run the existing
+   passive check on it (`_passive_liveness`), not on `challenge_response`.
+   That field is the middle frame, which can catch the head mid-turn, or a
+   separate photo.
+4. `liveness_passed`: `true` if the passive score passes, otherwise `null`,
+   **never `false`** for a burst. The backend treats `false` as a spoof
+   (rejected, no more attempts), and a low passive score on a webcam frame
+   isn't proof of one.
+5. No face in any frame → everything `null`, `details.reason:
+   "no_face_in_frames"`.
+6. `details` adds `frames_received`, `frames_decoded`, `frames_with_face`,
+   `frontal_frame_index`, `challenge: "not_evaluated"`.
+
+**Single images are unchanged** (the public tests use them): same scoring,
+same `false` when the score is below 0.6. The two new fields just come back
+`null`.
+
+**Yaw** (`_frame_features`): the nose tip's horizontal offset from the middle
+of the two face edges, divided by face width. ~0 facing the camera; flips
+sign when the image is mirrored (checked on the sample images:
+`obama.jpg` +0.03, the visibly turned `obama2.jpg` −0.24). Frames are raw,
+so a turn to the student's own left should read positive - **not yet
+confirmed with a real recording**; the turn detector must not rely on the
+sign until it is.
+
+**Checked:** public tests 15/15. Bursts with a bad frame, a blank frame and
+faces: bad and blank skipped, front-facing frame chosen. No face anywhere:
+all `null`. One burst takes 0.6–0.9 s (5–30 frames).
+
+**Load (16-frame bursts, Windows laptop):**
+
+| Workers | Bursts at once | Total time | Over the backend's 15 s |
+|---|---|---|---|
+| 2 | 10 | 2.8 s | 0 |
+| 2 | 20 | 6.2 s | 0 |
+| 2 | 40 | 14.9 s (1 of 3 runs; the other 2 hung, see "To be decided") | 0 |
+| 1 | 40 | ~21 s | ~22 / 40 |
+| 1 | 60 | 30.6 s | 60 / 60 |
+
+So with 2 workers about 3 bursts per second; a burst costs roughly as much as
+two single-image requests.
+
+**Next:** blink and head-turn detectors that fill in `steps_passed` /
+`challenge_passed`, then tuning on real recordings.
+
+---
+
 ## 2026-10-22 (3) — Private IPs are no longer scored as VPN
 
 `detect_vpn_proxy` now ignores the IP address and only checks the user agent

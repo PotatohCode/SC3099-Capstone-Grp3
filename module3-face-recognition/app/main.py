@@ -175,9 +175,19 @@ class FaceVerifyResponse(BaseModel):
 
 
 class LivenessRequest(BaseModel):
-    """Request model for liveness check."""
-    challenge_response: str  # Base64 encoded image
-    challenge_type: str = "blink"  # blink, head_turn, passive
+    """
+    Request model for liveness check. Two shapes, per
+    module2-backend/api-docs/API-FOR-FACE-RECOGNITION.md §3:
+    (a) single image: challenge_response only (the course's public tests);
+    (b) frame burst: `frames` (1-30, oldest first, raw/not mirrored), plus
+        `challenge_sequence` when the backend issued a challenge.
+    """
+    challenge_response: str  # Base64 encoded image (in shape (b): the middle frame or a separate photo)
+    # "passive", "sequence" (backend-issued challenge) or any client label;
+    # free text on purpose - the backend forwards labels it doesn't validate.
+    challenge_type: str = "blink"
+    frames: Optional[List[str]] = None
+    challenge_sequence: Optional[List[str]] = None  # e.g. ["blink", "turn_left"]
 
 
 class LivenessResponse(BaseModel):
@@ -193,6 +203,14 @@ class LivenessResponse(BaseModel):
     liveness_threshold: float  # Default: 0.60
     face_embedding_hash: str
     details: Dict[str, Any]
+    # Frame bursts with a challenge_sequence only (None otherwise):
+    # were all steps performed, in order? None = couldn't tell (the backend
+    # treats it as unverified). False lets the student retry, so only send it
+    # when the steps clearly weren't done.
+    challenge_passed: Optional[bool] = None
+    # One entry per step in sequence order; the backend tells the student to
+    # redo the first False one.
+    steps_passed: Optional[List[bool]] = None
 
 
 class GeolocationData(BaseModel):
@@ -580,10 +598,10 @@ def check_liveness(request: LivenessRequest):
     REQUIRED-tier signals), so treat the equal 25% split as a reasonable
     default open to adjustment.
 
-    Every challenge_type is handled identically (single-image analysis) -
-    see detect_blink's docstring for why "blink" specifically can't be
-    genuinely implemented against a single image. challenge_type is
-    accepted but otherwise unused.
+    Request shape (a), a single image, is scored this way whatever its
+    challenge_type: one image can't show a blink or a head turn. Shape (b),
+    a frame burst (`frames` present), goes to _check_liveness_burst
+    instead; see there.
 
     "No face detected" and image-decode failure both return with no
     HTTPException raised (this docstring's own step 3 already says
@@ -599,6 +617,9 @@ def check_liveness(request: LivenessRequest):
     blurry or badly-angled photo, not necessarily a spoofing attempt).
     There's nothing to hash either way, so face_embedding_hash is "".
     """
+    if request.frames:
+        return _check_liveness_burst(request)
+
     try:
         image_array = decode_base64_image(request.challenge_response)
     except ValueError:
@@ -609,7 +630,15 @@ def check_liveness(request: LivenessRequest):
             face_embedding_hash="",
             details={"face_detected": False, "reason": "invalid_image"},
         )
+    return _passive_liveness(image_array)
 
+
+def _passive_liveness(image_array) -> LivenessResponse:
+    """
+    Single-image liveness on a decoded image: the scoring described in
+    check_liveness's docstring. Used for request shape (a), and in a frame
+    burst on its most front-facing frame.
+    """
     detection = detect_face(image_array)
     if detection is None:
         return LivenessResponse(
@@ -650,6 +679,65 @@ def check_liveness(request: LivenessRequest):
             "depth_quality": mesh_result["depth_quality"],
         },
     )
+
+
+def _check_liveness_burst(request: LivenessRequest) -> LivenessResponse:
+    """
+    Request shape (b): a burst of frames, per
+    module2-backend/api-docs/API-FOR-FACE-RECOGNITION.md §3.
+
+    - Frames that won't decode are skipped rather than failing the request:
+      a 4xx would only make the backend treat this attempt as unverified.
+    - Each frame gets its head yaw (_frame_features). The passive check runs
+      on the most front-facing frame, not on challenge_response: that field
+      is the burst's middle frame (which can catch the head mid-turn) or,
+      if the client also sent one, a separate photo.
+    - liveness_passed: true when the passive score passes, otherwise None,
+      never False. The backend treats False as a spoof (check-in rejected,
+      no more attempts), and a low passive score on a webcam frame isn't
+      evidence of one.
+    - challenge_passed / steps_passed: from evaluate_challenge when the
+      backend sent a challenge_sequence; None otherwise (a burst without a
+      challenge has nothing to check the movements against).
+    """
+    decoded = []  # (index in request.frames, image)
+    for index, frame in enumerate(request.frames):
+        try:
+            decoded.append((index, decode_base64_image(frame)))
+        except ValueError:
+            continue
+    features = [(index, image, _frame_features(image)) for index, image in decoded]
+    with_face = [(index, image, f) for index, image, f in features if f is not None]
+    burst_details = {
+        "frames_received": len(request.frames),
+        "frames_decoded": len(decoded),
+        "frames_with_face": len(with_face),
+    }
+
+    challenge_passed, steps_passed = None, None
+    if request.challenge_sequence:
+        challenge_passed, steps_passed = evaluate_challenge([f for _, _, f in features], request.challenge_sequence)
+        burst_details["challenge"] = "insufficient_frames" if steps_passed is None else "evaluated"
+    else:
+        burst_details["challenge"] = "no_sequence"
+
+    if not with_face:
+        return LivenessResponse(
+            liveness_passed=None,
+            liveness_score=0.0,
+            liveness_threshold=0.60,
+            face_embedding_hash="",
+            details={"face_detected": False, "reason": "no_face_in_frames", **burst_details},
+        )
+
+    frontal_index, frontal_image, _ = min(with_face, key=lambda item: abs(item[2]["yaw"]))
+    response = _passive_liveness(frontal_image)
+    if response.liveness_passed is False:
+        response.liveness_passed = None
+    response.challenge_passed = challenge_passed
+    response.steps_passed = steps_passed
+    response.details.update(burst_details, frontal_frame_index=frontal_index)
+    return response
 
 
 # =============================================================================
@@ -1136,7 +1224,97 @@ def analyze_face_mesh(image_array):
     }
 
 
-def detect_blink(face_mesh_landmarks):
+# MediaPipe FaceMesh landmark indices
+_NOSE_TIP = 1
+_FACE_EDGES = (234, 454)  # outermost cheek point on each side of the face
+# Per eye, the six points of the eye-aspect-ratio formula (Soukupova & Cech
+# 2016): outer corner, two upper-lid points, inner corner, two lower-lid
+# points.
+_EYES = ((33, 160, 158, 133, 153, 144), (362, 385, 387, 263, 373, 380))
+
+
+def _eye_aspect_ratio(points):
+    """
+    Height of the eye opening over its width, from six pixel points
+    (p1..p6 as in _EYES): roughly 0.25-0.35 open, under 0.15 closed.
+    """
+    p1, p2, p3, p4, p5, p6 = points
+    width = np.linalg.norm(p1 - p4)
+    if width == 0:
+        return 0.0
+    return float((np.linalg.norm(p2 - p6) + np.linalg.norm(p3 - p5)) / (2 * width))
+
+
+def _frame_features(image_array):
+    """
+    Per-frame measurements for a frame burst, or None if FaceMesh finds no
+    face in the frame.
+
+    yaw: horizontal offset of the nose tip from the midpoint between the two
+    face edges, divided by the face's width. About 0 when facing the camera,
+    positive when the nose points toward the image's right (see
+    _YAW_SIGN_STUDENT_LEFT for which way that is for the student). A 2D ratio
+    rather than a full 3D pose estimate: comparing turns within one burst
+    only needs direction and relative size.
+
+    ear: eye aspect ratio averaged over both eyes, from pixel coordinates
+    (landmarks are normalized separately in x and y, so they're scaled back
+    first or a non-square frame would distort the ratio).
+    """
+    with _model_lock:
+        results = _face_mesh_static.process(image_array)
+    if not results.multi_face_landmarks:
+        return None
+
+    landmarks = results.multi_face_landmarks[0].landmark
+    left_x, right_x = sorted(landmarks[i].x for i in _FACE_EDGES)
+    face_width = right_x - left_x
+    if face_width <= 0:
+        return None
+    yaw = (landmarks[_NOSE_TIP].x - (left_x + right_x) / 2) / face_width
+
+    height, width = image_array.shape[:2]
+
+    def pixel(index):
+        return np.array([landmarks[index].x * width, landmarks[index].y * height])
+
+    ear = float(np.mean([_eye_aspect_ratio([pixel(i) for i in eye]) for eye in _EYES]))
+    return {"yaw": yaw, "ear": ear}
+
+
+# --- Challenge step detection (frame bursts) ---
+#
+# Starting values, not yet tuned on real recordings: re-check them against
+# recorded bursts before relying on challenge_passed. A missed step only
+# means a retry or review for the student (never a rejection), but a step
+# credited when it wasn't done weakens the check.
+
+# Blink: eyes count as closed below this share of the student's own open-eye
+# EAR, and as open again above the second share. Relative to the student, not
+# a fixed EAR, since eye shape varies between people.
+_BLINK_CLOSED_RATIO = 0.6
+_BLINK_OPEN_RATIO = 0.85
+# Share of a burst's face frames assumed to show open eyes when estimating
+# the student's open-eye EAR (its 80th percentile).
+_OPEN_EAR_PERCENTILE = 80
+
+# Turn: yaw must move at least this far from where the step started, then
+# give back at least this share of the furthest turn ("then back toward
+# centre", API-FOR-FACE-RECOGNITION.md §3).
+_TURN_MIN_YAW = 0.15
+_TURN_RETURN_FRACTION = 0.4
+# Frames are raw (not mirrored): the student's left is the image's right, so
+# a turn to the student's left should move the nose toward the image's right
+# (+yaw). NOT YET CONFIRMED with a real recording; flip to -1 if it reads the
+# other way.
+_YAW_SIGN_STUDENT_LEFT = 1
+
+# Fewer frames with a face than this per step: not enough to judge, so
+# challenge_passed stays None instead of a confident False.
+_MIN_FACE_FRAMES_PER_STEP = 3
+
+
+def detect_blink(frame_features, start, open_ear):
     """
     Detect eye blink from face mesh landmarks (BONUS).
 
@@ -1146,15 +1324,102 @@ def detect_blink(face_mesh_landmarks):
     - EAR < threshold indicates closed eye
 
     ---
-    Not implemented. Genuine blink detection needs two states to compare
-    (eye open, then closed) across separate frames/timestamps, but
-    LivenessRequest.challenge_response is a single base64 image - there's
-    no second frame to compare against, so an EAR-based blink check has
-    nothing to detect a transition between. check_liveness below treats
-    every challenge_type the same way (single-image/"passive" analysis)
-    for this reason, rather than branching on "blink" specifically.
+    Implemented across a frame burst rather than one image (one image can't
+    show a blink). `frame_features` is the burst's per-frame list from
+    _frame_features (None where no face was found, ignored here); `open_ear`
+    is the student's open-eye EAR. Looks from index `start` for eyes open,
+    then at least one closed frame, then open again, and returns the index
+    of the frame where they're open again, or None. One closed frame is
+    enough on purpose: at ~5 fps a normal blink often lands in a single
+    frame.
     """
-    pass
+    closed_below = open_ear * _BLINK_CLOSED_RATIO
+    open_above = open_ear * _BLINK_OPEN_RATIO
+    seen_open = seen_closed = False
+    for index in range(start, len(frame_features)):
+        features = frame_features[index]
+        if features is None:
+            continue
+        ear = features["ear"]
+        if not seen_open:
+            seen_open = ear >= open_above
+        elif not seen_closed:
+            seen_closed = ear < closed_below
+        elif ear >= open_above:
+            return index
+    return None
+
+
+def detect_head_turn(frame_features, start, direction):
+    """
+    Look from index `start` for a head turn and the return toward centre.
+    `direction` is +1 for a turn to the student's left, -1 for their right,
+    already multiplied by _YAW_SIGN_STUDENT_LEFT by the caller.
+
+    The step's starting yaw is the first face frame at or after `start` (for
+    a later step, the frame where the previous step ended). The turn counts
+    once yaw has moved at least _TURN_MIN_YAW in `direction` and then come
+    back by at least _TURN_RETURN_FRACTION of the furthest point. Returns
+    the index of that return frame, or None. Turning the wrong way never
+    counts.
+    """
+    origin = None
+    furthest = 0.0
+    for index in range(start, len(frame_features)):
+        features = frame_features[index]
+        if features is None:
+            continue
+        if origin is None:
+            origin = features["yaw"]
+            continue
+        moved = (features["yaw"] - origin) * direction
+        if moved > furthest:
+            furthest = moved
+        elif furthest >= _TURN_MIN_YAW and moved <= furthest * (1 - _TURN_RETURN_FRACTION):
+            return index
+    return None
+
+
+def _detect_step(action, frame_features, start, open_ear):
+    """Dispatch one challenge action; an unknown action counts as not performed
+    (API-FOR-FACE-RECOGNITION.md §3), so it returns None."""
+    if action == "blink":
+        return detect_blink(frame_features, start, open_ear)
+    if action == "turn_left":
+        return detect_head_turn(frame_features, start, _YAW_SIGN_STUDENT_LEFT)
+    if action == "turn_right":
+        return detect_head_turn(frame_features, start, -_YAW_SIGN_STUDENT_LEFT)
+    return None
+
+
+def evaluate_challenge(frame_features, sequence):
+    """
+    Check a burst against a challenge sequence. Returns (challenge_passed,
+    steps_passed):
+
+    - (None, None) when there's too little to judge: no sequence, or fewer
+      than _MIN_FACE_FRAMES_PER_STEP face frames per step. The backend
+      treats None as unverified, so a bad camera never costs a student an
+      attempt.
+    - Otherwise steps_passed has one bool per step in sequence order.
+      Steps must happen in order: each step is searched for only after the
+      previous one ended, and once a step fails, every later step is False
+      too (it can't have happened "in order"). The backend tells the
+      student to redo the first False step.
+    """
+    faces = [features for features in frame_features if features is not None]
+    if not sequence or len(faces) < _MIN_FACE_FRAMES_PER_STEP * len(sequence):
+        return None, None
+
+    open_ear = float(np.percentile([features["ear"] for features in faces], _OPEN_EAR_PERCENTILE))
+    steps_passed = []
+    cursor = 0
+    for action in sequence:
+        end = _detect_step(action, frame_features, cursor, open_ear) if all(steps_passed) else None
+        steps_passed.append(end is not None)
+        if end is not None:
+            cursor = end
+    return all(steps_passed), steps_passed
 
 
 _VPN_USER_AGENT_PATTERN = re.compile(r"vpn|proxy|tunnel|\btor\b", re.IGNORECASE)
