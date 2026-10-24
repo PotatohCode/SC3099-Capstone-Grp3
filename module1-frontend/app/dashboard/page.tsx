@@ -6,12 +6,14 @@
 
 import Link from 'next/link'
 import { useAuth } from '@/lib/hooks/useAuth'
+import { needsFaceEnrollment } from '@/lib/face/enrollment'
 
 export default function DashboardHomePage() {
   const { user } = useAuth()
   // Check In / History are student-only - only students check in to a course;
   // instructor/ta/admin manage attendance from Module 4's dashboard instead.
   const isStudent = user?.role === 'student'
+  const checkInBlocked = needsFaceEnrollment(user)
 
   return (
     <div className="space-y-6">
@@ -26,15 +28,33 @@ export default function DashboardHomePage() {
 
       {isStudent && (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <Link
-            href="/dashboard/checkin"
-            className="block min-h-[44px] rounded-lg border border-blue-200 bg-blue-50 p-5 hover:bg-blue-100"
-          >
-            <h2 className="text-lg font-semibold text-blue-800">Check In</h2>
-            <p className="mt-1 text-sm text-blue-700">
-              Select a session, verify liveness, and confirm your location.
-            </p>
-          </Link>
+          {checkInBlocked ? (
+            <div
+              aria-disabled="true"
+              className="block min-h-[44px] rounded-lg border border-gray-200 bg-gray-100 p-5"
+            >
+              <h2 className="text-lg font-semibold text-gray-500">Check In (turned off)</h2>
+              <p className="mt-1 text-sm text-gray-600">
+                Register your face identity before you can check in.
+              </p>
+              <Link
+                href="/dashboard/settings"
+                className="mt-3 inline-flex min-h-[44px] items-center rounded-md bg-blue-700 px-4 py-2 text-sm font-medium text-white hover:bg-blue-800"
+              >
+                Go to Settings
+              </Link>
+            </div>
+          ) : (
+            <Link
+              href="/dashboard/checkin"
+              className="block min-h-[44px] rounded-lg border border-blue-200 bg-blue-50 p-5 hover:bg-blue-100"
+            >
+              <h2 className="text-lg font-semibold text-blue-800">Check In</h2>
+              <p className="mt-1 text-sm text-blue-700">
+                Select a session, verify liveness, and confirm your location.
+              </p>
+            </Link>
+          )}
 
           <Link
             href="/dashboard/history"

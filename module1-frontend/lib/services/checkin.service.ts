@@ -15,6 +15,7 @@ import type {
   CheckInResponse,
   LivenessChallenge,
   PaginatedResponse,
+  VerifyChallengeResponse,
 } from '@/lib/types'
 
 export async function submitCheckIn(payload: CheckInRequest): Promise<CheckInResponse> {
@@ -25,6 +26,16 @@ export async function submitCheckIn(payload: CheckInRequest): Promise<CheckInRes
 /** Requests a single-use liveness challenge for the session (POST /checkins/challenge). */
 export async function requestChallenge(sessionId: string): Promise<LivenessChallenge> {
   const response = await httpClient.post<LivenessChallenge>('/checkins/challenge', { session_id: sessionId })
+  return response.data
+}
+
+/** Checks a captured burst before the check-in (POST /checkins/challenge/{id}/verify); each challenge can be verified once. */
+export async function verifyChallenge(challengeId: string, frames: string[], signal?: AbortSignal): Promise<VerifyChallengeResponse> {
+  const response = await httpClient.post<VerifyChallengeResponse>(
+    `/checkins/challenge/${encodeURIComponent(challengeId)}/verify`,
+    { frames },
+    { signal }
+  )
   return response.data
 }
 

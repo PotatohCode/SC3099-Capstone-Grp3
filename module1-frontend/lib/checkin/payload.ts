@@ -3,8 +3,17 @@ import { HARD_MAX_FRAMES } from '@/lib/liveness/challenge'
 import type { CheckInRequest, LocationData } from '@/lib/types'
 
 export type CapturedMedia =
-  | { kind: 'burst'; challengeId: string; sequence: string[]; frames: string[]; fetchedAtMs: number; maxFrames: number }
-  | { kind: 'photo'; photo: string }
+  | {
+      kind: 'burst'
+      challengeId: string
+      sequence: string[]
+      frames: string[]
+      fetchedAtMs: number
+      maxFrames: number
+      verification?: 'passed' | 'review'
+    }
+  | { kind: 'photo'; photo: string; verification?: 'passed' | 'review' }
+  | { kind: 'none'; verification: 'review' }
 
 export const LIMITS = { maxFrameChars: 10_000_000, maxBodyChars: 14_000_000 } as const
 
@@ -45,6 +54,7 @@ export function buildCheckInPayload({ sessionId, location, fingerprint, media }:
   if (typeof accuracy === 'number' && Number.isFinite(accuracy) && accuracy >= 0) {
     payload.location_accuracy_meters = accuracy
   }
+  if (media.kind === 'none') return payload
   if (media.kind === 'photo') {
     assertImages([media.photo], HARD_MAX_FRAMES, 0)
     payload.liveness_challenge_response = media.photo

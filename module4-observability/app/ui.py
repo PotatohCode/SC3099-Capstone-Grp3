@@ -35,6 +35,7 @@ RISK_REASONS = {
     "impossible_travel": "Impossible travel since last check-in",
     "liveness_failed": "Failed the liveness check",
     "liveness_unverified": "Liveness could not be verified",
+    "liveness_challenge_failed": "Didn't complete the liveness challenge (all attempts)",
     "face_match_failed": "Face does not match the enrolled face",
     "face_match_unverified": "Face could not be verified",
     "replay_suspected": "Re-used photo (possible replay)",
@@ -52,7 +53,9 @@ AUDIT_ACTION_LABELS = {
     "checkin_attempted": "Check-in attempted", "checkin_approved": "Check-in approved",
     "checkin_flagged": "Check-in flagged", "checkin_rejected": "Check-in rejected",
     "checkin_rejected_geo": "Check-in blocked (outside Singapore)", "checkin_appealed": "Check-in appealed",
-    "checkin_reviewed": "Check-in reviewed", "session_created": "Session created",
+    "checkin_reviewed": "Check-in reviewed",
+    "liveness_challenge_verified": "Liveness challenge attempt",
+    "password_changed": "Password changed", "password_change_failed": "Password change failed", "session_created": "Session created",
     "session_updated": "Session updated", "session_deleted": "Session deleted",
     "enrollment_added": "Enrolment added", "enrollment_removed": "Enrolment removed",
     "device_registered": "Device registered", "device_updated": "Device updated",
@@ -154,6 +157,15 @@ def as_percent(frame: pd.DataFrame, *columns: str) -> pd.DataFrame:
     return frame
 
 
+_MD_SPECIAL = "\\`*_{}[]()<>#+-.!|~:$"
+
+
+def md(text) -> str:
+    """User-entered text made safe inside st.markdown/st.subheader/captions:
+    shown exactly as typed, never as formatting, links or HTML."""
+    return "".join("\\" + ch if ch in _MD_SPECIAL else ch for ch in str(text or ""))
+
+
 def pct(value) -> str:
     return "—" if value is None else f"{float(value):.0%}"
 
@@ -170,9 +182,19 @@ def risk_label(level: str | None, score: float | None = None) -> str:
     return f"{icon} {level.title()}{score_text}" if level else "—"
 
 
+SEVERITY_ICONS = {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "⚪"}
+
+
 def reasons(factors: list | None) -> str:
-    """Risk factors -> 'Outside the classroom area · Unregistered device'."""
-    names = [RISK_REASONS.get(f.get("type"), f.get("type", "").replace("_", " ")) for f in factors or []]
+    """Risk factors -> 'Outside the classroom area · Unregistered device'.
+    Factors from the review queue carry a severity; those get an icon, worst first."""
+    order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+    factors = sorted(factors or [], key=lambda f: order.get(f.get("severity"), 4))
+    names = []
+    for f in factors:
+        name = RISK_REASONS.get(f.get("type"), (f.get("type") or "").replace("_", " "))
+        icon = SEVERITY_ICONS.get(f.get("severity"))
+        names.append(f"{icon} {name}" if icon else name)
     return " · ".join(names) if names else "No risk signals"
 
 
@@ -211,6 +233,45 @@ def line_chart(frame: pd.DataFrame, x: str, y: str, x_title: str, y_title: str,
                   labels={x: x_title, y: y_title})
     fig.update_xaxes(title=x_title)
     st.plotly_chart(_finish(fig, y_title, percent), use_container_width=True, config={"displayModeBar": False})
+
+
+# ---------------------------------------------------------------------------
+# Location map
+# ---------------------------------------------------------------------------
+
+# Rough Singapore bounds. The backend refuses check-ins from outside Singapore,
+# so a venue outside this box could never be checked in to.
+SG_LAT, SG_LON = (1.15, 1.48), (103.6, 104.1)
+
+
+def in_singapore(lat: float, lon: float) -> bool:
+    return SG_LAT[0] <= lat <= SG_LAT[1] and SG_LON[0] <= lon <= SG_LON[1]
+
+
+def location_map(lat: float, lon: float, radius_m: float, label: str = "", height: int = 260) -> None:
+    """Venue pin plus the check-in radius circle, to check a location before use."""
+    import pydeck as pdk
+
+    point = [{"lat": lat, "lon": lon, "radius": radius_m, "label": label or "Venue"}]
+    zoom = 17 if radius_m <= 100 else 16 if radius_m <= 300 else 15 if radius_m <= 700 else 14
+    st.pydeck_chart(pdk.Deck(
+        map_style=None,
+        initial_view_state=pdk.ViewState(latitude=lat, longitude=lon, zoom=zoom),
+        # Radii are in metres (deck.gl's default unit), so the check-in circle grows
+        # and shrinks with the map. (Don't pass radius_units="...": pydeck sends plain
+        # strings as code, "@@=meters", which breaks the setting.)
+        layers=[
+            pdk.Layer("ScatterplotLayer", point, get_position="[lon, lat]", get_radius="radius",
+                      get_fill_color=[15, 118, 110, 45], get_line_color=[15, 118, 110, 220],
+                      stroked=True, line_width_min_pixels=2),
+            # The pin: 1 m, but clamped to 5–6 px so it stays the same size on screen.
+            pdk.Layer("ScatterplotLayer", point, get_position="[lon, lat]", get_radius=1,
+                      radius_min_pixels=5, radius_max_pixels=6, get_fill_color=[185, 28, 28, 255]),
+        ],
+        tooltip={"text": "{label}\nCheck-in radius: {radius} m"},
+    ), height=height, use_container_width=True)
+    st.caption(f"📍 {lat:.5f}, {lon:.5f} · students must be within **{radius_m:.0f} m** of the pin "
+               f"([open in Google Maps](https://www.google.com/maps?q={lat},{lon})).")
 
 
 # ---------------------------------------------------------------------------

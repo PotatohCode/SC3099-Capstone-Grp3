@@ -110,3 +110,15 @@ describe('toOfflinePayload', () => {
     expect(toOfflinePayload(photo)).toEqual(photo)
   })
 })
+
+describe('buildCheckInPayload without liveness media', () => {
+  it('sends location and device only when the check was ended', () => {
+    const payload = buildCheckInPayload({
+      sessionId: 's1',
+      location: { latitude: 1.35, longitude: 103.68, accuracy: 5 },
+      fingerprint: 'web-x',
+      media: { kind: 'none', verification: 'review' },
+    })
+    expect(payload).toEqual({ session_id: 's1', latitude: 1.35, longitude: 103.68, location_accuracy_meters: 5, device_fingerprint: 'web-x' })
+  })
+})

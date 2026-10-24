@@ -19,7 +19,7 @@ def _student_options() -> list[dict]:
     course = ui.pick("Course", courses, ui.course_label, key="students-course")
     if not course:
         return []
-    roster = ui.safe(api.get, f"/api/v1/enrollments/course/{course['id']}") or {}
+    roster = ui.safe(api.get, f"/api/v1/enrollments/course/{course['id']}", role="student") or {}
     return [{"id": s["student_id"], "name": s["student_name"], "email": s["student_email"]}
             for s in roster.get("students", [])]
 

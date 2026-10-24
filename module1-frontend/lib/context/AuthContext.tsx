@@ -23,6 +23,8 @@ import * as authService from '@/lib/services/auth.service'
 import { registerCurrentDevice } from '@/lib/services/device.service'
 import { clearOfflineQueue } from '@/lib/services/offline.service'
 import { loginErrorMessage } from '@/lib/utils/api-error'
+import { FACE_PROMPT_DISMISSED_KEY, reauthErrorMessage } from '@/lib/face/enrollment'
+import { resetVerifyCalls } from '@/lib/liveness/verify'
 import { recordConsent, type ConsentType } from '@/lib/utils/consent-tracker'
 import {
   clearTokens,
@@ -38,7 +40,9 @@ interface AuthContextValue {
   isAuthenticated: boolean
   login: (payload: LoginRequest) => Promise<void>
   logout: () => Promise<void>
-  saveConsent: (type: ConsentType, granted: boolean) => Promise<void>
+  saveConsent: (type: ConsentType, granted: boolean) => Promise<boolean>
+  reauthenticate: (password: string) => Promise<void>
+  refreshUser: () => Promise<void>
 }
 
 export const AuthContext = createContext<AuthContextValue | undefined>(undefined)
@@ -68,8 +72,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await clearOfflineQueue().catch(() => undefined)
     await authService.logoutAndClear()
     setUser(null)
+    resetVerifyCalls()
     if (typeof window !== 'undefined') {
       window.sessionStorage.removeItem(DEVICE_REGISTERED_FLAG)
+      window.sessionStorage.removeItem(FACE_PROMPT_DISMISSED_KEY)
     }
     router.push('/auth/login')
   }, [router])
@@ -114,6 +120,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const response = await authService.login(payload)
       setTokens(response.access_token, response.refresh_token)
+      resetVerifyCalls()
+      window.sessionStorage.removeItem(FACE_PROMPT_DISMISSED_KEY)
       setUser(response.user)
       await registerDeviceOnce()
     } catch (error) {
@@ -126,6 +134,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const serverValue = type === 'camera' ? current?.camera_consent : current?.geolocation_consent
     const updated = await recordConsent(type, granted, serverValue)
     if (updated) setUser(updated)
+    const saved = updated ? (type === 'camera' ? updated.camera_consent : updated.geolocation_consent) : serverValue
+    return saved === granted
+  }, [])
+
+  const reauthenticate = useCallback(async (password: string) => {
+    const current = userRef.current
+    if (!current) throw new Error('You are not signed in.')
+    let response
+    try {
+      response = await authService.login({ email: current.email, password })
+    } catch (error) {
+      throw new Error(reauthErrorMessage(error))
+    }
+    if (response.user?.id !== current.id) throw new Error('Password check failed. Please sign in again.')
+    setUser(response.user)
+  }, [])
+
+  const refreshUser = useCallback(async () => {
+    setUser(await authService.getCurrentUser())
   }, [])
 
   const value = useMemo<AuthContextValue>(
@@ -136,8 +163,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       login,
       logout,
       saveConsent,
+      reauthenticate,
+      refreshUser,
     }),
-    [user, isLoading, login, logout, saveConsent]
+    [user, isLoading, login, logout, saveConsent, reauthenticate, refreshUser]
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
