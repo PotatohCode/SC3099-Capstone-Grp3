@@ -5,7 +5,7 @@ Read [API-CONVENTIONS.md](API-CONVENTIONS.md) for general context, but note:
 call *us*; for Module 3, **Module 2 calls you.** This is the contract your
 service implements so our calls succeed. **Your tasks:** the Module 3 table
 in [CHANGES-2026-10-01.md](CHANGES-2026-10-01.md). **Why things changed:**
-[CHANGELOG.md](CHANGELOG.md). Last updated 2026-10-23.
+[CHANGELOG.md](CHANGELOG.md). Last updated 2026-10-26.
 
 ---
 
@@ -91,7 +91,9 @@ within 5 s is treated as failed.
 - **What `match_passed` does now:**
   - `false` on a session that **requires face match** → the check-in is
     **rejected** (`face_match_failed`, a hard reject).
-  - On other sessions it only affects the score.
+  - `false` on any other session → **flagged for review**
+    (`face_match_failed`, weight 0), never approved. So your `false` now
+    matters on every session: keep it for two different faces only.
   - On failure we use `None` → on a face-required session the check-in is
     **flagged for review**, not rejected.
 - **Only return `match_passed: false` when you've actually compared two
@@ -176,10 +178,11 @@ check-in, so they can retry. The check-in then reuses that answer without
 calling you again. If the app skips the verify step, you're called at the
 check-in as before. Same request and response either way.
 
-Your current build ignores the unknown fields and scores
-`challenge_response` as one image. That's safe: without `challenge_passed`
-we never auto-approve a challenged check-in. But until you return it,
-every verify answers "unverified", so students can't retry yet.
+For a burst, keep `liveness_passed` to `true` or `null` unless the frames
+show a spoof, as your build does. A `null` there makes the attempt
+unverified even when `challenge_passed` is `true`.
+
+**Both shapes:**
 - `liveness_passed: false` → **always rejects** the check-in
   (`liveness_failed`, hard reject), whatever the score.
 - `liveness_passed: null` (e.g. no face found), or a failed call → the
@@ -225,10 +228,9 @@ outcome ourselves. Your `risk_level`, `pass_threshold` and
 `recommendations` are fine to return but aren't used for decisions.
 
 **Private IPs:** the course rule (enforced by the backend) treats private
-and local IPs as **on-campus**. Your `detect_vpn_proxy()` currently scores
-them as a likely VPN (0.7 confidence), which raises the risk of every
-genuine check-in made inside Docker. We suggest treating private and
-loopback addresses as neutral.
+and local IPs as **on-campus**, and we refuse public IPs outside Singapore
+before calling you. So don't score the IP itself as a VPN sign. Your
+`detect_vpn_proxy()` checks only the user agent, which is what we expect.
 
 ---
 
@@ -249,6 +251,9 @@ audit inspects the database for raw biometric data.
 ## Your `/metrics` endpoint
 
 `module4-observability/prometheus.yml` scrapes
-`face-recognition:8001/metrics`. It returns 404 today, so the Prometheus
-target shows "down". Adding `prometheus_client` with a `GET /metrics` route
-fixes it.
+`face-recognition:8001/metrics`. The backend doesn't read your metrics;
+Module 4's System Health panels do, by the names in
+`module4-observability/README.md` ("Face service metrics"). Keep
+`PROMETHEUS_MULTIPROC_DIR` set so a scrape counts every worker, and don't
+use the backend's `http_request_duration_seconds` name: their panels sum it
+across all jobs.
