@@ -25,8 +25,22 @@ describe('runCapturePlan', () => {
       return `f${n++}`
     }
     const steps: number[] = []
-    const frames = await runCapturePlan(plan, grab, { onStep: (i) => steps.push(i) }, new AbortController().signal, clock)
-    expect(frames).toEqual(Array.from({ length: 16 }, (_, i) => `f${i}`))
+    const events: string[] = []
+    const frames = await runCapturePlan(
+      plan,
+      grab,
+      {
+        onStep: (i) => {
+          steps.push(i)
+          events.push(`step${i}@${clock.t}`)
+        },
+        onCapture: (i) => events.push(`capture${i}@${clock.t}`),
+      },
+      new AbortController().signal,
+      clock
+    )
+    expect(events).toEqual(['step0@0', 'capture0@3000', 'step1@5000', 'capture1@8000'])
+    expect(frames).toEqual(Array.from({ length: plan.totalFrames }, (_, i) => `f${i}`))
     expect(grabTimes).toEqual(plan.steps.flatMap((s) => s.frameOffsetsMs))
     expect(steps).toEqual([0, 1])
     expect(clock.t).toBe(plan.durationMs)
@@ -49,7 +63,7 @@ describe('runCapturePlan', () => {
     const plan = planCapture(['blink'], 30)!
     let n = 0
     const frames = await runCapturePlan(plan, () => (n++ % 2 === 0 ? `f${n}` : null), { onStep: () => undefined }, new AbortController().signal, fakeClock())
-    expect(frames).toHaveLength(4)
+    expect(frames).toHaveLength(plan.totalFrames / 2)
   })
 
   it('fails with NO_FRAMES when a step yields no frames', async () => {

@@ -6,6 +6,9 @@ export type CheckInStep = 'session-select' | 'location' | 'camera' | 'confirm'
 
 export const STEP_ORDER: CheckInStep[] = ['session-select', 'location', 'camera', 'confirm']
 
+/** Why the wizard stopped at the last step: a check-in already on the server, or one waiting in the offline queue. */
+export type AlreadyCheckedIn = 'submitted' | 'queued' | null
+
 export interface WizardState {
   step: CheckInStep
   session: SessionSummary | null
@@ -13,10 +16,12 @@ export interface WizardState {
   media: CapturedMedia | null
   result: CheckInResponse | null
   challengeInvalidStreak: number
+  alreadyCheckedIn: AlreadyCheckedIn
 }
 
 export type WizardAction =
   | { type: 'SELECT_SESSION'; session: SessionSummary }
+  | { type: 'ALREADY_CHECKED_IN'; session: SessionSummary; queued: boolean }
   | { type: 'SET_LOCATION'; location: LocationData }
   | { type: 'SET_MEDIA'; media: CapturedMedia }
   | { type: 'GO_TO'; step: CheckInStep }
@@ -35,6 +40,7 @@ export const initialWizardState: WizardState = {
   media: null,
   result: null,
   challengeInvalidStreak: 0,
+  alreadyCheckedIn: null,
 }
 
 function goTo(state: WizardState, step: CheckInStep): WizardState {
@@ -48,6 +54,8 @@ export function wizardReducer(state: WizardState, action: WizardAction): WizardS
   switch (action.type) {
     case 'SELECT_SESSION':
       return { ...initialWizardState, session: action.session, step: 'location' }
+    case 'ALREADY_CHECKED_IN':
+      return { ...initialWizardState, session: action.session, step: 'confirm', alreadyCheckedIn: action.queued ? 'queued' : 'submitted' }
     case 'SET_LOCATION':
       return state.step === 'location' ? { ...state, location: action.location, media: null, step: 'camera' } : state
     case 'SET_MEDIA':

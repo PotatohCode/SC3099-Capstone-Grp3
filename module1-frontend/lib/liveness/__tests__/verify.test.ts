@@ -1,4 +1,4 @@
-import { attemptsUsed, decideAttempt, MAX_ATTEMPTS, RETRY_MESSAGE, resetVerifyCalls, startAttempt, undoAttempt } from '@/lib/liveness/verify'
+import { attemptsUsed, clearAttempts, decideAttempt, MAX_ATTEMPTS, RETRY_MESSAGE, resetVerifyCalls, startAttempt, undoAttempt } from '@/lib/liveness/verify'
 import { httpError, networkError } from '@/test/axios-stub'
 
 const verified = (result: 'passed' | 'failed' | 'unverified', attempts_left: number | null, failed_step?: string | null) =>
@@ -16,17 +16,32 @@ describe('startAttempt', () => {
     expect(startAttempt('u1', 's1')).toBe(1)
   })
 
-  it('keeps the count in this tab across a reload and clears it on reset', () => {
+  it('keeps the count in localStorage across a reload, a new tab and a logout, and clears one session after submit', () => {
     startAttempt('u1', 's1')
     startAttempt('u1', 's1')
+    startAttempt('u1', 's2')
+    window.sessionStorage.clear()
     jest.isolateModules(() => {
       const fresh = require('@/lib/liveness/verify') as typeof import('@/lib/liveness/verify')
       expect(fresh.attemptsUsed('u1', 's1')).toBe(2)
       expect(fresh.startAttempt('u1', 's1')).toBe(3)
     })
-    resetVerifyCalls()
+    expect(window.localStorage.getItem('saiv_liveness_attempts:u1:s1')).toBe('3')
+    clearAttempts('u1', 's1')
     expect(attemptsUsed('u1', 's1')).toBe(0)
-    expect(Object.keys(window.sessionStorage).filter((k) => k.startsWith('saiv_liveness_attempts:'))).toHaveLength(0)
+    expect(attemptsUsed('u1', 's2')).toBe(1)
+    resetVerifyCalls()
+    expect(Object.keys(window.localStorage).filter((k) => k.startsWith('saiv_liveness_attempts:'))).toHaveLength(0)
+  })
+
+  it('follows localStorage when another tab clears the count, and removes the key at zero', () => {
+    startAttempt('u1', 's1')
+    startAttempt('u1', 's1')
+    window.localStorage.removeItem('saiv_liveness_attempts:u1:s1')
+    expect(attemptsUsed('u1', 's1')).toBe(0)
+    startAttempt('u1', 's1')
+    undoAttempt('u1', 's1')
+    expect(window.localStorage.getItem('saiv_liveness_attempts:u1:s1')).toBeNull()
   })
 
   it('gives back a Start that never reached the liveness check', () => {

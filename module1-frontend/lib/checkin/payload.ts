@@ -13,7 +13,7 @@ export type CapturedMedia =
       verification?: 'passed' | 'review'
     }
   | { kind: 'photo'; photo: string; verification?: 'passed' | 'review' }
-  | { kind: 'none'; verification: 'review' }
+  | { kind: 'none'; verification: 'review'; skipped?: boolean }
 
 export const LIMITS = { maxFrameChars: 10_000_000, maxBodyChars: 14_000_000 } as const
 

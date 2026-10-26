@@ -28,6 +28,9 @@ import { extractErrorMessage } from '@/lib/utils/http-client'
 import { LoadingSpinner } from '@/components/LoadingSpinner'
 import { RiskBadge, StatusBadge } from '@/components/StatusBadge'
 import { StudentOnlyGuard } from '@/components/StudentOnlyGuard'
+import { FlaggedNotice } from '@/components/FlaggedNotice'
+import { MY_CHECKINS_LIMIT } from '@/lib/checkin/checked-in'
+import { APP_TIME_ZONE_LABEL, formatShortDateParts, isWithinMonthRange, parseServerDate } from '@/lib/utils/datetime'
 import type { CheckInHistoryItem, CheckInStatus } from '@/lib/types'
 
 const PAGE_SIZE = 10
@@ -36,31 +39,6 @@ const STATUS_OPTIONS: CheckInStatus[] = ['pending', 'approved', 'flagged', 'reje
 
 type SortColumn = 'date' | 'course' | 'status'
 type SortDirection = 'asc' | 'desc'
-
-/** dd/mm/yy and HH:MM (24h), returned separately so they can render on two lines. */
-function formatShortDateParts(iso: string): { date: string; time: string } {
-  const d = new Date(iso)
-  const dd = String(d.getDate()).padStart(2, '0')
-  const mm = String(d.getMonth() + 1).padStart(2, '0')
-  const yy = String(d.getFullYear()).slice(-2)
-  const HH = String(d.getHours()).padStart(2, '0')
-  const MM = String(d.getMinutes()).padStart(2, '0')
-  return { date: `${dd}/${mm}/${yy}`, time: `${HH}:${MM}` }
-}
-
-/** `from`/`to` are 'YYYY-MM' (from <input type="month">) or '' when unset. Inclusive of both whole months. */
-function isWithinMonthRange(iso: string, from: string, to: string): boolean {
-  const checkedAt = new Date(iso)
-  if (from) {
-    const [fy, fm] = from.split('-').map(Number)
-    if (checkedAt < new Date(fy, fm - 1, 1, 0, 0, 0, 0)) return false
-  }
-  if (to) {
-    const [ty, tm] = to.split('-').map(Number)
-    if (checkedAt > new Date(ty, tm, 0, 23, 59, 59, 999)) return false
-  }
-  return true
-}
 
 function SortIcon({ active, direction }: { active: boolean; direction: SortDirection }) {
   if (!active) {
@@ -101,7 +79,7 @@ function HistoryPageContent() {
       setError(null)
       try {
         const [checkinData, enrollmentData] = await Promise.all([
-          getMyCheckIns({ limit: 100 }),
+          getMyCheckIns({ limit: MY_CHECKINS_LIMIT }),
           getMyEnrollments().catch(() => []),
         ])
         if (!cancelled) {
@@ -135,7 +113,7 @@ function HistoryPageContent() {
     return [...filtered].sort((a, b) => {
       let cmp = 0
       if (sortColumn === 'date') {
-        cmp = new Date(a.checked_in_at).getTime() - new Date(b.checked_in_at).getTime()
+        cmp = parseServerDate(a.checked_in_at).getTime() - parseServerDate(b.checked_in_at).getTime()
       } else if (sortColumn === 'course') {
         cmp = (a.course_code ?? '').localeCompare(b.course_code ?? '')
       } else if (sortColumn === 'status') {
@@ -282,7 +260,7 @@ function HistoryPageContent() {
           <table className="w-full text-left text-sm">
             <thead className="bg-gray-50 text-xs uppercase text-gray-500">
               <tr>
-                <SortableHeader column="date" label="Date" />
+                <SortableHeader column="date" label={`Date (${APP_TIME_ZONE_LABEL})`} />
                 <SortableHeader column="course" label="Course" />
                 <SortableHeader column="status" label="Status" />
               </tr>
@@ -315,6 +293,7 @@ function HistoryPageContent() {
                       <div className="flex flex-col items-start gap-1">
                         <StatusBadge status={item.status} />
                         <RiskBadge riskLevel={item.risk_level} riskScore={item.risk_score} />
+                        {item.status === 'flagged' && <FlaggedNotice compact />}
                       </div>
                     </td>
                   </tr>

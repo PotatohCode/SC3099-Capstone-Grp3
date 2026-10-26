@@ -15,6 +15,19 @@ export interface CheckInErrorView {
 
 export const CHALLENGE_EXPIRED_MESSAGE = "That check took too long. Let's try again."
 
+export const ALREADY_CHECKED_IN_VIEW: CheckInErrorView = {
+  title: 'Already checked in',
+  message: "You've already checked in to this session. You can view it, or appeal it, in your history.",
+  action: 'view-history',
+  alternateAction: 'reselect-session',
+}
+
+export const QUEUED_CHECKIN_VIEW: CheckInErrorView = {
+  title: 'Check-in waiting to sync',
+  message: "Your check-in for this session is saved on this device and will be sent automatically when you're back online.",
+  action: 'reselect-session',
+}
+
 const SESSION_ERRORS: Record<string, string> = {
   SESSION_NOT_FOUND: 'This session no longer exists. Please choose another session.',
   NOT_ENROLLED: "You're not enrolled in this course.",
@@ -50,12 +63,7 @@ export function classifyCheckInError(error: unknown, isOnline: boolean): CheckIn
     return { message: CHALLENGE_EXPIRED_MESSAGE, action: 'retry-capture', challengeInvalid: true }
   }
   if (e.code && SESSION_ERRORS[e.code]) return { message: SESSION_ERRORS[e.code], action: 'reselect-session' }
-  if (e.code === 'ALREADY_CHECKED_IN') {
-    return {
-      message: "You've already checked in to this session. You can view it, or appeal it, in your history.",
-      action: 'view-history',
-    }
-  }
+  if (e.code === 'ALREADY_CHECKED_IN') return { ...ALREADY_CHECKED_IN_VIEW }
   if (e.code === 'CONSENT_REQUIRED') {
     return {
       message: 'Camera and location permission are needed to check in. Please allow both and try again.',

@@ -7,6 +7,7 @@ export type Verification = 'passed' | 'review'
 
 export const MAX_ATTEMPTS = 3
 export const RETRY_MESSAGE = 'Unsuccessful capture, please retry.'
+export const REVIEW_MESSAGE = 'Your liveliness check was unsuccessful, please approach your instructor to mark your attendance.'
 
 export type AttemptOutcome =
   | { kind: 'verified'; response: VerifyChallengeResponse }
@@ -22,24 +23,24 @@ const memory = new Map<string, number>()
 
 function readCount(key: string): number {
   try {
-    const stored = window.sessionStorage.getItem(STORAGE_PREFIX + key)
-    if (stored !== null) return Number(stored) || 0
+    const stored = window.localStorage.getItem(STORAGE_PREFIX + key)
+    return stored === null ? 0 : Number(stored) || 0
   } catch {
     return memory.get(key) ?? 0
   }
-  return memory.get(key) ?? 0
 }
 
 function writeCount(key: string, value: number): void {
   memory.set(key, value)
   try {
-    window.sessionStorage.setItem(STORAGE_PREFIX + key, String(value))
+    if (value > 0) window.localStorage.setItem(STORAGE_PREFIX + key, String(value))
+    else window.localStorage.removeItem(STORAGE_PREFIX + key)
   } catch {
     return
   }
 }
 
-/** Returns how many Starts this student has used for the session in this tab (kept across reloads, cleared on logout). */
+/** Returns how many Starts this student has used for the session in this browser (kept across reloads, tab close and logout). */
 export function attemptsUsed(userId: string, sessionId: string): number {
   return readCount(`${userId}:${sessionId}`)
 }
@@ -58,16 +59,27 @@ export function undoAttempt(userId: string, sessionId: string): void {
   writeCount(key, Math.max(0, readCount(key) - 1))
 }
 
-/** Clears every attempt count; called on login and logout so another student on the same tab starts fresh. */
+/** Forgets the student's attempts for a session once its check-in has been submitted or queued. */
+export function clearAttempts(userId: string, sessionId: string): void {
+  const key = `${userId}:${sessionId}`
+  memory.delete(key)
+  try {
+    window.localStorage.removeItem(STORAGE_PREFIX + key)
+  } catch {
+    return
+  }
+}
+
+/** Clears every stored attempt count in this browser, for every student. */
 export function resetVerifyCalls(): void {
   memory.clear()
   try {
     const keys: string[] = []
-    for (let i = 0; i < window.sessionStorage.length; i++) {
-      const key = window.sessionStorage.key(i)
+    for (let i = 0; i < window.localStorage.length; i++) {
+      const key = window.localStorage.key(i)
       if (key?.startsWith(STORAGE_PREFIX)) keys.push(key)
     }
-    keys.forEach((key) => window.sessionStorage.removeItem(key))
+    keys.forEach((key) => window.localStorage.removeItem(key))
   } catch {
     return
   }
