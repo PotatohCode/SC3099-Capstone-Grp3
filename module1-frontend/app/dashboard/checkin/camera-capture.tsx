@@ -18,10 +18,11 @@ import { middleFrame, type CapturedMedia } from '@/lib/checkin/payload'
 
 type BurstMedia = Extract<CapturedMedia, { kind: 'burst' }>
 import { CAPTURE, planCapture } from '@/lib/liveness/challenge'
-import { MAX_ATTEMPTS, attemptsUsed, decideAttempt, startAttempt, undoAttempt, type AttemptDecision, type AttemptOutcome } from '@/lib/liveness/verify'
+import { MAX_ATTEMPTS, REVIEW_MESSAGE, attemptsUsed, decideAttempt, startAttempt, undoAttempt, type AttemptDecision, type AttemptOutcome } from '@/lib/liveness/verify'
 import { abortableSleep, runCapturePlan } from '@/lib/liveness/capture-runner'
 import { decideConsentGate, queryPermission, type ConsentGate } from '@/lib/utils/consent-tracker'
 import { BURST_JPEG, createFrameGrabber, PHOTO_JPEG } from '@/lib/utils/frame-capture'
+import { FLAGGED_WARNING } from '@/components/FlaggedNotice'
 
 type Phase = 'ready' | 'preparing' | 'countdown' | 'step' | 'verifying' | 'photo-countdown' | 'done'
 
@@ -32,9 +33,49 @@ interface CameraCaptureProps {
   onReselectSession: () => void
 }
 
-/** Short list of the upcoming actions, shown during the countdown. */
-function describeSequence(sequence: string[]): string {
-  return `You'll be asked to: ${sequence.map((action) => action.replace(/_/g, ' ')).join(', then ')}`
+/** Skip button with a confirm prompt, for students who can't or won't do the face check. */
+function SkipFaceCheck({ onSkip }: { onSkip: () => void }) {
+  const [confirming, setConfirming] = useState(false)
+  const keepRef = useRef<HTMLButtonElement | null>(null)
+  useEffect(() => {
+    if (confirming) keepRef.current?.focus()
+  }, [confirming])
+  if (!confirming) {
+    return (
+      <button
+        type="button"
+        onClick={() => setConfirming(true)}
+        className="min-h-[44px] w-full rounded-md border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 sm:w-auto"
+      >
+        Skip face check
+      </button>
+    )
+  }
+  return (
+    <div className="space-y-3 rounded-md border border-amber-300 bg-amber-50 p-4" role="alertdialog" aria-labelledby="skip-face-check-title">
+      <p id="skip-face-check-title" className="text-sm font-semibold text-amber-900">
+        Skip the face check?
+      </p>
+      <p className="text-sm text-amber-800">Your check-in may be flagged. {FLAGGED_WARNING}</p>
+      <div className="flex flex-wrap gap-3">
+        <button
+          type="button"
+          onClick={onSkip}
+          className="min-h-[44px] rounded-md bg-amber-700 px-4 py-2 text-sm font-medium text-white hover:bg-amber-800"
+        >
+          Skip and continue
+        </button>
+        <button
+          ref={keepRef}
+          type="button"
+          onClick={() => setConfirming(false)}
+          className="min-h-[44px] rounded-md border border-amber-400 px-4 py-2 text-sm font-medium text-amber-900 hover:bg-amber-100"
+        >
+          Don&apos;t skip
+        </button>
+      </div>
+    </div>
+  )
 }
 
 const INTERRUPTED = "The face check was interrupted. Let's try again."
@@ -66,9 +107,19 @@ export function CameraCapture({ sessionId, photoMode, onComplete, onReselectSess
   }, [saveConsent, startStream])
 
   const initialConsent = useRef(user?.camera_consent)
+  const [exhausted] = useState(() => attemptsUsed(user?.id ?? 'anonymous', sessionId) >= MAX_ATTEMPTS)
+  const mountedRef = useRef(true)
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
 
   useEffect(() => {
     let cancelled = false
+    if (exhausted) return
     queryPermission('camera').then((permission) => {
       if (!cancelled) setGate(decideConsentGate(initialConsent.current, permission))
     })
@@ -76,7 +127,7 @@ export function CameraCapture({ sessionId, photoMode, onComplete, onReselectSess
       cancelled = true
       abortRef.current?.abort()
     }
-  }, [])
+  }, [exhausted])
 
   const beginRef = useRef(begin)
   beginRef.current = begin
@@ -128,6 +179,7 @@ export function CameraCapture({ sessionId, photoMode, onComplete, onReselectSess
     setPhase('photo-countdown')
     await countdownFrom(Math.round(CAPTURE.countdownMs / 1000), controller.signal)
     const photo = createFrameGrabber(video, PHOTO_JPEG)()
+    if (!mountedRef.current) return
     if (!photo) return failCapture(NO_FRAMES)
     stopStream()
     abortRef.current = null
@@ -136,6 +188,7 @@ export function CameraCapture({ sessionId, photoMode, onComplete, onReselectSess
   }
 
   function finishAttempt(decision: AttemptDecision, burst: BurstMedia | null) {
+    if (!mountedRef.current) return
     abortRef.current = null
     if (decision.kind === 'retry') {
       setPhase('ready')
@@ -184,6 +237,7 @@ export function CameraCapture({ sessionId, photoMode, onComplete, onReselectSess
       try {
         challenge = await requestChallenge(sessionId)
       } catch (err) {
+        if (!mountedRef.current) return
         const classified = classifyChallengeError(err)
         if (classified.fallbackToPhoto && classified.attemptsExhausted) {
           return finishAttempt({ kind: 'submit', media: 'none', verification: 'review', restartFreshness: false }, null)
@@ -201,6 +255,7 @@ export function CameraCapture({ sessionId, photoMode, onComplete, onReselectSess
         }
         return finishAttempt(decideAttempt({ kind: 'no-capture' }, attempt), null)
       }
+      if (!mountedRef.current) return
       const fetchedAtMs = performance.now()
       const plan = planCapture(challenge.sequence, challenge.max_frames)
       if (!plan) {
@@ -208,17 +263,17 @@ export function CameraCapture({ sessionId, photoMode, onComplete, onReselectSess
         return await takePhoto(controller)
       }
       setSteps(challenge.sequence)
-      setPhase('countdown')
-      setCountdown(Math.round(CAPTURE.countdownMs / 1000))
       const frames = await runCapturePlan(
         plan,
         createFrameGrabber(video, BURST_JPEG),
         {
           onStep: (index, step) => {
-            setPhase('step')
             setStepIndex(index)
             setPrompt(step.prompt)
+            setCountdown(Math.round(CAPTURE.countdownMs / 1000))
+            setPhase('countdown')
           },
+          onCapture: () => setPhase('step'),
         },
         controller.signal
       )
@@ -230,6 +285,7 @@ export function CameraCapture({ sessionId, photoMode, onComplete, onReselectSess
         fetchedAtMs,
         maxFrames: challenge.max_frames,
       }
+      if (!mountedRef.current) return
       if (typeof navigator !== 'undefined' && navigator.onLine === false) {
         stopStream()
         abortRef.current = null
@@ -255,6 +311,32 @@ export function CameraCapture({ sessionId, photoMode, onComplete, onReselectSess
     abortRef.current?.abort()
   }
 
+  function skip() {
+    abortRef.current?.abort()
+    abortRef.current = null
+    stopStream()
+    setPhase('done')
+    onComplete({ kind: 'none', verification: 'review', skipped: true })
+  }
+
+  if (exhausted) {
+    return (
+      <div className="space-y-3 rounded-lg border border-amber-300 bg-amber-50 p-5" role="alert">
+        <h2 className="text-lg font-semibold text-amber-900">No face-check tries left</h2>
+        <p className="text-sm text-amber-800">
+          You&apos;ve used all {MAX_ATTEMPTS} face-check tries for this session. {REVIEW_MESSAGE}
+        </p>
+        <button
+          type="button"
+          onClick={() => onComplete({ kind: 'none', verification: 'review' })}
+          className="min-h-[44px] w-full rounded-md bg-blue-700 px-4 py-2 font-medium text-white hover:bg-blue-800 sm:w-auto"
+        >
+          Continue
+        </button>
+      </div>
+    )
+  }
+
   if (gate === null) {
     return <p className="text-sm text-gray-600">Checking camera access...</p>
   }
@@ -262,7 +344,7 @@ export function CameraCapture({ sessionId, photoMode, onComplete, onReselectSess
   if (gate === 'ask') {
     return (
       <div className="space-y-4 rounded-lg border border-gray-200 bg-white p-5">
-        <h2 className="text-lg font-semibold text-gray-900">Camera access required</h2>
+        <h2 className="text-lg font-semibold text-gray-900">Camera access for the face check</h2>
         <p className="text-sm text-gray-600">
           We need to use your camera for a quick liveness check to confirm you&apos;re
           physically present. Your photo is used only for this check-in and is never
@@ -275,6 +357,7 @@ export function CameraCapture({ sessionId, photoMode, onComplete, onReselectSess
         >
           Allow camera access
         </button>
+        <SkipFaceCheck onSkip={skip} />
       </div>
     )
   }
@@ -292,10 +375,12 @@ export function CameraCapture({ sessionId, photoMode, onComplete, onReselectSess
         >
           Try again
         </button>
+        <SkipFaceCheck onSkip={skip} />
       </div>
     )
   }
 
+  const triesUsed = attemptsUsed(user?.id ?? 'anonymous', sessionId)
   const capturing =
     phase === 'preparing' || phase === 'countdown' || phase === 'step' || phase === 'verifying' || phase === 'photo-countdown'
 
@@ -322,20 +407,24 @@ export function CameraCapture({ sessionId, photoMode, onComplete, onReselectSess
                 Getting your check ready...
               </p>
             )}
-            {phase === 'countdown' && (
-              <div aria-live="polite">
-                <p className="font-medium">Get ready</p>
-                <p className="text-sm">{describeSequence(steps)}</p>
-                {attemptNumber === MAX_ATTEMPTS && <p className="text-sm font-medium">This is your last try.</p>}
-                <p className="text-3xl font-bold">{countdown}</p>
-              </div>
-            )}
-            {phase === 'step' && (
-              <div aria-live="assertive">
+            {(phase === 'countdown' || phase === 'step') && (
+              <div>
                 <p className="text-sm">
                   Step {stepIndex + 1} of {steps.length}
                 </p>
-                <p className="text-2xl font-bold">{prompt}</p>
+                {stepIndex === 0 && attemptNumber === MAX_ATTEMPTS && (
+                  <p className="text-sm font-medium">This is your last try.</p>
+                )}
+                <p className="text-lg font-bold sm:text-2xl" aria-live="assertive">
+                  {prompt}
+                </p>
+                {phase === 'countdown' ? (
+                  <p className="text-3xl font-bold" aria-label={`Starting in ${countdown}`}>
+                    {countdown}
+                  </p>
+                ) : (
+                  <p className="text-3xl font-bold text-green-300">Go!</p>
+                )}
               </div>
             )}
             {phase === 'verifying' && (
@@ -384,6 +473,11 @@ export function CameraCapture({ sessionId, photoMode, onComplete, onReselectSess
               ? "When you're ready, tap Take photo and look at the camera."
               : "When you're ready, tap Start. You'll be asked to do a few quick actions while we take some photos."}
           </p>
+          {!photoMode && triesUsed > 0 && triesUsed < MAX_ATTEMPTS && (
+            <p className="text-sm font-medium text-gray-800">
+              You have {MAX_ATTEMPTS - triesUsed} {MAX_ATTEMPTS - triesUsed === 1 ? 'try' : 'tries'} left.
+            </p>
+          )}
           <button
             type="button"
             onClick={start}
@@ -403,6 +497,8 @@ export function CameraCapture({ sessionId, photoMode, onComplete, onReselectSess
           Start camera
         </button>
       )}
+
+      {phase === 'ready' && <SkipFaceCheck onSkip={skip} />}
 
       {capturing && phase !== 'verifying' && (
         <button

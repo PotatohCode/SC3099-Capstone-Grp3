@@ -8,7 +8,7 @@
  * lib/checkin/wizard-state.ts via CheckInContext).
  */
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useCheckIn } from '@/lib/hooks/useCheckIn'
 import type { CheckInStep } from '@/lib/context/CheckInContext'
@@ -18,7 +18,12 @@ import { submitCheckIn } from '@/lib/services/checkin.service'
 import { getOrCreateDeviceFingerprint } from '@/lib/utils/device-fingerprint'
 import { extractErrorMessage } from '@/lib/utils/http-client'
 import { submitAttempt } from '@/lib/checkin/submit'
-import type { CheckInErrorAction, CheckInErrorView } from '@/lib/checkin/errors'
+import { ALREADY_CHECKED_IN_VIEW, QUEUED_CHECKIN_VIEW, type CheckInErrorAction, type CheckInErrorView } from '@/lib/checkin/errors'
+import { hasCheckIn, loadCheckedInSessions, PRECHECK_TIMEOUT_MS } from '@/lib/checkin/checked-in'
+import { clearProgress, readProgress } from '@/lib/checkin/progress'
+import { REVIEW_MESSAGE } from '@/lib/liveness/verify'
+import { useAuth } from '@/lib/hooks/useAuth'
+import { FlaggedNotice } from '@/components/FlaggedNotice'
 import { LoadingSpinner } from '@/components/LoadingSpinner'
 import { StatusBadge, RiskBadge } from '@/components/StatusBadge'
 import { CameraCapture } from './camera-capture'
@@ -78,10 +83,23 @@ function StepIndicator({ current }: { current: CheckInStep }) {
 }
 
 function SessionSelectStep() {
-  const { selectSession } = useCheckIn()
+  const { selectSession, markAlreadyCheckedIn } = useCheckIn()
+  const { user } = useAuth()
+  const userId = user?.id ?? null
   const [sessions, setSessions] = useState<SessionSummary[]>([])
+  const [hiddenCount, setHiddenCount] = useState(0)
+  const [hiddenQueued, setHiddenQueued] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
+  const [checkingId, setCheckingId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const mountedRef = useRef(true)
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -89,8 +107,22 @@ function SessionSelectStep() {
       setIsLoading(true)
       setError(null)
       try {
-        const data = await getMySessions({ status: 'active' })
-        if (!cancelled) setSessions(data)
+        const [data, done] = await Promise.all([
+          getMySessions({ status: 'active' }),
+          loadCheckedInSessions(userId).catch(() => null),
+        ])
+        if (cancelled) return
+        const open = done ? data.filter((s) => !hasCheckIn(done, s.id)) : data
+        const resumeId = readProgress(userId)
+        const resume = done && resumeId ? open.find((s) => s.id === resumeId) : undefined
+        if (resume) {
+          selectSession(resume)
+          return
+        }
+        if (resumeId && done) clearProgress(userId)
+        setSessions(open)
+        setHiddenCount(data.length - open.length)
+        setHiddenQueued(!!done && data.some((s) => done.queued.has(s.id)))
       } catch (err) {
         if (!cancelled) setError(extractErrorMessage(err, 'Failed to load sessions.'))
       } finally {
@@ -101,7 +133,19 @@ function SessionSelectStep() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [userId, selectSession])
+
+  async function choose(session: SessionSummary) {
+    setCheckingId(session.id)
+    const done = await loadCheckedInSessions(userId, { courseId: session.course_id, timeoutMs: PRECHECK_TIMEOUT_MS }).catch(
+      () => null
+    )
+    if (!mountedRef.current) return
+    setCheckingId(null)
+    if (done?.submitted.has(session.id)) markAlreadyCheckedIn(session, false)
+    else if (done?.queued.has(session.id)) markAlreadyCheckedIn(session, true)
+    else selectSession(session)
+  }
 
   if (isLoading) return <LoadingSpinner label="Loading your sessions..." />
 
@@ -109,8 +153,25 @@ function SessionSelectStep() {
     return <p className="text-sm text-red-600" role="alert">{error}</p>
   }
 
+  const queuedNote = hiddenQueued && (
+    <p className="text-sm text-gray-600">
+      A check-in you made offline is saved on this device and will be sent automatically when you&apos;re back online.
+    </p>
+  )
+
   if (sessions.length === 0) {
-    return (
+    return hiddenCount > 0 ? (
+      <div className="space-y-2">
+        <p className="text-sm text-gray-600">
+          You&apos;ve already checked in to every open session. You can see them in{' '}
+          <Link href="/dashboard/history" className="font-medium text-blue-700 underline">
+            History
+          </Link>
+          .
+        </p>
+        {queuedNote}
+      </div>
+    ) : (
       <p className="text-sm text-gray-600">
         No active check-in sessions right now. Check back once your instructor opens one.
       </p>
@@ -118,22 +179,27 @@ function SessionSelectStep() {
   }
 
   return (
-    <ul className="space-y-3">
-      {sessions.map((session) => (
-        <li key={session.id}>
-          <button
-            type="button"
-            onClick={() => selectSession(session)}
-            className="min-h-[44px] w-full rounded-lg border border-gray-200 bg-white p-4 text-left hover:border-blue-400 hover:bg-blue-50"
-          >
-            <p className="font-semibold text-gray-900">{session.name}</p>
-            <p className="text-sm text-gray-500">
-              {session.course_code ?? session.course_name} &middot; {session.venue_name ?? 'Venue TBD'}
-            </p>
-          </button>
-        </li>
-      ))}
-    </ul>
+    <div className="space-y-3">
+      {queuedNote}
+      <ul className="space-y-3">
+        {sessions.map((session) => (
+          <li key={session.id}>
+            <button
+              type="button"
+              onClick={() => choose(session)}
+              disabled={checkingId !== null}
+              className="min-h-[44px] w-full rounded-lg border border-gray-200 bg-white p-4 text-left hover:border-blue-400 hover:bg-blue-50 disabled:opacity-60"
+            >
+              <p className="font-semibold text-gray-900">{session.name}</p>
+              <p className="text-sm text-gray-500">
+                {session.course_code ?? session.course_name} &middot; {session.venue_name ?? 'Venue TBD'}
+              </p>
+              {checkingId === session.id && <p className="mt-1 text-xs text-gray-500">Checking...</p>}
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
   )
 }
 
@@ -182,7 +248,7 @@ function CheckInErrorPanel({ view, onAction }: { view: CheckInErrorView; onActio
 }
 
 function ConfirmStep() {
-  const { session, media, location, result, previousStep, goToStep, retakeLocation, reset, submitSucceeded, submitQueued, submitFailed } =
+  const { session, media, location, result, alreadyCheckedIn, previousStep, goToStep, retakeLocation, reset, submitSucceeded, submitQueued, submitFailed } =
     useCheckIn()
   const { isOnline, queueCheckIn } = useOfflineSync()
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -232,6 +298,7 @@ function ConfirmStep() {
           <StatusBadge status={result.status} />
           <RiskBadge riskLevel={result.risk_level} riskScore={result.risk_score} />
         </div>
+        {result.status === 'flagged' && <FlaggedNotice />}
         {typeof result.distance_from_venue_meters === 'number' && (
           <p className="text-sm text-gray-600">
             Distance from venue: {Math.round(result.distance_from_venue_meters)}m
@@ -267,6 +334,15 @@ function ConfirmStep() {
     )
   }
 
+  if (alreadyCheckedIn) {
+    return (
+      <CheckInErrorPanel
+        view={alreadyCheckedIn === 'queued' ? QUEUED_CHECKIN_VIEW : ALREADY_CHECKED_IN_VIEW}
+        onAction={handleErrorAction}
+      />
+    )
+  }
+
   if (errorView) {
     return <CheckInErrorPanel view={errorView} onAction={handleErrorAction} />
   }
@@ -291,7 +367,9 @@ function ConfirmStep() {
                     : `Completed (${media.sequence.length} actions)`
                   : media.kind === 'photo' && media.verification !== 'review'
                     ? 'Photo taken'
-                    : 'Not completed'}
+                    : media.kind === 'none' && media.skipped
+                      ? 'Skipped'
+                      : 'Not completed'}
             </dd>
           </div>
           <div className="flex justify-between">
@@ -301,9 +379,13 @@ function ConfirmStep() {
             </dd>
           </div>
         </dl>
-        {media?.verification === 'review' && (
+        {media?.kind === 'none' && media.skipped ? (
           <p className="mt-3 text-xs text-amber-700" role="status">
-            Your liveliness check was unsuccessful, please approach your instructor to mark your attendance.
+            You skipped the face check, so this check-in may be flagged for your instructor to review.
+          </p>
+        ) : media?.verification === 'review' && (
+          <p className="mt-3 text-xs text-amber-700" role="status">
+            {REVIEW_MESSAGE}
           </p>
         )}
         {!isOnline && (
@@ -342,6 +424,11 @@ export default function CheckInWizardPage() {
     <div>
       <h1 className="text-2xl font-bold text-gray-900">Check In</h1>
       <StepIndicator current={step} />
+      {session && step !== 'session-select' && (
+        <p className="-mt-3 mb-4 text-sm text-gray-600">
+          Checking in to: <span className="font-medium text-gray-900">{session.name}</span>
+        </p>
+      )}
 
       {step === 'session-select' && <SessionSelectStep />}
 

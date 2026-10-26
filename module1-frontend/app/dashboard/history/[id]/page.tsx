@@ -17,6 +17,8 @@ import { sanitizeText } from '@/lib/utils/validators'
 import { LoadingSpinner } from '@/components/LoadingSpinner'
 import { StatusBadge, RiskBadge } from '@/components/StatusBadge'
 import { StudentOnlyGuard } from '@/components/StudentOnlyGuard'
+import { FlaggedNotice } from '@/components/FlaggedNotice'
+import { formatDateTime } from '@/lib/utils/datetime'
 import type { CheckInResponse, SessionSummary } from '@/lib/types'
 
 const APPEALABLE_STATUSES = new Set(['flagged', 'rejected'])
@@ -224,10 +226,12 @@ function CheckInDetailContent() {
         <StatusBadge status={checkin.status} />
       </div>
 
+      {checkin.status === 'flagged' && <FlaggedNotice />}
+
       <DetailCard title="Check-in">
-        <Field label="Checked in at" value={new Date(checkin.checked_in_at).toLocaleString()} />
+        <Field label="Checked in at" value={formatDateTime(checkin.checked_in_at)} />
         {checkin.verified_at && (
-          <Field label="Verified at" value={new Date(checkin.verified_at).toLocaleString()} />
+          <Field label="Verified at" value={formatDateTime(checkin.verified_at)} />
         )}
       </DetailCard>
 
@@ -279,7 +283,7 @@ function CheckInDetailContent() {
 
       {hasReview && (
         <DetailCard title="Instructor review">
-          {checkin.reviewed_at && <Field label="Reviewed at" value={new Date(checkin.reviewed_at).toLocaleString()} />}
+          {checkin.reviewed_at && <Field label="Reviewed at" value={formatDateTime(checkin.reviewed_at)} />}
           {checkin.review_notes && (
             <p className="pt-1 text-sm text-gray-700">{checkin.review_notes}</p>
           )}
@@ -289,7 +293,7 @@ function CheckInDetailContent() {
       <DetailCard title="Appeal">
         {hasAppeal ? (
           <>
-            {checkin.appealed_at && <Field label="Appealed at" value={new Date(checkin.appealed_at).toLocaleString()} />}
+            {checkin.appealed_at && <Field label="Appealed at" value={formatDateTime(checkin.appealed_at)} />}
             {checkin.appeal_reason && <p className="pt-1 text-sm text-gray-700">{checkin.appeal_reason}</p>}
           </>
         ) : APPEALABLE_STATUSES.has(checkin.status) ? (

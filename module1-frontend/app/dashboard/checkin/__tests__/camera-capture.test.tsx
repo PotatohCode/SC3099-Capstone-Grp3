@@ -4,6 +4,7 @@ import type { CapturedMedia } from '@/lib/checkin/payload'
 import { installCamera, installPermissions } from '@/test/browser-mocks'
 import { stubAdapter } from '@/test/axios-stub'
 import { attemptsUsed, resetVerifyCalls, startAttempt } from '@/lib/liveness/verify'
+import { planCapture } from '@/lib/liveness/challenge'
 
 const saveConsent = jest.fn(async () => undefined)
 let cameraConsent: boolean | undefined = true
@@ -19,6 +20,9 @@ const challenge = {
   expires_at: '2026-10-22T10:00:00',
   max_frames: 30,
 }
+
+const PLAN = planCapture(['blink', 'turn_left'], 30)!
+const CAPTURE_MS = PLAN.durationMs
 
 async function flush(ms = 0) {
   await act(async () => {
@@ -42,7 +46,7 @@ describe('CameraCapture', () => {
   })
   afterEach(() => jest.useRealTimers())
 
-  it('fetches a challenge on Start, shows each step and delivers a 16-frame burst', async () => {
+  it('fetches a challenge on Start, shows each step and delivers a 20-frame burst', async () => {
     const camera = installCamera()
     installPermissions('granted')
     const calls = stubAdapter((req) => {
@@ -58,14 +62,25 @@ describe('CameraCapture', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Start' }))
     await flush()
     expect(calls[0]).toMatchObject({ method: 'post', url: '/checkins/challenge', data: { session_id: 's1' } })
-    expect(screen.getByText('Get ready')).toBeTruthy()
-
-    await flush(3000)
     expect(screen.getByText('Step 1 of 2')).toBeTruthy()
-    expect(screen.getByText('Blink a few times')).toBeTruthy()
-    await flush(2400)
+    expect(screen.getByText('Close your eyes for 1 second and open them')).toBeTruthy()
+    expect(screen.getByText('3')).toBeTruthy()
+    await flush(1000)
+    expect(screen.getByText('2')).toBeTruthy()
+    await flush(1000)
+    expect(screen.getByText('1')).toBeTruthy()
+    await flush(1000)
+    expect(screen.getByText('Go!')).toBeTruthy()
+    await flush(1900)
+    expect(screen.getByText('Step 1 of 2')).toBeTruthy()
+    await flush(100)
     expect(screen.getByText('Step 2 of 2')).toBeTruthy()
-    expect(screen.getByText('Slowly turn your head to your left')).toBeTruthy()
+    expect(screen.getByText('Turn your head to your left and look back in the camera within 2 seconds')).toBeTruthy()
+    expect(screen.getByText('3')).toBeTruthy()
+    expect(screen.queryByText('Go!')).toBeNull()
+    await flush(3000)
+    expect(screen.getByText('Go!')).toBeTruthy()
+    expect(onComplete).not.toHaveBeenCalled()
     await flush(2000)
 
     expect(onComplete).toHaveBeenCalledTimes(1)
@@ -75,8 +90,8 @@ describe('CameraCapture', () => {
     expect(media.challengeId).toBe('ch-123')
     expect(media.sequence).toEqual(['blink', 'turn_left'])
     expect(media.maxFrames).toBe(30)
-    expect(media.frames).toHaveLength(16)
-    expect(new Set(media.frames).size).toBe(16)
+    expect(media.frames).toHaveLength(20)
+    expect(new Set(media.frames).size).toBe(20)
     expect(media.frames.every((f) => !f.startsWith('data:'))).toBe(true)
     expect(camera.track.stop).toHaveBeenCalled()
   })
@@ -89,7 +104,7 @@ describe('CameraCapture', () => {
     await flush()
     fireEvent.click(screen.getByRole('button', { name: 'Start' }))
     await flush(3000)
-    expect(screen.getByText('Blink a few times').closest('[aria-live="assertive"]')).toBeTruthy()
+    expect(screen.getByText('Close your eyes for 1 second and open them').closest('[aria-live="assertive"]')).toBeTruthy()
   })
 
   it('falls back to a single photo when challenges are unavailable (503)', async () => {
@@ -180,13 +195,84 @@ describe('CameraCapture', () => {
     expect(screen.getByRole('button', { name: 'Start' })).toBeTruthy()
   })
 
+  describe('Skip face check', () => {
+    const skipped = { kind: 'none', verification: 'review', skipped: true }
+
+    function confirmSkip() {
+      fireEvent.click(screen.getByRole('button', { name: 'Skip face check' }))
+      expect(screen.getByText('Skip the face check?')).toBeTruthy()
+      expect(screen.getByText(/Your check-in may be flagged\. Please approach your instructor in class to mark your attendance\./)).toBeTruthy()
+      fireEvent.click(screen.getByRole('button', { name: 'Skip and continue' }))
+    }
+
+    it('is offered before camera permission is asked and never opens the camera', async () => {
+      cameraConsent = false
+      const camera = installCamera()
+      installPermissions('prompt')
+      const { onComplete } = renderCapture()
+      await flush()
+      confirmSkip()
+      expect(camera.getUserMedia).not.toHaveBeenCalled()
+      expect(onComplete).toHaveBeenCalledWith(skipped)
+    })
+
+    it('is offered when the camera is blocked', async () => {
+      installCamera()
+      installPermissions('denied')
+      const { onComplete } = renderCapture()
+      await flush()
+      expect(screen.getByText(/Camera access is blocked for this site/)).toBeTruthy()
+      confirmSkip()
+      expect(onComplete).toHaveBeenCalledWith(skipped)
+    })
+
+    it('stops a running camera, sends no request and uses no liveness try', async () => {
+      const camera = installCamera()
+      installPermissions('granted')
+      const calls = stubAdapter(() => ({ status: 404 }))
+      const { onComplete } = renderCapture()
+      await flush()
+      expect(screen.getByRole('button', { name: 'Start' })).toBeTruthy()
+      confirmSkip()
+      expect(onComplete).toHaveBeenCalledWith(skipped)
+      expect(camera.track.stop).toHaveBeenCalled()
+      expect(calls).toHaveLength(0)
+      expect(attemptsUsed('u1', 's1')).toBe(0)
+    })
+
+    it("Don't skip returns to the check without completing", async () => {
+      installCamera()
+      installPermissions('granted')
+      const { onComplete } = renderCapture()
+      await flush()
+      fireEvent.click(screen.getByRole('button', { name: 'Skip face check' }))
+      await flush()
+      expect(document.activeElement).toBe(screen.getByRole('button', { name: "Don't skip" }))
+      fireEvent.click(screen.getByRole('button', { name: "Don't skip" }))
+      expect(onComplete).not.toHaveBeenCalled()
+      expect(screen.getByRole('button', { name: 'Skip face check' })).toBeTruthy()
+      expect(screen.getByRole('button', { name: 'Start' })).toBeTruthy()
+    })
+
+    it('is hidden while a capture is running', async () => {
+      installCamera()
+      installPermissions('granted')
+      stubAdapter(() => ({ status: 201, data: challenge }))
+      renderCapture()
+      await flush()
+      fireEvent.click(screen.getByRole('button', { name: 'Start' }))
+      await flush(3000)
+      expect(screen.queryByRole('button', { name: 'Skip face check' })).toBeNull()
+    })
+  })
+
   it('asks for consent first and records it on the backend', async () => {
     cameraConsent = false
     const camera = installCamera()
     installPermissions('prompt')
     renderCapture()
     await flush()
-    expect(screen.getByText('Camera access required')).toBeTruthy()
+    expect(screen.getByText('Camera access for the face check')).toBeTruthy()
     expect(camera.getUserMedia).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: 'Allow camera access' }))
     await flush()
@@ -232,7 +318,7 @@ describe('CameraCapture', () => {
     expect(saveConsent).not.toHaveBeenCalledWith('camera', true)
   })
 
-  it('lists the actions during the countdown', async () => {
+  it('goes straight to the first instruction without listing the upcoming actions', async () => {
     installCamera()
     installPermissions('granted')
     stubAdapter(() => ({ status: 201, data: challenge }))
@@ -240,7 +326,10 @@ describe('CameraCapture', () => {
     await flush()
     fireEvent.click(screen.getByRole('button', { name: 'Start' }))
     await flush()
-    expect(screen.getByText("You'll be asked to: blink, then turn left")).toBeTruthy()
+    expect(screen.queryByText(/You'll be asked to/)).toBeNull()
+    expect(screen.queryByText('Get ready')).toBeNull()
+    expect(screen.queryByText('Turn your head to your left and look back in the camera within 2 seconds')).toBeNull()
+    expect(screen.getByText('Close your eyes for 1 second and open them')).toBeTruthy()
   })
 
   it('a successful retry from blocked opens one stream and releases it on unmount', async () => {
@@ -299,7 +388,7 @@ describe('CameraCapture attempts (one per Start, 3 per session)', () => {
 
   async function startAndCapture() {
     fireEvent.click(screen.getByRole('button', { name: 'Start' }))
-    await flush(7500)
+    await flush(CAPTURE_MS + 200)
   }
 
   function verifyBodies(calls: Array<{ url?: string; data: unknown }>) {
@@ -333,7 +422,7 @@ describe('CameraCapture attempts (one per Start, 3 per session)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Start' }))
     await flush(500)
     expect(screen.getByText('This is your last try.')).toBeTruthy()
-    await flush(7000)
+    await flush(CAPTURE_MS - 300)
     expect(onComplete).toHaveBeenCalledTimes(1)
     const media = onComplete.mock.calls[0][0]
     expect(media).toMatchObject({ kind: 'burst', challengeId: 'ch-3', verification: 'review' })
@@ -505,8 +594,8 @@ describe('CameraCapture attempts (one per Start, 3 per session)', () => {
     expect(onComplete.mock.calls[0][0]).toMatchObject({ challengeId: 'ch-123', verification: 'passed' })
   })
 
-  it('goes straight to review without a new challenge once all three Starts are used', async () => {
-    installCamera()
+  it('offers no further face check once all three Starts are used, without opening the camera', async () => {
+    const camera = installCamera()
     installPermissions('granted')
     startAttempt('u1', 's1')
     startAttempt('u1', 's1')
@@ -514,10 +603,23 @@ describe('CameraCapture attempts (one per Start, 3 per session)', () => {
     const calls = scripted([{ status: 200, data: { result: 'passed', attempts_left: 2 } }])
     const { onComplete } = renderCapture()
     await flush()
-    fireEvent.click(screen.getByRole('button', { name: 'Start' }))
-    await flush()
+    expect(screen.getByText('No face-check tries left')).toBeTruthy()
+    expect(screen.getByText(/You've used all 3 face-check tries for this session\. Your liveliness check was unsuccessful/)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Start' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Skip face check' })).toBeNull()
+    expect(camera.getUserMedia).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
     expect(onComplete.mock.calls[0][0]).toEqual({ kind: 'none', verification: 'review' })
     expect(calls).toHaveLength(0)
+  })
+
+  it('shows how many tries are left after an earlier Start', async () => {
+    installCamera()
+    installPermissions('granted')
+    startAttempt('u1', 's1')
+    renderCapture()
+    await flush()
+    expect(screen.getByText('You have 2 tries left.')).toBeTruthy()
   })
 
   it('restarts the camera after it stops so the student can tap Start again', async () => {
@@ -587,7 +689,7 @@ describe('CameraCapture attempts (one per Start, 3 per session)', () => {
     await flush()
     fireEvent.click(screen.getByRole('button', { name: 'Start' }))
     Object.defineProperty(navigator, 'onLine', { configurable: true, get: () => false })
-    await flush(7500)
+    await flush(CAPTURE_MS + 200)
     expect(calls.some((c) => c.url?.endsWith('/verify'))).toBe(false)
     expect(onComplete.mock.calls[0][0].kind).toBe('burst')
     expect(onComplete.mock.calls[0][0].verification).toBeUndefined()
