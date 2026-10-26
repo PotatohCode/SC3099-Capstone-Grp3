@@ -515,6 +515,7 @@ def create_checkin(
             settings.DEVICE_BINDING_ENFORCEMENT == "flag" and bool(course.require_device_binding) and not device_known
         ),
         challenge_failed=challenge_failed,
+        flag_face_mismatch=settings.FACE_MISMATCH_ENFORCEMENT == "flag",
     )
 
     log_event(

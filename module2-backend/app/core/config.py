@@ -42,6 +42,8 @@ class Settings(BaseSettings):
     # --- Risk scoring defaults (overridable per course/session) ------------
     RISK_SCORE_THRESHOLD: float = 0.5
     LIVENESS_THRESHOLD: float = 0.6
+    # Not used for decisions: Module 3's /face/verify decides match_passed
+    # with its own threshold (dlib distance <= 0.6), and we act on that.
     FACE_MATCH_THRESHOLD: float = 0.7
     DEFAULT_GEOFENCE_RADIUS_METERS: float = 100.0
 
@@ -118,6 +120,15 @@ class Settings(BaseSettings):
     #   flag - device not registered to this student -> device_unbound,
     #          at most "flagged"
     DEVICE_BINDING_ENFORCEMENT: Literal["off", "flag"] = "off"
+    # FACE_MISMATCH_ENFORCEMENT - a wrong face (Module 3 match_passed=false)
+    # on a session that does NOT require a face match. On face-required
+    # sessions a mismatch always rejects, whatever this is set to.
+    #   off  - not acted on (the match score only feeds the risk score)
+    #   flag - face_match_failed (high, weight 0) + security_violation, at
+    #          most "flagged"
+    # On by default: since M1 PR #5 every student enrols before checking
+    # in, so the comparison runs on almost every check-in.
+    FACE_MISMATCH_ENFORCEMENT: Literal["off", "flag"] = "flag"
 
     # --- Concurrency ---------------------------------------------------------
     # Worker threads for sync endpoints AND their response validation

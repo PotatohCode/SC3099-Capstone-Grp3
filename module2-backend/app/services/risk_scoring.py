@@ -73,7 +73,7 @@ _DEVICE_UNTRUSTED_WEIGHT = 0.05
 _IMPOSSIBLE_TRAVEL_WEIGHT = 0.30
 _IMPOSSIBLE_TRAVEL_KMH = 250.0  # faster than this between two check-ins = impossible
 _LIVENESS_FAILED_WEIGHT = 0.25
-_VIOLATION_SIGNALS = {"impossible_travel", "gps_spoof_suspected", "rapid_succession"}
+_VIOLATION_SIGNALS = {"impossible_travel", "gps_spoof_suspected", "rapid_succession", "face_match_failed"}
 _FACE_MATCH_FAILED_WEIGHT = 0.25
 _REPLAY_WEIGHT = 0.30
 # Timing signals carry weight 0: a no-photo check-in already sits at ~0.68,
@@ -104,7 +104,9 @@ class RiskAssessment:
     def violation_types(self) -> list[str]:
         """Signals worth a security_violation audit event: every hard-reject
         ("critical") signal, plus impossible travel and gps_spoof_suspected (GPS-spoofing tells
-        even though they only add score)."""
+        even though they only add score), rapid_succession, and face_match_failed
+        also when it's only a review signal (a wrong face is still an
+        impersonation attempt)."""
         return sorted({s.signal_type for s in self.signals
                        if s.severity == "critical" or s.signal_type in _VIOLATION_SIGNALS})
 
@@ -164,6 +166,7 @@ def assess(
     consent_missing: bool = False,
     device_unbound: bool = False,
     challenge_failed: bool = False,
+    flag_face_mismatch: bool = False,
 ) -> RiskAssessment:
     """require_liveness / require_face_match come from the session (and the
     course's require_face_recognition). When a requirement is set:
@@ -175,7 +178,10 @@ def assess(
       without moving the score, so an unverifiable check-in is never
       rejected outright just because a service was down. Without a
       liveness result the score itself is also capped below CRITICAL
-      (UNVERIFIED_SCORE_CAP), since a missing result counts as full risk."""
+      (UNVERIFIED_SCORE_CAP), since a missing result counts as full risk.
+    Without require_face_match, a definite mismatch is review only when
+    flag_face_mismatch (config FACE_MISMATCH_ENFORCEMENT) is on: same
+    signal name, severity high, weight 0."""
     signals: list[RiskSignal] = []
     hard_reject = False
     needs_review = False
@@ -241,6 +247,15 @@ def assess(
         elif face_match_passed is None:
             signals.append(RiskSignal("face_match_unverified", "high", weight=0.0))
             needs_review = True
+    elif face_match_passed is False and flag_face_mismatch:
+        # The session didn't ask for a face match, so a wrong face isn't
+        # proof enough to reject (a bad camera frame can miss), but it
+        # mustn't be auto-approved either: someone else's face on this
+        # student's account. Weight 0 so it can't push the score to CRITICAL.
+        signals.append(RiskSignal(
+            "face_match_failed", "high", weight=0.0, details={"face_match_required": False},
+        ))
+        needs_review = True
 
     if other_students_on_device > 0:
         # Proxy sign-in: this device checked in someone else very recently.
