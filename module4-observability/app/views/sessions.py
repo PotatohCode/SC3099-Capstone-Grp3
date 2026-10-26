@@ -13,7 +13,6 @@ import config
 import ui
 from views import export_tools
 
-NTU_LAT, NTU_LON = 1.3483, 103.6831  # default venue (CHANGES doc: test location)
 
 
 # ---------------------------------------------------------------------------
@@ -51,38 +50,89 @@ def _to_utc(day, clock: time) -> str:
     return local.astimezone(timezone.utc).replace(tzinfo=None).isoformat()
 
 
+def course_location(course: dict) -> tuple[float, float, float] | None:
+    """The course's saved classroom (lat, lon, radius), or None if it has none."""
+    if course.get("venue_latitude") is None or course.get("venue_longitude") is None:
+        return None
+    return course["venue_latitude"], course["venue_longitude"], float(course.get("geofence_radius_meters") or 100)
+
+
+def _location_section(course: dict) -> dict | None:
+    """Where students must be to check in. Returns the location fields for the
+    request ({} = use the course's location), or None if it isn't valid yet.
+
+    A session may leave its location empty: the backend then checks students
+    against the course's location. If the course has none either there'd be no
+    location check at all, so then the session's own location is required."""
+    saved = course_location(course)
+    key = course["id"]
+    st.markdown("**Location** · where students must be to check in")
+    if saved:
+        choice = st.radio(
+            "Location", ["course", "different"], key=f"loc-mode-{key}", horizontal=True,
+            label_visibility="collapsed",
+            format_func=lambda m: (f"Course location ({ui.md(course.get('venue_name') or 'classroom')})"
+                                   if m == "course" else "A different location for this session"))
+        if choice == "course":
+            lat, lon, radius = saved
+            ui.location_map(lat, lon, radius, course.get("venue_name") or "")
+            # Send no coordinates: the backend uses the course's, and follows any later fix to them.
+            return {"venue_name": course.get("venue_name")}
+    else:
+        st.warning("This course has no classroom location saved, so enter where this session takes place. "
+                   "Without a location, students could check in from anywhere.", icon="📍")
+
+    a, b, c, d = st.columns([1, 1, 0.8, 1.2])
+    lat = a.number_input("Latitude", -90.0, 90.0, value=saved[0] if saved else None, format="%.6f",
+                         placeholder="1.3483", key=f"loc-lat-{key}")
+    lon = b.number_input("Longitude", -180.0, 180.0, value=saved[1] if saved else None, format="%.6f",
+                         placeholder="103.6831", key=f"loc-lon-{key}")
+    radius = c.number_input("Radius (m)", 20, 2000, int(saved[2]) if saved else 100, step=10, key=f"loc-r-{key}")
+    venue = d.text_input("Venue name", placeholder="e.g. Exam Hall A", key=f"loc-name-{key}")
+    st.caption("Tip: in Google Maps, right-click the room's building and click the coordinates to copy them.")
+    if lat is None or lon is None:
+        st.info("Enter the latitude and longitude to see the location on the map.")
+        return None
+    if not ui.in_singapore(lat, lon):
+        st.error("Those coordinates are outside Singapore. The backend refuses check-ins from outside "
+                 "Singapore, so nobody could check in. Check the numbers (latitude first).")
+        return None
+    ui.location_map(lat, lon, radius, venue)
+    return {"venue_latitude": lat, "venue_longitude": lon, "geofence_radius_meters": float(radius),
+            "venue_name": venue.strip() or None}
+
+
 def _create_form() -> None:
     courses = ui.safe(auth.creatable_courses, default=[])
     if not courses:
         st.info("You don't manage any course yet. An admin needs to assign you to a course first.")
         return
-    with st.form("create-session", clear_on_submit=False, border=False):
-        course = ui.pick("Course", courses, ui.course_label, key="new-session-course")
-        left, right = st.columns(2)
-        name = left.text_input("Session name", placeholder="Week 9 Lecture")
-        session_type = right.selectbox("Type", ["lecture", "tutorial", "lab", "exam"])
-        now = datetime.now(config.LOCAL_TZ) + timedelta(minutes=30)
-        day = left.date_input("Date", value=now.date(), min_value=datetime.now(config.LOCAL_TZ).date())
-        start = right.time_input("Starts", value=now.time().replace(second=0, microsecond=0), step=300)
-        duration = left.number_input("Duration (minutes)", 15, 480, 120, step=15)
-        venue = right.text_input("Venue", placeholder="LT26")
-        st.markdown("**Location and security**")
-        with st.container(border=True):
-            a, b, c = st.columns(3)
-            lat = a.number_input("Venue latitude", -90.0, 90.0, NTU_LAT, format="%.4f")
-            lon = b.number_input("Venue longitude", -180.0, 180.0, NTU_LON, format="%.4f")
-            radius = c.number_input("Geofence radius (m)", 20, 2000, 100, step=10)
-            a, b, c = st.columns(3)
-            opens_before = a.number_input("Check-in opens (min before start)", 0, 120, 15, step=5)
-            closes_after = b.number_input("Check-in closes (min after start)", 5, 240, 30, step=5)
-            liveness = c.toggle("Require liveness check", value=True)
-            face = c.toggle("Require face match", value=False)
-        submitted = st.form_submit_button("Create session", type="primary")
-
-    if not submitted:
+    course = ui.pick("Course", courses, ui.course_label, key="new-session-course")
+    if not course:
         return
-    if not course or not name.strip():
-        st.warning("Choose a course and enter a session name.")
+
+    left, right = st.columns(2)
+    name = left.text_input("Session name", placeholder="Week 9 Lecture", key="new-session-name")
+    session_type = right.selectbox("Type", ["lecture", "tutorial", "lab", "exam"], key="new-session-type")
+    soon = datetime.now(config.LOCAL_TZ) + timedelta(minutes=30)
+    day = left.date_input("Date", value=soon.date(), min_value=datetime.now(config.LOCAL_TZ).date(),
+                          key="new-session-day")
+    start = right.time_input("Starts", value=soon.time().replace(second=0, microsecond=0), step=300,
+                             key="new-session-start")
+    duration = left.number_input("Duration (minutes)", 15, 480, 120, step=15, key="new-session-duration")
+    a, b = right.columns(2)
+    opens_before = a.number_input("Check-in opens (min before)", 0, 120, 15, step=5, key="new-session-opens")
+    closes_after = b.number_input("Check-in closes (min after)", 5, 240, 30, step=5, key="new-session-closes")
+    a, b = st.columns(2)
+    liveness = a.toggle("Require liveness check", value=True, key="new-session-liveness")
+    face = b.toggle("Require face match", value=False, key="new-session-face")
+
+    location = _location_section(course)
+
+    if not st.button("Create session", type="primary", disabled=location is None, key="new-session-create"):
+        return
+    if not name.strip():
+        st.warning("Enter a session name.")
         return
     start_local = datetime.combine(day, start, tzinfo=config.LOCAL_TZ)
     if start_local < datetime.now(config.LOCAL_TZ) - timedelta(minutes=5):
@@ -95,8 +145,8 @@ def _create_form() -> None:
         "scheduled_end": end_local.astimezone(timezone.utc).replace(tzinfo=None).isoformat(),
         "checkin_opens_at": (start_local - timedelta(minutes=int(opens_before))).astimezone(timezone.utc).replace(tzinfo=None).isoformat(),
         "checkin_closes_at": (start_local + timedelta(minutes=int(closes_after))).astimezone(timezone.utc).replace(tzinfo=None).isoformat(),
-        "venue_name": venue.strip() or None, "venue_latitude": lat, "venue_longitude": lon,
-        "geofence_radius_meters": float(radius), "require_liveness_check": liveness, "require_face_match": face,
+        "require_liveness_check": liveness, "require_face_match": face,
+        **{k: v for k, v in location.items() if v is not None},
     }
     created = ui.safe(api.post, "/api/v1/sessions/", body)
     if created:
@@ -119,7 +169,7 @@ ACTIONS = {
 
 @st.dialog("Confirm")
 def _confirm_status(session: dict, new_status: str, message: str) -> None:
-    st.write(f"**{session['name']}** → {ui.status_label(new_status)}")
+    st.write(f"**{ui.md(session['name'])}** → {ui.status_label(new_status)}")
     st.caption(message)
     left, right = st.columns(2)
     if left.button("Confirm", type="primary", use_container_width=True):
@@ -134,13 +184,34 @@ def _confirm_status(session: dict, new_status: str, message: str) -> None:
 # One session
 # ---------------------------------------------------------------------------
 
+def _session_location(session: dict) -> None:
+    """Where check-ins are measured: the session's own location, else the
+    course's (same rule as the backend's services/geofencing.py)."""
+    if session.get("venue_latitude") is not None and session.get("venue_longitude") is not None:
+        radius = session.get("geofence_radius_meters")
+        if radius is None:
+            course = ui.safe(api.get, f"/api/v1/courses/{session['course_id']}") or {}
+            radius = course.get("geofence_radius_meters") or 100
+        st.caption("This session's own location.")
+        ui.location_map(session["venue_latitude"], session["venue_longitude"], float(radius),
+                        session.get("venue_name") or "")
+        return
+    course = ui.safe(api.get, f"/api/v1/courses/{session['course_id']}") or {}
+    saved = course_location(course)
+    if saved:
+        st.caption(f"Uses the course's location ({ui.md(course.get('venue_name') or 'classroom')}).")
+        ui.location_map(*saved, course.get("venue_name") or "")
+    else:
+        st.warning("Neither this session nor its course has a location, so students' locations "
+                   "aren't checked against a classroom.", icon="📍")
+
 def _session_detail(session: dict) -> None:
-    st.subheader(session["name"], anchor=False)
+    st.subheader(ui.md(session["name"]), anchor=False)
     st.caption(
-        f"{session.get('course_code') or ''} · {session.get('session_type', '').title()} · "
+        f"{ui.md(session.get('course_code'))} · {session.get('session_type', '').title()} · "
         f"{ui.fmt_time(session.get('scheduled_start'))} → {ui.fmt_time(session.get('scheduled_end'), '%H:%M')} · "
         f"check-in {ui.fmt_time(session.get('checkin_opens_at'), '%H:%M')}–{ui.fmt_time(session.get('checkin_closes_at'), '%H:%M')}"
-        f"{' · ' + session['venue_name'] if session.get('venue_name') else ''}"
+        f"{' · ' + ui.md(session['venue_name']) if session.get('venue_name') else ''}"
     )
     status_col, *buttons = st.columns([2, 1, 1])
     status_col.markdown(f"Status: **{ui.status_label(session.get('status'))}**")
@@ -208,6 +279,9 @@ def _session_detail(session: dict) -> None:
             st.page_link(st.session_state.pages["review"], label=f"Review {stats['flagged_count']} flagged check-in(s) →")
 
     ui.live(live_part)
+
+    with st.expander("Location"):
+        _session_location(session)
 
     with st.expander("Export this session"):
         export_tools.session_export(session)

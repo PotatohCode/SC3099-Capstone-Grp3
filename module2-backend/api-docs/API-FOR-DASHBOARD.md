@@ -3,7 +3,7 @@
 Read [API-CONVENTIONS.md](API-CONVENTIONS.md) first (auth, error format,
 pagination). **Your tasks:** the Module 4 table in
 [CHANGES-2026-10-01.md](CHANGES-2026-10-01.md). **Why things changed:**
-[CHANGELOG.md](CHANGELOG.md). Last updated 2026-10-23.
+[CHANGELOG.md](CHANGELOG.md). Last updated 2026-10-26.
 
 This covers the `/stats/*` analytics, `/export/*` data export, `/audit/*`
 compliance log, and `/metrics` for Prometheus/Grafana. Everything here needs
@@ -65,6 +65,10 @@ window only).
 - **`flagged_pending` / `flagged_pending_review` count `flagged` only.**
   The review queue (`GET /checkins/flagged`) also includes `appealed`
   rows, so its `total` can be higher.
+- A wrong face on a session that doesn't require a face match is
+  `flagged` (not approved), so it adds to `flagged_pending` and lowers
+  `approval_rate` until reviewed. Attendance rates don't change: flagged
+  counts as attended.
 
 **Attendance rate, everywhere in this file:** attended ÷ enrolled students,
 where "attended" means a check-in that isn't `rejected` (blocked fraud).
@@ -207,7 +211,7 @@ Useful `details` fields:
 | Action | `details` |
 |---|---|
 | `checkin_approved` / `_flagged` / `_rejected` | `risk_score`, **`risk_level`** (LOW/MEDIUM/HIGH/CRITICAL), `status` |
-| `security_violation` | **`violation_type`**: `account_lockout`, `outside_singapore`, `geo_out_of_bounds`, `liveness_failed`, `face_match_failed`, `replay_suspected`, `impossible_travel`, `gps_spoof_suspected`, `rapid_succession`, `challenge_reuse` (a liveness challenge used twice or by another student; `details.reason` = `reused` / `other_student`), `liveness_spoof` (a liveness attempt judged a spoof), `challenge_frames_mismatch` (a check-in named a verified challenge but sent different frames) |
+| `security_violation` | **`violation_type`**: `account_lockout`, `outside_singapore`, `geo_out_of_bounds`, `liveness_failed`, `face_match_failed` (a wrong face on any session: rejected if the session requires a face match, flagged otherwise), `replay_suspected`, `impossible_travel`, `gps_spoof_suspected`, `rapid_succession`, `challenge_reuse` (a liveness challenge used twice or by another student; `details.reason` = `reused` / `other_student`), `liveness_spoof` (a liveness attempt judged a spoof), `challenge_frames_mismatch` (a check-in named a verified challenge but sent different frames) |
 | `checkin_rejected_geo` | `reason` (`ip`/`gps`/`gps_and_ip`), `gps_in_singapore`, `ip_country` (no coordinates) |
 | `account_locked` | `failed_attempts`, `lockout_minutes` (wrong passwords at login and on the change-password page count together) |
 | `login_failed` | `email`, or `reason: "account_locked"` |

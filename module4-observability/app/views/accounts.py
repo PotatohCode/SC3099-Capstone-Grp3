@@ -107,13 +107,13 @@ def _single() -> None:
         ui.show_error(err)
         return
     if errors:
-        st.error(f"{email}: {errors[0]['error']}")
+        st.error(f"{ui.md(email)}: {ui.md(errors[0]['error'])}")
         return
-    st.success(f"Created {role} account for {email}. Share the temporary password with them privately.")
+    st.success(f"Created {role} account for {ui.md(email)}. Share the temporary password with them privately.")
     if course and role in {"student", "ta"}:
         result = _enrol(course["id"], [email])
         if result and result.get("enrolled"):
-            st.success(f"Enrolled in {ui.course_label(course)}.")
+            st.success(f"Enrolled in {ui.md(ui.course_label(course))}.")
 
 
 def _csv_import() -> None:
@@ -167,12 +167,12 @@ def _csv_import() -> None:
         emails = [u["email"] for u in created if u.get("role") in {"student", "ta"}]
         result = _enrol(course["id"], emails)
         if result:
-            st.success(f"Enrolled {result.get('enrolled', 0)} in {ui.course_label(course)}.")
+            st.success(f"Enrolled {result.get('enrolled', 0)} in {ui.md(ui.course_label(course))}.")
 
 
 @st.dialog("Remove from course")
 def _confirm_remove(row: dict, course: dict) -> None:
-    st.write(f"Remove **{row['student_name']}** ({row['student_email']}) from **{ui.course_label(course)}**?")
+    st.write(f"Remove **{ui.md(row['student_name'])}** ({ui.md(row['student_email'])}) from **{ui.md(ui.course_label(course))}**?")
     st.caption("Their past check-ins are kept. You can enrol them again later.")
     left, right = st.columns(2)
     if left.button("Remove", type="primary", use_container_width=True):
@@ -206,11 +206,14 @@ def _roster() -> None:
 
     roster = ui.safe(api.get, f"/api/v1/enrollments/course/{course['id']}") or {}
     rows = roster.get("students", [])
-    st.markdown(f"**{len(rows)} enrolled** (assigned TAs are listed here too)")
+    tas = sum(1 for r in rows if r.get("role") == "ta")
+    st.markdown(f"**{len(rows) - tas} students** and **{tas} TA(s)** enrolled")
     if not rows:
         return
     frame = pd.DataFrame([{
-        "Name": r["student_name"], "Email": r["student_email"], "Enrolled": r.get("enrolled_at"),
+        "Name": r["student_name"], "Email": r["student_email"],
+        "Role": "TA" if r.get("role") == "ta" else (r.get("role") or "student").title(),
+        "Enrolled": r.get("enrolled_at"),
         "Face enrolled": r.get("face_enrolled"),
     } for r in rows])
     ui.local_datetime_column(frame, "Enrolled")

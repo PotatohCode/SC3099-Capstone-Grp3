@@ -30,7 +30,7 @@
       },
       "options": {
         "mode": "markdown",
-        "content": "**SAIV · System Health** — technical metrics. Face-service panels fill in automatically once Module 3 exposes `GET /metrics` (metric names listed in `module4-observability/README.md`)."
+        "content": "**SAIV · System Health** — technical metrics for the backend and the face service (Module 3's `GET /metrics`; metric names in `module4-observability/README.md`)."
       }
     },
     {
@@ -692,7 +692,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(http_request_duration_seconds_count{status_code=~\"4..\"}[5m])) / sum(rate(http_request_duration_seconds_count[5m]))",
+          "expr": "(sum(rate(http_request_duration_seconds_count{status_code=~\"4..\"}[5m])) or vector(0)) / sum(rate(http_request_duration_seconds_count[5m]))",
           "legendFormat": "4xx (client)",
           "refId": "A",
           "range": true,
@@ -703,7 +703,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(http_request_duration_seconds_count{status_code=~\"5..\"}[5m])) / sum(rate(http_request_duration_seconds_count[5m]))",
+          "expr": "(sum(rate(http_request_duration_seconds_count{status_code=~\"5..\"}[5m])) or vector(0)) / sum(rate(http_request_duration_seconds_count[5m]))",
           "legendFormat": "5xx (server)",
           "refId": "B",
           "range": true,
@@ -866,7 +866,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (endpoint) (rate(face_requests_total[5m]))",
+          "expr": "sum by (endpoint) (rate(face_requests_total{endpoint!=\"/metrics\"}[5m]))",
           "legendFormat": "{{endpoint}}",
           "refId": "A",
           "range": true,
@@ -925,7 +925,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum by (le, endpoint) (rate(face_request_duration_seconds_bucket[5m])))",
+          "expr": "histogram_quantile(0.95, sum by (le, endpoint) (rate(face_request_duration_seconds_bucket{endpoint!=\"/metrics\"}[5m])))",
           "legendFormat": "{{endpoint}}",
           "refId": "A",
           "range": true,
@@ -966,8 +966,8 @@
     {
       "id": 16,
       "type": "bargauge",
-      "title": "Face checks (selected time range)",
-      "description": "",
+      "title": "Face checks (since the face service started)",
+      "description": "Counters reset when the face service restarts.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -984,7 +984,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(increase(face_verify_total{result=\"match\"}[$__range]))",
+          "expr": "sum(face_verify_total{result=\"match\"}) or vector(0)",
           "legendFormat": "Verify · match",
           "refId": "A",
           "range": false,
@@ -995,7 +995,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(increase(face_verify_total{result=\"no_match\"}[$__range]))",
+          "expr": "sum(face_verify_total{result=\"no_match\"}) or vector(0)",
           "legendFormat": "Verify · no match",
           "refId": "B",
           "range": false,
@@ -1006,8 +1006,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(increase(liveness_checks_total{result=\"pass\"}[$__range]))",
-          "legendFormat": "Liveness · pass",
+          "expr": "sum(face_verify_total{result=\"not_compared\"}) or vector(0)",
+          "legendFormat": "Verify · not compared",
           "refId": "C",
           "range": false,
           "instant": true
@@ -1017,8 +1017,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(increase(liveness_checks_total{result=\"fail\"}[$__range]))",
-          "legendFormat": "Liveness · fail",
+          "expr": "sum(liveness_checks_total{result=\"pass\"}) or vector(0)",
+          "legendFormat": "Liveness · pass",
           "refId": "D",
           "range": false,
           "instant": true
@@ -1028,9 +1028,31 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(increase(face_enroll_total[$__range]))",
-          "legendFormat": "Enrolments",
+          "expr": "sum(liveness_checks_total{result=\"fail\"}) or vector(0)",
+          "legendFormat": "Liveness · fail",
           "refId": "E",
+          "range": false,
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(liveness_checks_total{result=\"not_assessed\"}) or vector(0)",
+          "legendFormat": "Liveness · not assessed",
+          "refId": "F",
+          "range": false,
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(face_enroll_total) or vector(0)",
+          "legendFormat": "Enrolments",
+          "refId": "G",
           "range": false,
           "instant": true
         }
@@ -1080,6 +1102,21 @@
           {
             "matcher": {
               "id": "byName",
+              "options": "Verify · not compared"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
               "options": "Liveness · pass"
             },
             "properties": [
@@ -1103,6 +1140,21 @@
                 "value": {
                   "mode": "fixed",
                   "fixedColor": "red"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Liveness · not assessed"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "text"
                 }
               }
             ]

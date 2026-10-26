@@ -18,15 +18,29 @@ Recommended Libraries:
 """
 
 import base64
+import functools
+import os
+import re
+import threading
+import time
 from io import BytesIO
 
 import face_recognition
 import mediapipe as mp
 import numpy as np
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
+from prometheus_client import (
+    CONTENT_TYPE_LATEST,
+    CollectorRegistry,
+    Counter,
+    Histogram,
+    generate_latest,
+    multiprocess,
+)
 from pydantic import BaseModel
+from starlette.middleware.base import BaseHTTPMiddleware
 from typing import Optional, Dict, List, Any
 
 app = FastAPI(
@@ -42,6 +56,108 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# =============================================================================
+# METRICS (GET /metrics, scraped by module4-observability/prometheus.yml)
+# =============================================================================
+#
+# Names and labels follow the spec in module4-observability/README.md ("Face
+# service metrics (for Module 3)"), which its System Health dashboard
+# queries. Don't rename without checking that dashboard. Extra label values
+# (not_compared, not_assessed) don't break its queries.
+#
+# None of these reuse the backend's http_request_duration_seconds: the same
+# dashboard sums that name across every scrape job, so face-service latency
+# would be mixed into the backend's API panels.
+#
+# Each uvicorn worker process keeps its own counters, and a scrape reaches only
+# one worker. When PROMETHEUS_MULTIPROC_DIR is set (the Dockerfile sets it),
+# prometheus_client writes every worker's values into that folder and /metrics
+# reports their sum. Without it (e.g. a local single-process run), the normal
+# in-process registry is used.
+
+face_requests_total = Counter(
+    "face_requests_total", "Face service requests", ["endpoint", "status"],
+)
+face_request_duration_seconds = Histogram(
+    "face_request_duration_seconds",
+    "Face service request latency in seconds",
+    ["endpoint"],
+    # 5 s and 15 s are the backend's timeouts (single image / frame burst).
+    buckets=(0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 15, 30, 60),
+)
+face_verify_total = Counter(
+    "face_verify_total", "Face verifications; result = match / no_match / not_compared", ["result"],
+)
+liveness_checks_total = Counter(
+    "liveness_checks_total", "Liveness checks; result = pass / fail / not_assessed", ["result"],
+)
+face_enroll_total = Counter("face_enroll_total", "Successful face enrollments")
+
+
+class MetricsMiddleware(BaseHTTPMiddleware):
+    """
+    Records face_requests_total and face_request_duration_seconds for every
+    request. The endpoint label is the route template (e.g. "/face/verify"),
+    not the raw URL, and requests that match no route are labelled
+    "unmatched", so random URLs can't create unbounded label values.
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        start = time.perf_counter()
+        response = await call_next(request)
+        route = request.scope.get("route")
+        endpoint = getattr(route, "path", None) or "unmatched"
+        face_requests_total.labels(endpoint=endpoint, status=str(response.status_code)).inc()
+        face_request_duration_seconds.labels(endpoint=endpoint).observe(time.perf_counter() - start)
+        return response
+
+
+app.add_middleware(MetricsMiddleware)
+
+
+def _record_result(record):
+    """
+    Decorator for a sync endpoint: once it returns, call record(response) to
+    update the outcome counters. This keeps counting out of the endpoints'
+    many early returns. functools.wraps preserves the endpoint's signature
+    and docstring, which FastAPI reads for request parsing and /docs.
+    """
+    def decorator(endpoint):
+        @functools.wraps(endpoint)
+        def wrapper(*args, **kwargs):
+            response = endpoint(*args, **kwargs)
+            record(response)
+            return response
+        return wrapper
+    return decorator
+
+
+def _record_enroll(response):
+    if response.enrollment_successful:
+        face_enroll_total.inc()
+
+
+def _record_verify(response):
+    result = {True: "match", False: "no_match"}.get(response.match_passed, "not_compared")
+    face_verify_total.labels(result=result).inc()
+
+
+def _record_liveness(response):
+    """
+    One verdict per check, the way the backend reads it (checkins.py
+    _classify_liveness): fail if the anti-spoof check or the challenge
+    failed; pass if liveness passed and, for a burst with a challenge, the
+    challenge was actually judged; otherwise not_assessed.
+    """
+    if response.liveness_passed is False or response.challenge_passed is False:
+        result = "fail"
+    elif response.liveness_passed is True and response.details.get("challenge") != "insufficient_frames":
+        result = "pass"
+    else:
+        result = "not_assessed"
+    liveness_checks_total.labels(result=result).inc()
 
 
 # =============================================================================
@@ -71,7 +187,9 @@ class FaceVerifyRequest(BaseModel):
 
 class FaceVerifyResponse(BaseModel):
     """Response model for face verification."""
-    match_passed: bool
+    # None when no comparison happened (undecodable image, no face, invalid
+    # reference hash): module2 hard-rejects on False for face-required sessions.
+    match_passed: Optional[bool]
     match_score: float  # 0.0 to 1.0
     match_threshold: float  # Default: 0.70
     face_detected: bool
@@ -79,9 +197,19 @@ class FaceVerifyResponse(BaseModel):
 
 
 class LivenessRequest(BaseModel):
-    """Request model for liveness check."""
-    challenge_response: str  # Base64 encoded image
-    challenge_type: str = "blink"  # blink, head_turn, passive
+    """
+    Request model for liveness check. Two shapes, per
+    module2-backend/api-docs/API-FOR-FACE-RECOGNITION.md §3:
+    (a) single image: challenge_response only (the course's public tests);
+    (b) frame burst: `frames` (1-30, oldest first, raw/not mirrored), plus
+        `challenge_sequence` when the backend issued a challenge.
+    """
+    challenge_response: str  # Base64 encoded image (in shape (b): the middle frame or a separate photo)
+    # "passive", "sequence" (backend-issued challenge) or any client label;
+    # free text on purpose - the backend forwards labels it doesn't validate.
+    challenge_type: str = "blink"
+    frames: Optional[List[str]] = None
+    challenge_sequence: Optional[List[str]] = None  # e.g. ["blink", "turn_left"]
 
 
 class LivenessResponse(BaseModel):
@@ -97,6 +225,14 @@ class LivenessResponse(BaseModel):
     liveness_threshold: float  # Default: 0.60
     face_embedding_hash: str
     details: Dict[str, Any]
+    # Frame bursts with a challenge_sequence only (None otherwise):
+    # were all steps performed, in order? None = couldn't tell (the backend
+    # treats it as unverified). False lets the student retry, so only send it
+    # when the steps clearly weren't done.
+    challenge_passed: Optional[bool] = None
+    # One entry per step in sequence order; the backend tells the student to
+    # redo the first False one.
+    steps_passed: Optional[List[bool]] = None
 
 
 class GeolocationData(BaseModel):
@@ -137,6 +273,21 @@ async def health_check():
     return {"status": "healthy", "service": "SAIV Face Recognition & Risk Service"}
 
 
+@app.get("/metrics")
+async def metrics():
+    """
+    Prometheus metrics (see the METRICS section above). A plain route, as in
+    module2-backend, rather than mounting prometheus_client's ASGI app:
+    Starlette's Mount redirects /metrics to /metrics/, which a scraper may not
+    follow. Sums all worker processes when PROMETHEUS_MULTIPROC_DIR is set.
+    """
+    if os.environ.get("PROMETHEUS_MULTIPROC_DIR"):
+        registry = CollectorRegistry()
+        multiprocess.MultiProcessCollector(registry)
+        return Response(content=generate_latest(registry), media_type=CONTENT_TYPE_LATEST)
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
 @app.get("/")
 async def root():
     """
@@ -159,6 +310,7 @@ async def root():
             "/face/match",
             "/liveness/check",
             "/risk/assess",
+            "/metrics",
         ]
     }
 
@@ -173,7 +325,8 @@ _QUALITY_FACE_AREA_RATIO_TARGET = 0.15  # face covering ~15% of frame -> full ma
 
 
 @app.post("/face/enroll", response_model=FaceEnrollResponse, status_code=201)
-async def enroll_face(request: FaceEnrollRequest):
+@_record_result(_record_enroll)
+def enroll_face(request: FaceEnrollRequest):
     """
     Enroll a user's face for future verification.
 
@@ -290,7 +443,8 @@ async def enroll_face(request: FaceEnrollRequest):
 # =============================================================================
 
 @app.post("/face/verify", response_model=FaceVerifyResponse)
-async def verify_face(request: FaceVerifyRequest):
+@_record_result(_record_verify)
+def verify_face(request: FaceVerifyRequest):
     """
     Verify a face against an enrolled template.
 
@@ -314,8 +468,12 @@ async def verify_face(request: FaceVerifyRequest):
     graceful-degrade contract (API-FOR-FACE-RECOGNITION.md: on failure
     they set face_match_passed/score to None without failing the
     check-in). decode failures, no detection, and no usable embedding are
-    all treated the same way: face_detected=False, match_passed=False,
-    match_score=0.0, current_template_hash="".
+    all treated the same way: face_detected=False, match_passed=None,
+    match_score=0.0, current_template_hash="". None, not False:
+    API-FOR-FACE-RECOGNITION.md reserves False for "compared two faces and
+    they differ" - module2 reads only match_passed and hard-rejects on False
+    for face-required sessions, so a blurry photo must not look like a
+    different person. tests/public's no-face test accepts face_detected=False.
 
     match_passed is decided directly against dlib's own documented
     threshold (_DLIB_EUCLIDEAN_MATCH_THRESHOLD = 0.6 euclidean distance),
@@ -340,14 +498,15 @@ async def verify_face(request: FaceVerifyRequest):
     A reference_template_hash that isn't a valid 64-char hex SimHash
     (e.g. empty string, from a user who never successfully enrolled, or
     not valid hex) can't be compared - _hamming_distance raises
-    ValueError, treated as "no match" (match_score=0.0) rather than a
-    crash, since it's an expected data state, not a service failure.
+    ValueError, treated as "couldn't compare" (match_passed=None,
+    match_score=0.0) rather than a crash, since it's an expected data
+    state, not a service failure.
     """
     try:
         image_array = decode_base64_image(request.image)
     except ValueError:
         return FaceVerifyResponse(
-            match_passed=False,
+            match_passed=None,
             match_score=0.0,
             match_threshold=0.70,
             face_detected=False,
@@ -357,7 +516,7 @@ async def verify_face(request: FaceVerifyRequest):
     detection = detect_face(image_array)
     if detection is None:
         return FaceVerifyResponse(
-            match_passed=False,
+            match_passed=None,
             match_score=0.0,
             match_threshold=0.70,
             face_detected=False,
@@ -367,7 +526,7 @@ async def verify_face(request: FaceVerifyRequest):
     embedding = extract_face_embedding(image_array, detection)
     if embedding is None:
         return FaceVerifyResponse(
-            match_passed=False,
+            match_passed=None,
             match_score=0.0,
             match_threshold=0.70,
             face_detected=False,
@@ -384,7 +543,7 @@ async def verify_face(request: FaceVerifyRequest):
         match_passed = bool(estimated_euclidean <= _DLIB_EUCLIDEAN_MATCH_THRESHOLD)
         match_score = max(0.0, 1 - estimated_euclidean / 2.0)
     except ValueError:
-        match_passed = False
+        match_passed = None
         match_score = 0.0
 
     return FaceVerifyResponse(
@@ -397,12 +556,12 @@ async def verify_face(request: FaceVerifyRequest):
 
 
 @app.post("/face/match")
-async def match_face(request: FaceVerifyRequest):
+def match_face(request: FaceVerifyRequest):
     """
     Legacy face matching endpoint. Redirects to /face/verify.
     Kept for backwards compatibility.
     """
-    return await verify_face(request)
+    return verify_face(request)
 
 
 # =============================================================================
@@ -410,7 +569,8 @@ async def match_face(request: FaceVerifyRequest):
 # =============================================================================
 
 @app.post("/liveness/check", response_model=LivenessResponse)
-async def check_liveness(request: LivenessRequest):
+@_record_result(_record_liveness)
+def check_liveness(request: LivenessRequest):
     """
     Perform liveness detection on submitted image.
 
@@ -460,10 +620,10 @@ async def check_liveness(request: LivenessRequest):
     REQUIRED-tier signals), so treat the equal 25% split as a reasonable
     default open to adjustment.
 
-    Every challenge_type is handled identically (single-image analysis) -
-    see detect_blink's docstring for why "blink" specifically can't be
-    genuinely implemented against a single image. challenge_type is
-    accepted but otherwise unused.
+    Request shape (a), a single image, is scored this way whatever its
+    challenge_type: one image can't show a blink or a head turn. Shape (b),
+    a frame burst (`frames` present), goes to _check_liveness_burst
+    instead; see there.
 
     "No face detected" and image-decode failure both return with no
     HTTPException raised (this docstring's own step 3 already says
@@ -479,6 +639,9 @@ async def check_liveness(request: LivenessRequest):
     blurry or badly-angled photo, not necessarily a spoofing attempt).
     There's nothing to hash either way, so face_embedding_hash is "".
     """
+    if request.frames:
+        return _check_liveness_burst(request)
+
     try:
         image_array = decode_base64_image(request.challenge_response)
     except ValueError:
@@ -489,7 +652,15 @@ async def check_liveness(request: LivenessRequest):
             face_embedding_hash="",
             details={"face_detected": False, "reason": "invalid_image"},
         )
+    return _passive_liveness(image_array)
 
+
+def _passive_liveness(image_array) -> LivenessResponse:
+    """
+    Single-image liveness on a decoded image: the scoring described in
+    check_liveness's docstring. Used for request shape (a), and in a frame
+    burst on its most front-facing frame.
+    """
     detection = detect_face(image_array)
     if detection is None:
         return LivenessResponse(
@@ -530,6 +701,65 @@ async def check_liveness(request: LivenessRequest):
             "depth_quality": mesh_result["depth_quality"],
         },
     )
+
+
+def _check_liveness_burst(request: LivenessRequest) -> LivenessResponse:
+    """
+    Request shape (b): a burst of frames, per
+    module2-backend/api-docs/API-FOR-FACE-RECOGNITION.md §3.
+
+    - Frames that won't decode are skipped rather than failing the request:
+      a 4xx would only make the backend treat this attempt as unverified.
+    - Each frame gets its head yaw (_frame_features). The passive check runs
+      on the most front-facing frame, not on challenge_response: that field
+      is the burst's middle frame (which can catch the head mid-turn) or,
+      if the client also sent one, a separate photo.
+    - liveness_passed: true when the passive score passes, otherwise None,
+      never False. The backend treats False as a spoof (check-in rejected,
+      no more attempts), and a low passive score on a webcam frame isn't
+      evidence of one.
+    - challenge_passed / steps_passed: from evaluate_challenge when the
+      backend sent a challenge_sequence; None otherwise (a burst without a
+      challenge has nothing to check the movements against).
+    """
+    decoded = []  # (index in request.frames, image)
+    for index, frame in enumerate(request.frames):
+        try:
+            decoded.append((index, decode_base64_image(frame)))
+        except ValueError:
+            continue
+    features = [(index, image, _frame_features(image)) for index, image in decoded]
+    with_face = [(index, image, f) for index, image, f in features if f is not None]
+    burst_details = {
+        "frames_received": len(request.frames),
+        "frames_decoded": len(decoded),
+        "frames_with_face": len(with_face),
+    }
+
+    challenge_passed, steps_passed = None, None
+    if request.challenge_sequence:
+        challenge_passed, steps_passed = evaluate_challenge([f for _, _, f in features], request.challenge_sequence)
+        burst_details["challenge"] = "insufficient_frames" if steps_passed is None else "evaluated"
+    else:
+        burst_details["challenge"] = "no_sequence"
+
+    if not with_face:
+        return LivenessResponse(
+            liveness_passed=None,
+            liveness_score=0.0,
+            liveness_threshold=0.60,
+            face_embedding_hash="",
+            details={"face_detected": False, "reason": "no_face_in_frames", **burst_details},
+        )
+
+    frontal_index, frontal_image, _ = min(with_face, key=lambda item: abs(item[2]["yaw"]))
+    response = _passive_liveness(frontal_image)
+    if response.liveness_passed is False:
+        response.liveness_passed = None
+    response.challenge_passed = challenge_passed
+    response.steps_passed = steps_passed
+    response.details.update(burst_details, frontal_frame_index=frontal_index)
+    return response
 
 
 # =============================================================================
@@ -626,6 +856,12 @@ async def assess_risk(request: RiskAssessRequest):
     Recommendations reuse the exact strings from
     docs/API-SPECIFICATION.md's "Recommendations Logic" section, since
     that's the only place specific wording is given.
+
+    `async def`, unlike the image endpoints: it's pure arithmetic with no
+    blocking calls, so it runs directly on the event loop. As a sync
+    handler it needed a thread-pool thread, and under load every thread
+    was taken by image requests queued on _model_lock, so this took
+    seconds instead of milliseconds.
     """
     def _signal_risk(score: Optional[float]) -> float:
         return 1 - max(0.0, min(1.0, score)) if score is not None else 0.0
@@ -719,7 +955,12 @@ def decode_base64_image(base64_string: str) -> np.ndarray:
     Implemented: raises ValueError if the string isn't valid base64, or
     doesn't decode to a readable image. Callers (the endpoint handlers)
     are responsible for turning that into the appropriate HTTP error.
+
+    Whitespace (spaces, line breaks) is removed before decoding: base64
+    wrapped across lines is still valid data, but validate=True rejects it,
+    which made /face/verify report "couldn't compare" for a good photo.
     """
+    base64_string = "".join((base64_string or "").split())
     if not base64_string:
         raise ValueError("Image data is empty")
 
@@ -731,6 +972,35 @@ def decode_base64_image(base64_string: str) -> np.ndarray:
         raise ValueError(f"Could not decode image: {exc}") from exc
 
     return np.array(image)
+
+
+# --- Shared face models (one set per process) ---
+#
+# The route handlers are plain `def`, so FastAPI runs them on a thread pool
+# (~40 threads) and quick endpoints like /risk/assess no longer wait behind
+# image work. The face models themselves, though, are used by one request at
+# a time per process, under _model_lock:
+# - dlib (via face_recognition) is ~95% of each request's time and its models
+#   are module-level objects that aren't safe to call from several threads at
+#   once, so it was going to be one-at-a-time anyway.
+# - MediaPipe solution objects aren't thread-safe either. An earlier version
+#   gave each thread its own copy instead; under load that built dozens of
+#   models at once after a restart (100 parallel requests hung for 120s) and
+#   left ~40 threads competing for the CPU, which delayed every response.
+# Threads waiting on the lock are idle, so the server stays responsive.
+# Running several requests at once comes from uvicorn worker processes
+# (WEB_CONCURRENCY in the Dockerfile), each with its own models and lock.
+_model_lock = threading.Lock()
+_face_detector = mp.solutions.face_detection.FaceDetection(model_selection=0, min_detection_confidence=0.5)
+_face_mesh_static = mp.solutions.face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1, min_detection_confidence=0.5)
+# Frame bursts only (_frame_features): refine_landmarks tracks the eyelids far
+# more closely. Measured on real recordings, a blink's lowest EAR dropped to a
+# median 0.21 of open (squints 0.37-0.53) vs 0.69 with the standard mesh
+# (squints 0.70-0.80, overlapping blinks). ~1 ms more per frame. The passive
+# check and single images keep _face_mesh_static, so their scores don't change.
+_face_mesh_refined = mp.solutions.face_mesh.FaceMesh(
+    static_image_mode=True, max_num_faces=1, min_detection_confidence=0.5, refine_landmarks=True
+)
 
 
 def detect_face(image_array):
@@ -747,11 +1017,11 @@ def detect_face(image_array):
     Implemented: uses mediapipe.solutions.face_detection.FaceDetection with
     min_detection_confidence=0.5. Returns the highest-confidence detection
     result (with its confidence score), or None if no face was detected.
+    Uses the process-wide _face_detector under _model_lock (built once at
+    import) rather than constructing a detector on every call.
     """
-    with mp.solutions.face_detection.FaceDetection(
-        model_selection=0, min_detection_confidence=0.5
-    ) as face_detector:
-        results = face_detector.process(image_array)
+    with _model_lock:
+        results = _face_detector.process(image_array)
 
     if not results.detections:
         return None
@@ -813,27 +1083,52 @@ def extract_face_embedding(image_array, detection):
     were tried first and both empirically failed to discriminate real
     people, which a purpose-trained embedding actually does.
 
-    `detection` (from detect_face) is accepted for interface consistency
-    with the rest of the pipeline (enroll_face/verify_face/check_liveness
-    all call this the same way, and enroll_face's quality_score still
-    needs MediaPipe's detection separately) but isn't used here -
-    face_recognition.face_encodings() runs its own internal face
-    detector rather than accepting a pre-computed bounding box. This
-    means detection effectively runs twice (MediaPipe once, dlib once)
-    per request, which is wasteful but deliberately kept simple and
-    matches exactly what was empirically validated before switching -
-    optimizing that away (e.g. by passing detection's bounding box in as
-    known_face_locations) is a reasonable later improvement, not done
-    here to avoid changing two things at once.
+    `detection` (from detect_face) supplies the face box: it's passed to
+    face_recognition.face_encodings() as known_face_locations, so dlib
+    skips its own face detector, which was ~60-85% of each request's time
+    (0.8-2.3s per image vs a steady ~0.35s with the box). Measured on the
+    sample images before switching: same-person distances stayed at
+    0.33-0.43 and obama-vs-biden at 0.81-0.87 (threshold 0.6), and the same
+    image's embedding moved only 0.04-0.07 between the two box sources, so
+    templates enrolled with dlib's own detector still match. If MediaPipe's
+    box is unusable (degenerate after clamping to the image), dlib's own
+    detector is used as before.
 
-    Returns None if dlib's own detector can't find/encode a face (can
-    happen even when MediaPipe's detect_face already succeeded, since
-    they're different detectors and can disagree).
+    Returns None if no face can be encoded.
+
+    The dlib call runs under _model_lock, since its models are shared
+    module-level objects that aren't safe to use from several threads at
+    once.
     """
-    encodings = face_recognition.face_encodings(image_array)
+    face_box = _dlib_face_box(image_array, detection)
+    with _model_lock:
+        if face_box is not None:
+            encodings = face_recognition.face_encodings(image_array, known_face_locations=[face_box])
+        else:
+            encodings = face_recognition.face_encodings(image_array)
     if not encodings:
         return None
     return encodings[0]
+
+
+def _dlib_face_box(image_array, detection):
+    """
+    Convert a MediaPipe detection into dlib's (top, right, bottom, left) pixel
+    box, clamped to the image. MediaPipe gives a box relative to image size
+    that can extend past the edges for faces partly out of frame. Returns
+    None if there's no detection or the clamped box has no area.
+    """
+    if detection is None:
+        return None
+    height, width = image_array.shape[:2]
+    box = detection.location_data.relative_bounding_box
+    top = max(0, int(box.ymin * height))
+    left = max(0, int(box.xmin * width))
+    bottom = min(height, int((box.ymin + box.height) * height))
+    right = min(width, int((box.xmin + box.width) * width))
+    if bottom <= top or right <= left:
+        return None
+    return (top, right, bottom, left)
 
 
 def generate_face_hash(embedding) -> str:
@@ -925,12 +1220,11 @@ def analyze_face_mesh(image_array):
     function's own docstring is the more direct instruction for it.
     Runs on the full image (not a pre-cropped region), unlike
     extract_face_embedding, since check_liveness calls this directly on
-    the decoded image.
+    the decoded image. Uses the process-wide _face_mesh_static under
+    _model_lock (built once at import).
     """
-    with mp.solutions.face_mesh.FaceMesh(
-        static_image_mode=True, max_num_faces=1, min_detection_confidence=0.5
-    ) as face_mesh:
-        results = face_mesh.process(image_array)
+    with _model_lock:
+        results = _face_mesh_static.process(image_array)
 
     if not results.multi_face_landmarks:
         return {
@@ -960,7 +1254,138 @@ def analyze_face_mesh(image_array):
     }
 
 
-def detect_blink(face_mesh_landmarks):
+# MediaPipe FaceMesh landmark indices
+_NOSE_TIP = 1
+_FACE_EDGES = (234, 454)  # outermost cheek point on each side of the face
+# Per eye, the six points of the eye-aspect-ratio formula (Soukupova & Cech
+# 2016): outer corner, two upper-lid points, inner corner, two lower-lid
+# points.
+_EYES = ((33, 160, 158, 133, 153, 144), (362, 385, 387, 263, 373, 380))
+
+
+def _eye_aspect_ratio(points):
+    """
+    Height of the eye opening over its width, from six pixel points
+    (p1..p6 as in _EYES): roughly 0.25-0.35 open, under 0.15 closed.
+    """
+    p1, p2, p3, p4, p5, p6 = points
+    width = np.linalg.norm(p1 - p4)
+    if width == 0:
+        return 0.0
+    return float((np.linalg.norm(p2 - p6) + np.linalg.norm(p3 - p5)) / (2 * width))
+
+
+def _frame_features(image_array):
+    """
+    Per-frame measurements for a frame burst, or None if FaceMesh finds no
+    face in the frame.
+
+    yaw: horizontal offset of the nose tip from the midpoint between the two
+    face edges, divided by the face's width. About 0 when facing the camera,
+    positive when the nose points toward the image's right (see
+    _YAW_SIGN_STUDENT_LEFT for which way that is for the student). A 2D ratio
+    rather than a full 3D pose estimate: comparing turns within one burst
+    only needs direction and relative size.
+
+    ear: eye aspect ratio averaged over both eyes, from pixel coordinates
+    (landmarks are normalized separately in x and y, so they're scaled back
+    first or a non-square frame would distort the ratio).
+
+    face_width: distance between the two face edges as a share of the frame
+    width (how big the face is in the frame).
+
+    Uses _face_mesh_refined (refine_landmarks) for the eyelid accuracy.
+    """
+    with _model_lock:
+        results = _face_mesh_refined.process(image_array)
+    if not results.multi_face_landmarks:
+        return None
+
+    landmarks = results.multi_face_landmarks[0].landmark
+    left_x, right_x = sorted(landmarks[i].x for i in _FACE_EDGES)
+    face_width = right_x - left_x
+    if face_width <= 0:
+        return None
+    yaw = (landmarks[_NOSE_TIP].x - (left_x + right_x) / 2) / face_width
+
+    height, width = image_array.shape[:2]
+
+    def pixel(index):
+        return np.array([landmarks[index].x * width, landmarks[index].y * height])
+
+    ear = float(np.mean([_eye_aspect_ratio([pixel(i) for i in eye]) for eye in _EYES]))
+    return {"yaw": yaw, "ear": ear, "face_width": face_width}
+
+
+# --- Challenge step detection (frame bursts) ---
+#
+# Starting values, not yet tuned on real recordings: re-check them against
+# recorded bursts before relying on challenge_passed. A missed step only
+# means a retry or review for the student (never a rejection), but a step
+# credited when it wasn't done weakens the check.
+
+# Blink: eyes count as closed below this share of the student's own open-eye
+# EAR, and as open again above the second share. Relative to the student, not
+# a fixed EAR, since eye shape varies between people. Chosen on 46 real
+# recordings (2026-10-24) with the refined eyelid landmarks: genuine blinks'
+# lowest EAR was a median 0.21 of open (27 of 29 at or under 0.30), squints
+# 0.37-0.53. 0.33 caught the most blinks with no squint counted; 0.40
+# started counting squints.
+_BLINK_CLOSED_RATIO = 0.33
+_BLINK_OPEN_RATIO = 0.85
+# Share of a burst's face frames assumed to show open eyes when estimating
+# the student's open-eye EAR (its 80th percentile).
+_OPEN_EAR_PERCENTILE = 80
+# Eyes are only judged on frames facing roughly toward the camera. With the
+# head turned, the eye's outline is foreshortened and EAR inflates: measured
+# on real recordings, ~0.25 facing the camera vs 0.35-0.45 at yaw ~0.6-1.3
+# (0.5-0.6 with the standard mesh), which made normal open eyes read as
+# "closed".
+_BLINK_MAX_YAW = 0.25
+# ...and only when the face is big enough to place the eyelid points
+# reliably: face width as a share of the frame width. A face on a phone held
+# up to the camera (69-104 px of 640) gave EAR noise of 0.07-0.15 that looked
+# like a blink; real faces at arm's length were 183-259 px.
+_BLINK_MIN_FACE_WIDTH = 0.2
+
+# Turn: yaw must move at least this far from where the step started, then
+# give back at least this share of the furthest turn ("then back toward
+# centre", API-FOR-FACE-RECOGNITION.md §3).
+_TURN_MIN_YAW = 0.15
+_TURN_RETURN_FRACTION = 0.4
+# Frames are raw (not mirrored): the student's left is the image's right, so
+# a turn to the student's left moves the nose toward the image's right
+# (+yaw). Confirmed on real recordings (2026-10-24: turning to one's own left
+# read +0.52 to +0.94).
+_YAW_SIGN_STUDENT_LEFT = 1
+
+# Fewer frames with a face than this per step: not enough to judge, so
+# challenge_passed stays None instead of a confident False.
+_MIN_FACE_FRAMES_PER_STEP = 3
+
+
+def _eyes_measurable(features):
+    """True for a frame whose eyes can be judged: a face turned no further
+    than _BLINK_MAX_YAW and at least _BLINK_MIN_FACE_WIDTH of the frame wide."""
+    return (
+        features is not None
+        and abs(features["yaw"]) <= _BLINK_MAX_YAW
+        and features["face_width"] >= _BLINK_MIN_FACE_WIDTH
+    )
+
+
+def open_eye_ear(frame_features):
+    """
+    The student's open-eye EAR for a burst: the _OPEN_EAR_PERCENTILE-th
+    percentile over frames whose eyes can be judged (_eyes_measurable; most
+    of them show open eyes). Turned frames are left out because their EAR is
+    inflated, tiny faces because it's noise. None if no frame qualifies.
+    """
+    ears = [features["ear"] for features in frame_features if _eyes_measurable(features)]
+    return float(np.percentile(ears, _OPEN_EAR_PERCENTILE)) if ears else None
+
+
+def detect_blink(frame_features, start, open_ear):
     """
     Detect eye blink from face mesh landmarks (BONUS).
 
@@ -970,15 +1395,108 @@ def detect_blink(face_mesh_landmarks):
     - EAR < threshold indicates closed eye
 
     ---
-    Not implemented. Genuine blink detection needs two states to compare
-    (eye open, then closed) across separate frames/timestamps, but
-    LivenessRequest.challenge_response is a single base64 image - there's
-    no second frame to compare against, so an EAR-based blink check has
-    nothing to detect a transition between. check_liveness below treats
-    every challenge_type the same way (single-image/"passive" analysis)
-    for this reason, rather than branching on "blink" specifically.
+    Implemented across a frame burst rather than one image (one image can't
+    show a blink). `frame_features` is the burst's per-frame list from
+    _frame_features; `open_ear` is the student's open-eye EAR
+    (open_eye_ear). Looks from index `start` for eyes open, then at least
+    one closed frame, then open again, and returns the index of the frame
+    where they're open again, or None. One closed frame is enough on
+    purpose: at ~5 fps a normal blink often lands in a single frame.
+    Frames whose eyes can't be judged (no face, turned, or too small - see
+    _eyes_measurable) are skipped.
     """
-    pass
+    if open_ear is None:
+        return None
+    closed_below = open_ear * _BLINK_CLOSED_RATIO
+    open_above = open_ear * _BLINK_OPEN_RATIO
+    seen_open = seen_closed = False
+    for index in range(start, len(frame_features)):
+        features = frame_features[index]
+        if not _eyes_measurable(features):
+            continue
+        ear = features["ear"]
+        if not seen_open:
+            seen_open = ear >= open_above
+        elif not seen_closed:
+            seen_closed = ear < closed_below
+        elif ear >= open_above:
+            return index
+    return None
+
+
+def detect_head_turn(frame_features, start, direction):
+    """
+    Look from index `start` for a head turn and the return toward centre.
+    `direction` is +1 for a turn to the student's left, -1 for their right,
+    already multiplied by _YAW_SIGN_STUDENT_LEFT by the caller.
+
+    The step's starting yaw is the first face frame at or after `start` (for
+    a later step, the frame where the previous step ended). The turn counts
+    once yaw has moved at least _TURN_MIN_YAW in `direction` and then come
+    back by at least _TURN_RETURN_FRACTION of the furthest point. Returns
+    the index of that return frame, or None. Turning the wrong way never
+    counts.
+    """
+    origin = None
+    furthest = 0.0
+    for index in range(start, len(frame_features)):
+        features = frame_features[index]
+        if features is None:
+            continue
+        if origin is None:
+            origin = features["yaw"]
+            continue
+        moved = (features["yaw"] - origin) * direction
+        if moved > furthest:
+            furthest = moved
+        elif furthest >= _TURN_MIN_YAW and moved <= furthest * (1 - _TURN_RETURN_FRACTION):
+            return index
+    return None
+
+
+def _detect_step(action, frame_features, start, open_ear):
+    """Dispatch one challenge action; an unknown action counts as not performed
+    (API-FOR-FACE-RECOGNITION.md §3), so it returns None."""
+    if action == "blink":
+        return detect_blink(frame_features, start, open_ear)
+    if action == "turn_left":
+        return detect_head_turn(frame_features, start, _YAW_SIGN_STUDENT_LEFT)
+    if action == "turn_right":
+        return detect_head_turn(frame_features, start, -_YAW_SIGN_STUDENT_LEFT)
+    return None
+
+
+def evaluate_challenge(frame_features, sequence):
+    """
+    Check a burst against a challenge sequence. Returns (challenge_passed,
+    steps_passed):
+
+    - (None, None) when there's too little to judge: no sequence, or fewer
+      than _MIN_FACE_FRAMES_PER_STEP face frames per step. The backend
+      treats None as unverified, so a bad camera never costs a student an
+      attempt.
+    - Otherwise steps_passed has one bool per step in sequence order.
+      Steps must happen in order: each step is searched for only after the
+      previous one ended, and once a step fails, every later step is False
+      too (it can't have happened "in order"). The backend tells the
+      student to redo the first False step.
+    """
+    faces = [features for features in frame_features if features is not None]
+    if not sequence or len(faces) < _MIN_FACE_FRAMES_PER_STEP * len(sequence):
+        return None, None
+
+    open_ear = open_eye_ear(frame_features)
+    steps_passed = []
+    cursor = 0
+    for action in sequence:
+        end = _detect_step(action, frame_features, cursor, open_ear) if all(steps_passed) else None
+        steps_passed.append(end is not None)
+        if end is not None:
+            cursor = end
+    return all(steps_passed), steps_passed
+
+
+_VPN_USER_AGENT_PATTERN = re.compile(r"vpn|proxy|tunnel|\btor\b", re.IGNORECASE)
 
 
 def detect_vpn_proxy(ip_address: str, user_agent: str) -> tuple:
@@ -994,37 +1512,30 @@ def detect_vpn_proxy(ip_address: str, user_agent: str) -> tuple:
     Return (is_vpn: bool, confidence: float)
 
     ---
-    Implemented per the bullets above. Note docs/API-SPECIFICATION.md's
-    own "Quick Start" sample code only checks 172.16-172.19 (a narrower,
-    incomplete range) - this follows this docstring's explicit "172.16-31"
-    instead, checking the second octet numerically rather than hardcoding
-    16 string prefixes.
+    Only the user-agent keyword check is implemented. Private and loopback
+    IPs (the first two bullets) are deliberately NOT treated as VPN signs,
+    superseding this starter TODO:
+    - The course's later clarification says private/local addresses
+      (192.168.x, 10.x, 127.x) "may be treated as on-campus and allowed".
+    - module2-backend asks for the same (CHANGES-2026-10-01.md, Module 3
+      §A): inside docker-compose every request reaches us from a private
+      172.x address, so flagging them added VPN risk to every genuine
+      check-in.
+    Whether a public IP is outside Singapore is checked by the backend
+    (GeoIP) before it calls us, so nothing here looks at the IP at all;
+    `ip_address` stays in the signature for callers and future checks.
+
+    "tor" must be a whole word: as a plain substring it matched ordinary
+    user agents, e.g. Android phones that include "motorola" in their user
+    agent. "vpn", "proxy" and "tunnel" are still matched anywhere, so
+    "vpn-client" and "myvpnapp" both count.
     """
     is_vpn = False
     confidence = 0.0
 
-    if ip_address:
-        if ip_address == "::1" or ip_address.startswith("127."):
-            is_vpn = True
-            confidence = 0.7
-        elif ip_address.startswith("10.") or ip_address.startswith("192.168."):
-            is_vpn = True
-            confidence = 0.7
-        else:
-            octets = ip_address.split(".")
-            if len(octets) == 4 and octets[0] == "172":
-                try:
-                    if 16 <= int(octets[1]) <= 31:
-                        is_vpn = True
-                        confidence = 0.7
-                except ValueError:
-                    pass
-
-    if user_agent:
-        vpn_keywords = ("vpn", "proxy", "tunnel", "tor")
-        if any(keyword in user_agent.lower() for keyword in vpn_keywords):
-            is_vpn = True
-            confidence = max(confidence, 0.8)
+    if user_agent and _VPN_USER_AGENT_PATTERN.search(user_agent):
+        is_vpn = True
+        confidence = 0.8
 
     return is_vpn, confidence
 

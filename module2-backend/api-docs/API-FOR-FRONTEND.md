@@ -7,7 +7,7 @@ pagination, rate limits). **Your tasks:** the Module 1 table in
 
 This covers every endpoint your UI is likely to call, across all four roles
 (student/instructor/ta/admin), since one frontend serves all of them. Each
-entry notes who can call it. Last updated 2026-10-23.
+entry notes who can call it. Last updated 2026-10-26.
 
 ---
 
@@ -89,8 +89,8 @@ without both consents goes to review (`consent_missing`, see §7).
 | `503 FACE_SERVICE_UNAVAILABLE` | Module 3 failed: it didn't answer in time (~5 s), returned an error, or is temporarily skipped after earlier failures (30 s). Let the user retry |
 
 Once enrolled, **every check-in with a photo or burst is compared** with the
-stored face; the match score feeds the risk score, and on face-required
-sessions a mismatch rejects. Without an enrolled face, check-ins on
+stored face; the match score feeds the risk score. A mismatch rejects on
+face-required sessions and is `flagged` for review on all others. Without an enrolled face, check-ins on
 face-required sessions are always `flagged`, so an enrolment step matters.
 Enrolling again replaces the stored face.
 
@@ -392,7 +392,13 @@ without verifying it first (checked at check-in, no retry).
   attempt in a session, only a verified pass can approve their check-in;
   otherwise it's flagged (`liveness_challenge_failed`). Some verdicts end
   the attempts at once (reported as `failed` with `attempts_left: 0`).
-- Until Module 3 ships frame checking, every verify answers `unverified`.
+- `unverified` happens when the face service times out or fails, a step
+  has too few frames with a face, or the most front-facing frame scores low.
+- **Head turns** count only if the head turns far enough **and comes back
+  toward centre**, and nothing is recorded after the last step. A slow turn
+  as the last step is often still in progress when recording stops, so
+  prompt "then look back at the camera" (Module 3's suggestion, which also
+  works with ~5 extra frames after the last step, within `max_frames`).
 
 ### `POST /api/v1/checkins/` — **student only**
 ```jsonc
@@ -412,8 +418,7 @@ without verifying it first (checked at check-in, no retry).
   Steps not performed → `flagged` for review (`liveness_challenge_failed`),
   never rejected for that alone. Can't confirm the steps → at most
   `flagged` (`liveness_unverified`). Judged a spoof (here or in any verify
-  attempt for this session) → `rejected` (`liveness_failed`). Until Module 3
-  ships frame checking, challenged check-ins are flagged.
+  attempt for this session) → `rejected` (`liveness_failed`).
 - `challenge_type` (lowercase letters and `_`) is only a label stored with
   the check-in when you send frames **without** a challenge.
 - **Send a fresh photo or burst every time.** If **any** image (the photo or
@@ -493,6 +498,7 @@ plus the weights below, capped at 1.0.
 | `liveness_challenge_failed` | high | 0 | Challenge steps not detected (and no later attempt passed) → at most flagged |
 | `liveness_unverified` | high | 0 | Liveness required but no result → at most flagged |
 | `face_match_failed` | **critical** | 0.25 | Face-required session, wrong face → **rejected** |
+| `face_match_failed` | high | 0 | Any other session, wrong face → at most flagged (`FACE_MISMATCH_ENFORCEMENT=flag`, the default) |
 | `face_match_unverified` | high | 0 | Face required but no comparison → at most flagged |
 | `replay_suspected` | **critical** | 0.30 | Re-used photo or frame (same student) → **rejected** |
 | `rapid_succession` | high | 0 | Device used by another student < 10 min ago → at most flagged |
