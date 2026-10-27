@@ -3,7 +3,7 @@
 Read [API-CONVENTIONS.md](API-CONVENTIONS.md) first (auth, error format,
 pagination). **Your tasks:** the Module 4 table in
 [CHANGES-2026-10-01.md](CHANGES-2026-10-01.md). **Why things changed:**
-[CHANGELOG.md](CHANGELOG.md). Last updated 2026-10-26.
+[CHANGELOG.md](CHANGELOG.md). Last updated 2026-10-27.
 
 This covers the `/stats/*` analytics, `/export/*` data export, `/audit/*`
 compliance log, and `/metrics` for Prometheus/Grafana. Everything here needs
@@ -11,7 +11,12 @@ compliance log, and `/metrics` for Prometheus/Grafana. Everything here needs
 below). Check-in lists and the review queue are in
 [API-FOR-FRONTEND.md](API-FOR-FRONTEND.md) §7. The dashboard can use them
 the same way (e.g. `GET /checkins/flagged` + `POST /checkins/{id}/review`
-for a review screen). Creating and editing sessions is in its §4,
+for a review screen). The other staff tools are there too: **manual check-ins** (`POST /checkins/manual` and
+`POST /checkins/{id}/manual/undo`, instructor or assigned TA) in §7, and
+**face reset codes** (`POST /users/{student_id}/face/reset-code`, the
+student's instructor or an admin; not TAs) in §2. Check-ins carry an
+`entry_method` (`app` / `manual` / `override`) to label them. Manual
+check-ins are not counted in the Prometheus check-in counters. Creating and editing sessions is in its §4,
 including the venue rule: leave a session's coordinates out and it uses the
 course's venue.
 
@@ -196,11 +201,13 @@ paginated:
 **Actions you'll see:**
 - **Auth/users:** `login_success`, `login_failed`, `logout`, `account_locked`,
   `password_changed`, `password_change_failed`, `user_created`,
-  `user_updated`, `user_deletion_requested`, `face_enrolled`
+  `user_updated`, `user_deletion_requested`, `face_enrolled`,
+  `face_reenrolled`, `face_reset_code_issued`, `face_reset_code_rejected`
 - **Check-ins:** `checkin_attempted`, `checkin_approved`, `checkin_flagged`,
   `checkin_rejected`, `checkin_rejected_geo`, `checkin_appealed`,
   `checkin_reviewed`, `liveness_challenge_verified` (one per liveness
-  attempt, see below)
+  attempt, see below), `checkin_manual`, `checkin_manual_override`,
+  `checkin_manual_undone` (staff actions, see below)
 - **Admin data:** `session_created/updated/deleted`,
   `enrollment_added/removed`, `device_registered/updated/removed`,
   `course_created/updated/deleted`, `data_exported`, `retention_sweep_run`
@@ -211,7 +218,7 @@ Useful `details` fields:
 | Action | `details` |
 |---|---|
 | `checkin_approved` / `_flagged` / `_rejected` | `risk_score`, **`risk_level`** (LOW/MEDIUM/HIGH/CRITICAL), `status` |
-| `security_violation` | **`violation_type`**: `account_lockout`, `outside_singapore`, `geo_out_of_bounds`, `liveness_failed`, `face_match_failed` (a wrong face on any session: rejected if the session requires a face match, flagged otherwise), `replay_suspected`, `impossible_travel`, `gps_spoof_suspected`, `rapid_succession`, `challenge_reuse` (a liveness challenge used twice or by another student; `details.reason` = `reused` / `other_student`), `liveness_spoof` (a liveness attempt judged a spoof), `challenge_frames_mismatch` (a check-in named a verified challenge but sent different frames) |
+| `security_violation` | **`violation_type`**: `account_lockout`, `outside_singapore`, `geo_out_of_bounds`, `liveness_failed`, `face_match_failed` (a wrong face on any session: rejected if the session requires a face match, flagged otherwise), `replay_suspected`, `impossible_travel`, `gps_spoof_suspected`, `rapid_succession`, `challenge_reuse` (a liveness challenge used twice or by another student; `details.reason` = `reused` / `other_student`), `liveness_spoof` (a liveness attempt judged a spoof), `challenge_frames_mismatch` (a check-in named a verified challenge but sent different frames), `face_reset_code_guessing` (5 wrong face reset codes; the code was burned) |
 | `checkin_rejected_geo` | `reason` (`ip`/`gps`/`gps_and_ip`), `gps_in_singapore`, `ip_country` (no coordinates) |
 | `account_locked` | `failed_attempts`, `lockout_minutes` (wrong passwords at login and on the change-password page count together) |
 | `login_failed` | `email`, or `reason: "account_locked"` |
@@ -219,6 +226,12 @@ Useful `details` fields:
 | `liveness_challenge_verified` | `outcome` (`passed`/`failed`/`spoof`/`unverified`), `attempt` (1–3), `sequence`, `steps_passed`, `liveness_score`. `resource_id` = the session |
 | `retention_sweep_run` | `users_anonymized`, `checkins_anonymized`, `trigger: "scheduled"` (hourly, no user) |
 | `enrollment_added` | `student_id`, `course_id`; `via: "bulk"`; `reactivated: true` when a removed student was re-added |
+| `face_reset_code_issued` | `expires_at` (never the code). Actor = the instructor/admin, `resource_id` = the student |
+| `face_reset_code_rejected` | `reason`: `invalid` (no live code) / `wrong` / `burned` (that was the 5th wrong try). `success: false` |
+| `face_reenrolled` | `code_issued_by` (who vouched for the student) |
+| `checkin_manual` | `student_id`, `session_id`, `reason`. Actor = the staff member, `resource_id` = the check-in |
+| `checkin_manual_override` | `student_id`, `session_id`, `previous_status` (`flagged`/`appealed`/`rejected`), `reason` |
+| `checkin_manual_undone` | `student_id`, `session_id`, `entry_method` (`manual`/`override`), `restored_status` (`deleted` for a removed manual check-in) |
 | `session_created` | `course_id`, `owner_id` (the course's instructor when an admin created it; the actor is still the admin) |
 
 - **Append-only, enforced by the database.** No row can be edited or
