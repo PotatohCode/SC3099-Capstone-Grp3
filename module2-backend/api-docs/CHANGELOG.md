@@ -244,6 +244,12 @@ Tasks from the [checklist](CHANGES-2026-10-01.md) that the other modules
 have finished, newest first. Moved here so the checklist only shows what's
 left.
 
+### Module 1 — Frontend: PR #10 (`e0279eb`, merged 2026-10-27)
+
+| Was | Task | Done how |
+|---|---|---|
+| Should | Show times in Singapore time (they were 8 h early) | `lib/utils/datetime.ts` `parseServerDate` reads a backend timestamp without an offset as UTC, and every time is shown in `Asia/Singapore` whatever the device's timezone (History list, detail, month filter, session windows) |
+
 ### Module 4 — Dashboard: PR #8 (`5612fbb`, merged 2026-10-25)
 
 | Was | Task | Done how |
