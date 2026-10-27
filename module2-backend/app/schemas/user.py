@@ -39,6 +39,17 @@ class FaceEnrollRequest(BaseModel):
     """POST /users/me/face/enroll. image: base64 PNG/JPEG, no data URL prefix."""
 
     image: str = Field(min_length=1)
+    # Needed only when a face is already enrolled: the one-time code from an
+    # instructor (POST /users/{id}/face/reset-code). Case, spaces and
+    # hyphens don't matter.
+    reset_code: Optional[str] = Field(default=None, max_length=32)
+
+
+class FaceResetCodeResponse(BaseModel):
+    """POST /users/{student_id}/face/reset-code (201). Shown once."""
+    student_id: str
+    code: str
+    expires_at: datetime
 
 
 class FaceEnrollResponse(BaseModel):

@@ -49,6 +49,23 @@ def can_edit_course(user: User, course: Course) -> bool:
     return user.role == "instructor" and _owns_course(user, course)
 
 
+def teaches_student(db: Session, user: User, student_id: str) -> bool:
+    """admin, or an instructor who can_edit_course one of the courses the
+    student is actively enrolled in. For GET /users/{id} and face reset
+    codes (only someone who knows the student vouches for them)."""
+    if user.role == "admin":
+        return True
+    if user.role != "instructor":
+        return False
+    their_courses = (
+        db.query(Course)
+        .join(Enrollment, Enrollment.course_id == Course.id)
+        .filter(Enrollment.student_id == student_id, Enrollment.is_active.is_(True))
+        .all()
+    )
+    return any(can_edit_course(user, c) for c in their_courses)
+
+
 def can_staff_course(db: Session, user: User, course: Course) -> bool:
     """admin, owning instructor, or an assigned ta - read/manage access for
     ta-inclusive endpoints (GET /enrollments/course/{id}, flagged review)."""

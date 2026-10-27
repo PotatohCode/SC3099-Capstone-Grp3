@@ -55,6 +55,13 @@ class CheckIn(Base):
     appeal_reason = Column(Text, nullable=True)
     appealed_at = Column(DateTime, nullable=True)
 
+    # app (the student's own check-in), manual (created by staff) or
+    # override (staff approved a flagged/appealed/rejected one in place).
+    # override_previous: JSON of the overridden status/reviewer/notes, so
+    # POST /checkins/{id}/manual/undo can restore them.
+    entry_method = Column(String(20), nullable=False, default="app", server_default="app")
+    override_previous = Column(Text, nullable=True)
+
     scheduled_deletion_at = Column(DateTime, nullable=True)
 
     # Relationships

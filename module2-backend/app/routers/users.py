@@ -8,8 +8,6 @@ from app.core.config import get_settings
 from app.core.deps import get_current_user, get_db, require_role
 from app.core.errors import APIError, ErrorCode
 from app.core.security import get_password_hash, verify_password
-from app.db.models.course import Course
-from app.db.models.enrollment import Enrollment
 from app.db.models.user import User
 from app.schemas.common import Page, page_limit
 from app.schemas.user import (
@@ -17,14 +15,15 @@ from app.schemas.user import (
     AccountDeletionResponse,
     FaceEnrollRequest,
     FaceEnrollResponse,
+    FaceResetCodeResponse,
     PasswordChangeRequest,
     UserAdminUpdate,
     UserResponse,
     UserUpdateRequest,
 )
-from app.services import account_lockout, face_client
-from app.services.audit import log_event
-from app.services.authz import can_edit_course
+from app.services import account_lockout, face_client, face_reset_code
+from app.services.audit import log_event, log_security_violation
+from app.services.authz import teaches_student
 from app.services.client_ip import get_client_ip
 from app.services.partial_update import drop_nulls_for_required
 from app.services.sanitize import sanitize_text
@@ -141,9 +140,40 @@ def change_password(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+def _require_reset_code(db: Session, user: User, code: Optional[str], ip: Optional[str], ua: Optional[str]) -> None:
+    """Re-enrolment guard (services/face_reset_code.py): checks the code
+    before Module 3 is called. A wrong code uses up one attempt."""
+    if not code:
+        raise APIError(
+            status.HTTP_403_FORBIDDEN, "A reset code from your instructor is needed to replace your face",
+            ErrorCode.FACE_RESET_CODE_REQUIRED,
+        )
+    try:
+        result = face_reset_code.check(user.id, code)
+    except face_reset_code.ResetCodeUnavailable:
+        raise APIError(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "Face reset codes are temporarily unavailable",
+            ErrorCode.FACE_RESET_CODE_UNAVAILABLE,
+        )
+    if result == face_reset_code.CheckStatus.OK:
+        return
+    log_event(
+        db, "face_reset_code_rejected", user_id=user.id, resource_type="user", resource_id=user.id,
+        ip_address=ip, user_agent=ua, success=False, details={"reason": result.value},
+    )
+    if result == face_reset_code.CheckStatus.BURNED:
+        log_security_violation(
+            db, "face_reset_code_guessing", user_id=user.id, resource_type="user", resource_id=user.id,
+            ip_address=ip, user_agent=ua,
+        )
+    db.commit()
+    raise APIError(status.HTTP_403_FORBIDDEN, "Reset code is invalid or expired", ErrorCode.FACE_RESET_CODE_INVALID)
+
+
 @router.post("/me/face/enroll", response_model=FaceEnrollResponse)
 def enroll_face(
     payload: FaceEnrollRequest,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -154,6 +184,13 @@ def enroll_face(
         )
 
     require_image_size(payload.image)
+    ip, ua = get_client_ip(request), request.headers.get("user-agent")
+    # Replacing an enrolled face needs an instructor's one-time code; the
+    # first enrolment doesn't.
+    reenrolling = bool(current_user.face_enrolled) and settings.FACE_REENROLL_REQUIRES_CODE
+    if reenrolling:
+        _require_reset_code(db, current_user, payload.reset_code, ip, ua)
+
     user_id, consent = current_user.id, current_user.camera_consent
     # Don't hold a DB connection while Module 3 works (see the same step in
     # routers/checkins.py create_checkin). Nothing is pending here.
@@ -169,9 +206,29 @@ def enroll_face(
     if not result.get("enrollment_successful", False):
         raise APIError(status.HTTP_400_BAD_REQUEST, "No face detected in image", ErrorCode.NO_FACE_DETECTED)
 
+    details = None
+    if reenrolling:
+        # Only now is the code used up, so a failed photo doesn't waste it.
+        # Atomic: of two enrolments racing with one code, only one saves.
+        try:
+            issued_by = face_reset_code.consume(user_id, payload.reset_code)
+        except face_reset_code.ResetCodeUnavailable:
+            raise APIError(
+                status.HTTP_503_SERVICE_UNAVAILABLE, "Face reset codes are temporarily unavailable",
+                ErrorCode.FACE_RESET_CODE_UNAVAILABLE,
+            )
+        if issued_by is None:
+            raise APIError(
+                status.HTTP_403_FORBIDDEN, "Reset code is invalid or expired", ErrorCode.FACE_RESET_CODE_INVALID
+            )
+        details = {"code_issued_by": issued_by}
+
     current_user.face_embedding_hash = result.get("face_template_hash")
     current_user.face_enrolled = True
-    log_event(db, "face_enrolled", user_id=current_user.id, resource_type="user", resource_id=current_user.id)
+    log_event(
+        db, "face_reenrolled" if reenrolling else "face_enrolled", user_id=current_user.id, resource_type="user",
+        resource_id=current_user.id, ip_address=ip, user_agent=ua, details=details,
+    )
     db.commit()
 
     return FaceEnrollResponse(
@@ -180,6 +237,52 @@ def enroll_face(
         face_enrolled=True,
         quality_score=result.get("quality_score", 0.0),
     )
+
+
+@router.post(
+    "/{student_id}/face/reset-code", response_model=FaceResetCodeResponse, status_code=status.HTTP_201_CREATED
+)
+def issue_face_reset_code(
+    student_id: str,
+    request: Request,
+    response: Response,
+    current_user: User = Depends(require_role("instructor", "admin")),
+    db: Session = Depends(get_db),
+):
+    """One-time code that lets this student replace their enrolled face.
+    Team decision 2026-10-27: an instructor of one of the student's courses
+    (who checks the student in person), or an admin. Not TAs."""
+    student = db.get(User, student_id)
+    # One answer for missing / not a student / deactivated, so this doesn't
+    # reveal which accounts exist.
+    if student is None or student.role != "student" or not student.is_active:
+        raise APIError(status.HTTP_404_NOT_FOUND, "Student not found", ErrorCode.STUDENT_NOT_FOUND)
+    if not teaches_student(db, current_user, student.id):
+        raise APIError(
+            status.HTTP_403_FORBIDDEN, "Not an instructor of this student", ErrorCode.INSUFFICIENT_PERMISSIONS
+        )
+    if not student.face_enrolled:
+        raise APIError(
+            status.HTTP_400_BAD_REQUEST, "Student has no enrolled face; they can enrol without a code",
+            ErrorCode.FACE_NOT_ENROLLED,
+        )
+
+    try:
+        issued = face_reset_code.issue(student.id, current_user.id)
+    except face_reset_code.ResetCodeUnavailable:
+        raise APIError(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "Face reset codes are temporarily unavailable",
+            ErrorCode.FACE_RESET_CODE_UNAVAILABLE,
+        )
+    # Never the code itself.
+    log_event(
+        db, "face_reset_code_issued", user_id=current_user.id, resource_type="user", resource_id=student.id,
+        ip_address=get_client_ip(request), user_agent=request.headers.get("user-agent"),
+        details={"expires_at": issued.expires_at.isoformat()},
+    )
+    db.commit()
+    response.headers["Cache-Control"] = "no-store"
+    return FaceResetCodeResponse(student_id=student.id, code=issued.code, expires_at=issued.expires_at)
 
 
 @router.get("/", response_model=Page[UserResponse])
@@ -223,14 +326,7 @@ def get_user(user_id: str, current_user: User = Depends(get_current_user), db: S
         # just nobody - see routers/stats.py's student_stats for the
         # same fix applied after this exact pattern 403'd
         # test_stats_student on an unassigned test_course.
-        their_courses = (
-            db.query(Course)
-            .join(Enrollment, Enrollment.course_id == Course.id)
-            .filter(Enrollment.student_id == user.id, Enrollment.is_active.is_(True))
-            .all()
-        )
-        is_their_student = any(can_edit_course(current_user, c) for c in their_courses)
-        if not is_their_student:
+        if not teaches_student(db, current_user, user.id):
             raise APIError(status.HTTP_403_FORBIDDEN, "Not authorized to view this user", ErrorCode.INSUFFICIENT_PERMISSIONS)
 
     return user
