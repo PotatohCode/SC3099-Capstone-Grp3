@@ -17,7 +17,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload, selectinload
 
@@ -52,6 +52,8 @@ from app.schemas.checkin import (
     LivenessChallengeResponse,
     LivenessVerifyRequest,
     LivenessVerifyResponse,
+    ManualCheckinRequest,
+    ManualUndoResponse,
     MyCheckinItem,
     RiskFactorItem,
     SessionCheckinItem,
@@ -151,6 +153,7 @@ def _to_full_response(checkin: CheckIn) -> CheckinResponse:
         review_notes=checkin.review_notes,
         appeal_reason=checkin.appeal_reason,
         appealed_at=checkin.appealed_at,
+        entry_method=checkin.entry_method,
     )
 
 
@@ -812,7 +815,7 @@ def list_checkins(
             id=c.id, session_id=c.session_id, session_name=c.session.name, student_id=c.student_id,
             student_name=c.student.full_name, student_email=c.student.email, status=c.status,
             checked_in_at=c.checked_in_at, distance_from_venue_meters=c.distance_from_venue_meters,
-            risk_score=c.risk_score, liveness_passed=c.liveness_passed,
+            risk_score=c.risk_score, liveness_passed=c.liveness_passed, entry_method=c.entry_method,
         )
         for c in checkins
     ]
@@ -878,6 +881,7 @@ def session_checkins(
             status=c.status, checked_in_at=c.checked_in_at, distance_from_venue_meters=c.distance_from_venue_meters,
             risk_score=c.risk_score, risk_factors=_parse_risk_factors(c.risk_factors),
             liveness_passed=c.liveness_passed, device_trusted=c.device.is_trusted if c.device else None,
+            entry_method=c.entry_method,
         )
         for c in checkins
     ]
@@ -1023,3 +1027,187 @@ def review_checkin(
         id=checkin.id, status=checkin.status, reviewed_by_id=checkin.reviewed_by_id,
         reviewed_at=checkin.reviewed_at, review_notes=checkin.review_notes,
     )
+
+
+# =============================================================================
+# POST /checkins/manual + /checkins/{id}/manual/undo (instructor/ta)
+# =============================================================================
+# Team decision 2026-10-27: staff who saw the student in class can mark
+# them present when the app couldn't (phone dead, camera broken, GPS
+# refused). Creates the check-in, or approves a flagged/appealed/rejected
+# one in place (the evidence is kept). Undo restores exactly what was
+# there. Both until MANUAL_CHECKIN_DAYS after the session's scheduled end.
+# Not counted in the Prometheus check-in metrics (they'd skew the success
+# rate of real check-ins).
+
+MANUAL_FACTOR = "manual_checkin"
+OVERRIDE_FACTOR = "manual_override"
+
+
+def _require_manual_window(session_obj: ClassSession) -> None:
+    """By the session's times, not its status: staff set the status by hand,
+    so a class that happened may still say "scheduled" or "active"."""
+    if session_obj.status == "cancelled":
+        raise APIError(status.HTTP_400_BAD_REQUEST, "Session was cancelled", ErrorCode.SESSION_NOT_ACTIVE)
+    now = _now()
+    if now < session_obj.checkin_opens_at:
+        raise APIError(status.HTTP_400_BAD_REQUEST, "Session hasn't started yet", ErrorCode.SESSION_NOT_ACTIVE)
+    _require_within_manual_days(session_obj)
+
+
+def _require_within_manual_days(session_obj: ClassSession) -> None:
+    if _now() > session_obj.scheduled_end + timedelta(days=settings.MANUAL_CHECKIN_DAYS):
+        raise APIError(
+            status.HTTP_400_BAD_REQUEST,
+            f"Manual check-ins close {settings.MANUAL_CHECKIN_DAYS} days after the session",
+            ErrorCode.MANUAL_CHECKIN_WINDOW_CLOSED,
+        )
+
+
+@router.post("/manual", response_model=CheckinResponse, status_code=status.HTTP_201_CREATED)
+def manual_checkin(
+    payload: ManualCheckinRequest,
+    request: Request,
+    response: Response,
+    current_user: User = Depends(require_role("instructor", "ta", "admin")),
+    db: Session = Depends(get_db),
+):
+    """201 with a new check-in, or 200 when it approved an existing one."""
+    session_obj = db.get(ClassSession, payload.session_id)
+    if session_obj is None:
+        raise APIError(status.HTTP_404_NOT_FOUND, "Session not found", ErrorCode.SESSION_NOT_FOUND)
+    require_manage_session(db, current_user, session_obj)
+    _require_manual_window(session_obj)
+
+    student = db.get(User, payload.student_id)
+    if student is None or student.role != "student" or not student.is_active:
+        raise APIError(status.HTTP_404_NOT_FOUND, "Student not found", ErrorCode.STUDENT_NOT_FOUND)
+    is_enrolled = (
+        db.query(Enrollment)
+        .filter(
+            Enrollment.student_id == student.id, Enrollment.course_id == session_obj.course_id,
+            Enrollment.is_active.is_(True),
+        )
+        .first()
+        is not None
+    )
+    if not is_enrolled:
+        raise APIError(status.HTTP_400_BAD_REQUEST, "Student is not enrolled in this course", ErrorCode.NOT_ENROLLED)
+
+    now = _now()
+    reason = sanitize_text(payload.reason)
+    client = {"ip_address": get_client_ip(request), "user_agent": request.headers.get("user-agent")}
+    # Locked, so a parallel override or undo of the same record waits.
+    existing = (
+        db.query(CheckIn)
+        .filter(CheckIn.session_id == session_obj.id, CheckIn.student_id == student.id)
+        .with_for_update()
+        .first()
+    )
+
+    if existing is None:
+        checkin = CheckIn(
+            session_id=session_obj.id,
+            student_id=student.id,
+            status="approved",
+            checked_in_at=now,
+            verified_at=now,
+            risk_score=0.0,
+            risk_factors=json.dumps([{"type": MANUAL_FACTOR, "weight": 0.0}]),
+            reviewed_by_id=current_user.id,
+            reviewed_at=now,
+            review_notes=reason,
+            entry_method="manual",
+            scheduled_deletion_at=now + timedelta(days=settings.PII_RETENTION_DAYS),
+        )
+        db.add(checkin)
+        # A parallel create (staff or the student) hits
+        # uq_checkin_session_student -> 400 ALREADY_CHECKED_IN (main.py).
+        db.flush()
+        log_event(
+            db, "checkin_manual", user_id=current_user.id, resource_type="checkin", resource_id=checkin.id,
+            details={"student_id": student.id, "session_id": session_obj.id, "reason": payload.reason}, **client,
+        )
+    else:
+        if existing.status == "approved":
+            raise APIError(
+                status.HTTP_400_BAD_REQUEST, "Already checked in (approved) for this session",
+                ErrorCode.ALREADY_CHECKED_IN,
+            )
+        checkin = existing
+        previous_status = checkin.status
+        checkin.override_previous = json.dumps({
+            "status": checkin.status,
+            "entry_method": checkin.entry_method,
+            "reviewed_by_id": checkin.reviewed_by_id,
+            "reviewed_at": checkin.reviewed_at.isoformat() if checkin.reviewed_at else None,
+            "review_notes": checkin.review_notes,
+        })
+        factors = json.loads(checkin.risk_factors) if checkin.risk_factors else []
+        factors.append({"type": OVERRIDE_FACTOR, "weight": 0.0})
+        checkin.risk_factors = json.dumps(factors)
+        checkin.status = "approved"
+        checkin.entry_method = "override"
+        checkin.reviewed_by_id = current_user.id
+        checkin.reviewed_at = now
+        checkin.review_notes = reason
+        log_event(
+            db, "checkin_manual_override", user_id=current_user.id, resource_type="checkin", resource_id=checkin.id,
+            details={
+                "student_id": student.id, "session_id": session_obj.id, "previous_status": previous_status,
+                "reason": payload.reason,
+            },
+            **client,
+        )
+        response.status_code = status.HTTP_200_OK
+
+    db.commit()
+    db.refresh(checkin)
+    return _to_full_response(checkin)
+
+
+@router.post("/{checkin_id}/manual/undo", response_model=ManualUndoResponse)
+def undo_manual_checkin(
+    checkin_id: str,
+    request: Request,
+    current_user: User = Depends(require_role("instructor", "ta", "admin")),
+    db: Session = Depends(get_db),
+):
+    checkin = db.query(CheckIn).filter(CheckIn.id == checkin_id).with_for_update().first()
+    if checkin is None:
+        raise APIError(status.HTTP_404_NOT_FOUND, "Check-in not found", ErrorCode.CHECKIN_NOT_FOUND)
+    session_obj = db.get(ClassSession, checkin.session_id)
+    require_manage_session(db, current_user, session_obj)
+    if checkin.entry_method not in ("manual", "override"):
+        raise APIError(
+            status.HTTP_400_BAD_REQUEST, "Only manual check-ins and overrides can be undone",
+            ErrorCode.MANUAL_UNDO_NOT_ALLOWED,
+        )
+    _require_within_manual_days(session_obj)
+
+    undone = checkin.entry_method
+    details = {"student_id": checkin.student_id, "session_id": checkin.session_id, "entry_method": undone}
+    if undone == "manual":
+        # Nothing references a staff-created check-in (no risk signals or
+        # frame hashes), and the audit log keeps the history.
+        db.delete(checkin)
+        result_status = "deleted"
+    else:
+        previous = json.loads(checkin.override_previous or "{}")
+        result_status = previous.get("status") or "flagged"
+        checkin.status = result_status
+        checkin.entry_method = previous.get("entry_method") or "app"
+        checkin.reviewed_by_id = previous.get("reviewed_by_id")
+        reviewed_at = previous.get("reviewed_at")
+        checkin.reviewed_at = datetime.fromisoformat(reviewed_at) if reviewed_at else None
+        checkin.review_notes = previous.get("review_notes")
+        factors = json.loads(checkin.risk_factors) if checkin.risk_factors else []
+        checkin.risk_factors = json.dumps([f for f in factors if f.get("type") != OVERRIDE_FACTOR])
+        checkin.override_previous = None
+    details["restored_status"] = result_status
+    log_event(
+        db, "checkin_manual_undone", user_id=current_user.id, resource_type="checkin", resource_id=checkin_id,
+        ip_address=get_client_ip(request), user_agent=request.headers.get("user-agent"), details=details,
+    )
+    db.commit()
+    return ManualUndoResponse(id=checkin_id, status=result_status)

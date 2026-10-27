@@ -188,6 +188,22 @@ class Settings(BaseSettings):
     # website would go to review.
     LIVENESS_CHALLENGE_ENFORCEMENT: Literal["off", "flag"] = "off"
 
+    # --- Face re-enrolment codes (POST /users/{id}/face/reset-code) ----------
+    # Once a face is enrolled, replacing it needs a one-time code from an
+    # instructor of one of the student's courses (or an admin), so someone
+    # who only knows the password can't swap in their own face.
+    # FACE_REENROLL_REQUIRES_CODE=false turns the check off (first
+    # enrolment never needs a code).
+    FACE_REENROLL_REQUIRES_CODE: bool = True
+    FACE_RESET_CODE_TTL_SECONDS: int = Field(default=900, ge=60)
+    # Wrong codes before the code is burned and a new one must be issued.
+    FACE_RESET_CODE_MAX_ATTEMPTS: int = Field(default=5, ge=1)
+
+    # --- Manual check-ins (POST /checkins/manual) ----------------------------
+    # Staff can check a student in by hand (or undo it) until this many days
+    # after the session's scheduled end. Same as the appeal window.
+    MANUAL_CHECKIN_DAYS: int = Field(default=7, ge=0)
+
     # --- CORS ----------------------------------------------------------------
     CORS_ORIGINS: list[str] = [
         "http://localhost:3000",  # Frontend
