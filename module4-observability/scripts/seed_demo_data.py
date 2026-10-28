@@ -87,8 +87,15 @@ def main() -> None:
         students.append((token, user, i))
 
     # Course owned by the instructor (admin creates it, then assigns).
-    status, courses = call("GET", "/courses/?limit=100")
-    course = next((c for c in courses["items"] if c["code"] == "SC3099"), None)
+    # Page through: the list is capped at 100 per request, and test runs add many courses.
+    course, offset = None, 0
+    while course is None:
+        _, page = call("GET", f"/courses/?limit=100&offset={offset}")
+        items = (page or {}).get("items", [])
+        course = next((c for c in items if c["code"] == "SC3099"), None)
+        offset += len(items)
+        if not items or offset >= page.get("total", 0):
+            break
     if course is None:
         _, course = call("POST", "/courses/", {
             "code": "SC3099", "name": "Capstone Project", "semester": "AY2026-27 Sem 1",

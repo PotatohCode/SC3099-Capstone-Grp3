@@ -73,7 +73,13 @@ def seeded_choices(token: str) -> dict:
     headers = {"Authorization": f"Bearer {token}"}
     get = lambda path, **params: requests.get(f"{config.BACKEND_URL}/api/v1{path}", params=params,
                                               headers=headers, timeout=30)
-    course = next(c for c in get("/courses/", limit=100).json()["items"] if c["code"] == "SC3099")
+    course, offset = None, 0
+    while course is None:  # the list is capped at 100 per page
+        page = get("/courses/", limit=100, offset=offset).json()
+        course = next((c for c in page["items"] if c["code"] == "SC3099"), None)
+        offset += len(page["items"])
+        if course is None and (not page["items"] or offset >= page["total"]):
+            raise SystemExit("Seeded course SC3099 not found: run scripts/seed_demo_data.py first")
     choices = {"Course": course["id"]}
     roster = get(f"/enrollments/course/{course['id']}")
     if roster.ok and roster.json()["students"]:
