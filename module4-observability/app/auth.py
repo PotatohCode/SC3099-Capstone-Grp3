@@ -44,6 +44,8 @@ def can(action: str) -> bool:
     rules = {
         "manage_sessions": r in {"instructor", "admin"},      # create / activate / close
         "review": r in {"ta", "instructor", "admin"},
+        "manual_checkin": r in {"ta", "instructor", "admin"},  # backend: staff who manage the session
+        "face_reset": r in {"instructor", "admin"},          # backend: the student's instructor, or admin
         "course_analytics": r in {"instructor", "admin"},
         "student_analytics": r in {"instructor", "admin"},
         "manage_accounts": r in {"instructor", "admin"},
