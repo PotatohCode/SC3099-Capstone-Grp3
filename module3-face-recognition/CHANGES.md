@@ -186,6 +186,88 @@ worker.
 
 ---
 
+## 2026-10-29 — 3 workers; concurrency re-measured with the whole stack running
+
+`Dockerfile`: `WEB_CONCURRENCY` 2 → **3**.
+
+The 2026-10-24 (6) numbers were measured with only the face service running.
+Re-measured today with **all 10 containers up** (backend, Postgres, Redis,
+frontend, proxy, dashboard, Grafana, Prometheus, OTel collector), on Docker's
+VM: 12 CPUs, 3.5 GiB.
+
+**Where the time goes** (one 640 px photo, inside the container):
+
+| Step | Time |
+|---|---|
+| Decode base64 + JPEG | 3 ms |
+| MediaPipe face detection | 4 ms |
+| **dlib face embedding** | **86 ms** |
+| MediaPipe face mesh (standard or refined) | 13 ms |
+| **Whole single-image `/liveness/check`** | **146 ms** |
+| **Whole `/face/verify`** | **125 ms** |
+
+A single-photo check-in calls both, ~270 ms of one worker's time, ~170 ms of
+it the same dlib embedding computed twice.
+
+**Workers compared** (same image, run in place of the compose container;
+memory sampled every ~2 s, which itself slows the runs a little):
+
+| Workers | 100 mixed calls* | 40 bursts (no sampler) | Face service peak | Whole stack peak |
+|---|---|---|---|---|
+| 2 | 5.7–6.7 s, up to 30 of 67 image calls over 5 s | 13.7–16.5 s | 1.46 GiB | 1.99 GiB |
+| **3** | **4.4–4.5 s, none over 5 s** | 12.0–13.8 s | 1.77 GiB | 2.22 GiB |
+| 4 | 3.8–4.9 s, none over 5 s | 10.1–10.5 s | 1.97 GiB | 2.37 GiB |
+
+\* a third each of `/liveness/check`, `/face/verify`, `/risk/assess` ≈ 33
+single-photo check-ins. 0 errors in every run. At rest the whole stack uses
+~1.46 GiB.
+
+**Decision: 3 workers** - most of the gain, ~+0.3 GiB, and headroom on
+graders' machines whose Docker VM may be smaller than ours (Docker Desktop's
+memory is a per-machine setting). 4 is the next step if the deployment
+machine has ≥ 4 GB for Docker.
+
+**Verified after the change** (compose container, 3 workers): public tests
+15/15; warm: 100 mixed calls 3.9–4.9 s, 40 bursts 10.2–14.7 s (inside 15 s);
+1.14 GiB after the runs. **The first run after a restart is slower** (6.7 s
+for 100 mixed) while each worker warms up its models.
+
+**Corrections to the 2026-10-24 (6) estimates:** workers cost ~0.25–0.3 GiB
+each under load, not +400–650 MB; and 3.5 GiB is the whole Docker VM shared
+by all containers, not the face service's own limit. With the full stack
+running, 2 workers did ~11–12 image requests/s (not 13–14).
+
+**Capacity now (3 workers), check-ins arriving at the same moment, answered
+inside the backend's 5 s:**
+- single-photo check-ins (2 image calls each): ~35–40;
+- check-ins with a challenge verified beforehand, the app's normal flow (1
+  image call each, `/face/verify`): roughly twice that;
+- bursts: ~40–45 inside 15 s.
+
+Beyond that, as before: those calls time out, the check-ins are flagged (not
+rejected) and the backend pauses calls for 30 s. Nothing fails.
+
+**What 100 simultaneous single-photo check-ins inside 5 s would take**
+(estimates, not measured): ~27 s of work per 100, so ~6 fully parallel
+workers - but scaling is sublinear (2 → 4 workers ≈ 1.45×, CPU shared with
+MediaPipe's threads and the rest of the stack). Options, combinable:
+
+| Option | Gain | Cost |
+|---|---|---|
+| Reuse the embedding between `/liveness/check` and `/face/verify` (shared Redis cache "photo → face hash") | ~1.45× | Moderate code; shared state between endpoints |
+| More workers | sublinear | ~0.25–0.3 GiB each; beyond 4–5 needs a bigger Docker VM |
+| Faster embedding model (e.g. MobileFaceNet/ArcFace ONNX, ~5–15 ms vs 86 ms) | ~2.5–3× | New dependency; different embeddings → every student re-enrols; thresholds re-tuned |
+| Several containers behind a load balancer | ~linear per container | More infrastructure; only with more hardware |
+
+E.g. reuse + ~6 workers + 5–6 GB for Docker, or faster model + reuse + 3–4
+workers. Not planned: the backend asks us to load-test 50–100 parallel
+requests (done, 100 calls now fit in 5 s), and its fallback covers the rest.
+
+**Optional small improvement:** warm each worker up at start (one dummy
+inference) so the first requests after a restart aren't slow.
+
+---
+
 ## 2026-10-24 (6) — Load test in the Docker container (the real deployment)
 
 Built and run with `docker compose up -d --build face-recognition` (includes
