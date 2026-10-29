@@ -49,6 +49,14 @@ describe('wizardReducer', () => {
     expect(next).toMatchObject({ step: 'camera', media: null })
   })
 
+  it('ALREADY_CHECKED_IN jumps straight to confirm with no location or media, and RESET clears it', () => {
+    const s = wizardReducer(atConfirm(), { type: 'ALREADY_CHECKED_IN', session, queued: false })
+    expect(s).toMatchObject({ step: 'confirm', session, location: null, media: null, result: null, alreadyCheckedIn: 'submitted' })
+    expect(wizardReducer(atConfirm(), { type: 'ALREADY_CHECKED_IN', session, queued: true }).alreadyCheckedIn).toBe('queued')
+    expect(wizardReducer(s, { type: 'RESET' })).toEqual(initialWizardState)
+    expect(wizardReducer(s, { type: 'SELECT_SESSION', session }).alreadyCheckedIn).toBeNull()
+  })
+
   it('selecting a session starts from a clean state', () => {
     const s = wizardReducer(atConfirm(), { type: 'SELECT_SESSION', session: { ...session, id: 's2' } })
     expect(s).toMatchObject({ location: null, media: null, result: null, step: 'location' })

@@ -7,7 +7,7 @@ pagination, rate limits). **Your tasks:** the Module 1 table in
 
 This covers every endpoint your UI is likely to call, across all four roles
 (student/instructor/ta/admin), since one frontend serves all of them. Each
-entry notes who can call it. Last updated 2026-10-23.
+entry notes who can call it. Last updated 2026-10-27.
 
 ---
 
@@ -77,22 +77,46 @@ without both consents goes to review (`consent_missing`, see §7).
 
 ### `POST /api/v1/users/me/face/enroll`
 ```json
-{ "image": "<base64 PNG/JPEG, no data: URL prefix>" }
+{ "image": "<base64 PNG/JPEG, no data: URL prefix>", "reset_code": "K7QM-4XPA" }
 ```
 → **200** `{ "success": true, "message": "...", "face_enrolled": true, "quality_score": 0.0-1.0 }`.
+
+`reset_code` is only needed to **replace** a face (the account already has
+`face_enrolled: true`); the first enrolment never needs one. The student
+gets it in person from an instructor of one of their courses (or an admin,
+see below). It's one-time, works only on that student's account, and
+expires after 15 minutes. Case, spaces and hyphens don't matter. A photo
+with no face, or a face-service error, doesn't use it up.
 
 | Response | Meaning |
 |---|---|
 | `400 CAMERA_CONSENT_REQUIRED` | `camera_consent` is false; call `PUT /users/me` first |
 | `400 NO_FACE_DETECTED` | No usable face in the image |
+| `403 FACE_RESET_CODE_REQUIRED` | A face is already enrolled and no `reset_code` was sent. Show a code field: "ask your instructor for a reset code" |
+| `403 FACE_RESET_CODE_INVALID` | Wrong, expired, already used or replaced code. 5 wrong tries burn the code; the instructor then generates a new one |
 | `413 IMAGE_TOO_LARGE` | Image over 10,000,000 base64 characters |
 | `503 FACE_SERVICE_UNAVAILABLE` | Module 3 failed: it didn't answer in time (~5 s), returned an error, or is temporarily skipped after earlier failures (30 s). Let the user retry |
+| `503 FACE_RESET_CODE_UNAVAILABLE` | Re-enrolment only: codes can't be checked right now (Redis down). Retry later |
 
 Once enrolled, **every check-in with a photo or burst is compared** with the
-stored face; the match score feeds the risk score, and on face-required
-sessions a mismatch rejects. Without an enrolled face, check-ins on
+stored face; the match score feeds the risk score. A mismatch rejects on
+face-required sessions and is `flagged` for review on all others. Without an enrolled face, check-ins on
 face-required sessions are always `flagged`, so an enrolment step matters.
-Enrolling again replaces the stored face.
+Enrolling again replaces the stored face, and needs a reset code (above).
+
+### `POST /api/v1/users/{student_id}/face/reset-code` — instructor of the student's course, or admin
+No body. **201** → `{ "student_id", "code": "K7QM-4XPA", "expires_at" }`
+(`Cache-Control: no-store`). Show the code once; it can't be fetched again.
+Generating a new one replaces the previous code. Check the student's card
+before generating: the code is what stops someone who only knows the
+password from swapping in their own face.
+
+| Response | Meaning |
+|---|---|
+| `403` | TA or student (role), or an instructor who doesn't teach a course the student is actively enrolled in (`INSUFFICIENT_PERMISSIONS`) |
+| `404 STUDENT_NOT_FOUND` | No such user, not a student, or deactivated |
+| `400 FACE_NOT_ENROLLED` | Nothing to reset; the student can enrol without a code |
+| `503 FACE_RESET_CODE_UNAVAILABLE` | Redis down; retry |
 
 ### `POST /api/v1/users/me/password` — any authenticated role
 ```json
@@ -165,7 +189,7 @@ Same fields as create, all optional, plus `is_active`, **except `code`**,
 which can't be changed (a `code` in the body is silently ignored). `null`
 for a required field is ignored; for an optional one it clears it. **403
 INSUFFICIENT_PERMISSIONS** for any non-admin, including the course's own
-instructor. Show course editing to admins only.
+instructor. Show course editing to admins only. **200** → `CourseResponse`.
 
 ### `DELETE /api/v1/courses/{id}` — **admin only**
 **204**. Soft delete (`is_active=false`).
@@ -179,11 +203,13 @@ Query: `status`, `course_id`, `instructor_id`, `start_date`, `end_date`,
 `limit` (max 100), `offset`. → paginated `SessionResponse`.
 
 ### `GET /api/v1/sessions/active` — public, no auth required
-Plain array of sessions currently `active` **and** inside their check-in
-window, **for every course** (not just the student's).
+Plain array of `SessionResponse` (below) for sessions currently `active`
+**and** inside their check-in window, **for every course** (not just the
+student's).
 
 ### `GET /api/v1/sessions/my-sessions` — any authenticated role
-Query: `status`, `upcoming` (bool), `limit`. Plain array, scoped by role:
+Query: `status`, `upcoming` (bool), `limit`. Plain array of
+`SessionResponse` (below), scoped by role:
 students see their enrolled courses' sessions; instructors/TAs see sessions
 they own plus every session of the courses they're assigned to as TA;
 admins see all.
@@ -212,9 +238,11 @@ assigned TAs aren't included.
 ### `POST /api/v1/sessions/` — instructor or admin
 ```json
 { "course_id": "...", "name": "...", "session_type": "lecture",
+  "description": null,
   "scheduled_start": "2026-...Z", "scheduled_end": "2026-...Z",
   "checkin_opens_at": null, "checkin_closes_at": null,
-  "venue_latitude": null, "venue_longitude": null,
+  "venue_latitude": null, "venue_longitude": null, "venue_name": null,
+  "geofence_radius_meters": null,
   "require_liveness_check": true, "require_face_match": false,
   "risk_threshold": null }
 ```
@@ -235,7 +263,8 @@ assigned TAs aren't included.
   neither: each one falls back to the course separately.
 
 ### `PATCH /api/v1/sessions/{id}` — instructor or admin who manages it
-Partial update plus `status`. `status: "active"` stamps `actual_start`;
+Partial update: any field from create except `course_id`, plus
+`status`. **200** → `SessionResponse`. `status: "active"` stamps `actual_start`;
 `"closed"` stamps `actual_end`. Use these for "start/end session" controls.
 `null` for a required field is ignored; for an optional one it clears it.
 E.g. `venue_latitude`/`venue_longitude`/`geofence_radius_meters: null` → the
@@ -263,7 +292,8 @@ or email. `?is_active=false` lists removed enrollments instead (default
 `true`).
 
 ### `POST /api/v1/enrollments/` — instructor/admin who owns the course
-`{ "student_id": "...", "course_id": "..." }` → **201**. **400 ALREADY_ENROLLED**
+`{ "student_id": "...", "course_id": "..." }` → **201**
+`{ id, student_id, course_id, is_active, enrolled_at }`. **400 ALREADY_ENROLLED**
 only if the student is currently enrolled. Re-adding a **removed** student
 reactivates their old enrollment (same `id`, new `enrolled_at`) and
 returns **201**. Bulk enrolment and `POST /admin/enrollments/` behave the
@@ -290,7 +320,8 @@ a random, unrecoverable password (there's no password-reset flow). **200** →
   "browser": null, "os_version": null, "app_version": null, "public_key": null }
 ```
 `device_fingerprint` is at most 64 characters. `platform` ∈
-`ios|android|web|desktop`. **201** new; **200** re-registering your own
+`ios|android|web|desktop`. Returns a `DeviceResponse` (the shape under
+`GET /devices/my-devices`): **201** new; **200** re-registering your own
 fingerprint (updated in place). **400 DEVICE_FINGERPRINT_TAKEN** if another
 user owns it.
 
@@ -307,11 +338,11 @@ it scores `device_unknown`, and if two students use the same ID within
 ID would hide that.
 
 ### `GET /api/v1/devices/my-devices` — any authenticated role
-Plain array of `{ id, device_fingerprint, device_name, platform, browser, os_version, app_version, is_trusted, trust_score, is_active, total_checkins, first_seen_at, last_seen_at }`.
+Plain array of `DeviceResponse`: `{ id, device_fingerprint, device_name, platform, browser, os_version, app_version, is_trusted, trust_score, is_active, total_checkins, first_seen_at, last_seen_at }`.
 
 ### `PATCH /api/v1/devices/{id}` — owner or admin
 `{ "device_name": "...", "is_active": false, "is_trusted": true }`.
-`is_trusted` is silently ignored for non-admins.
+`is_trusted` is silently ignored for non-admins. **200** → `DeviceResponse`.
 
 ### `DELETE /api/v1/devices/{id}` — owner or admin
 **204**. Soft (revoked, history kept).
@@ -392,7 +423,13 @@ without verifying it first (checked at check-in, no retry).
   attempt in a session, only a verified pass can approve their check-in;
   otherwise it's flagged (`liveness_challenge_failed`). Some verdicts end
   the attempts at once (reported as `failed` with `attempts_left: 0`).
-- Until Module 3 ships frame checking, every verify answers `unverified`.
+- `unverified` happens when the face service times out or fails, a step
+  has too few frames with a face, or the most front-facing frame scores low.
+- **Head turns** count only if the head turns far enough **and comes back
+  toward centre**, and nothing is recorded after the last step. A slow turn
+  as the last step is often still in progress when recording stops, so
+  prompt "then look back at the camera" (Module 3's suggestion, which also
+  works with ~5 extra frames after the last step, within `max_frames`).
 
 ### `POST /api/v1/checkins/` — **student only**
 ```jsonc
@@ -412,8 +449,7 @@ without verifying it first (checked at check-in, no retry).
   Steps not performed → `flagged` for review (`liveness_challenge_failed`),
   never rejected for that alone. Can't confirm the steps → at most
   `flagged` (`liveness_unverified`). Judged a spoof (here or in any verify
-  attempt for this session) → `rejected` (`liveness_failed`). Until Module 3
-  ships frame checking, challenged check-ins are flagged.
+  attempt for this session) → `rejected` (`liveness_failed`).
 - `challenge_type` (lowercase letters and `_`) is only a label stored with
   the check-in when you send frames **without** a challenge.
 - **Send a fresh photo or burst every time.** If **any** image (the photo or
@@ -456,7 +492,7 @@ without verifying it first (checked at check-in, no retry).
   "face_match_score", "face_embedding_hash", "risk_score", "risk_level",
   "risk_factors": [{"type", "weight"}], "qr_code_verified",
   "reviewed_by_id", "reviewed_at", "review_notes",
-  "appeal_reason", "appealed_at" }
+  "appeal_reason", "appealed_at", "entry_method" }
 ```
 - **A 201 is not "approved". Check `status`** (`approved` | `flagged` |
   `rejected`). Flagged and rejected are normal outcomes. Show them clearly
@@ -464,6 +500,9 @@ without verifying it first (checked at check-in, no retry).
 - `risk_level` ∈ `LOW|MEDIUM|HIGH|CRITICAL`. Use it for the badge; CRITICAL
   is a rejection.
 - `latitude`/`longitude` come back rounded to 4 decimals (privacy rule).
+- `entry_method`: `app` (the student's own check-in), `manual` (created by
+  staff, see `POST /checkins/manual`) or `override` (staff approved it over
+  an earlier flagged/appealed/rejected outcome).
 - **A check-in without a liveness result is never auto-rejected** unless a
   hard-reject signal fires (GPS more than 2× the geofence away, or a
   replayed image). "Without a liveness result" means no photo, the face
@@ -493,12 +532,15 @@ plus the weights below, capped at 1.0.
 | `liveness_challenge_failed` | high | 0 | Challenge steps not detected (and no later attempt passed) → at most flagged |
 | `liveness_unverified` | high | 0 | Liveness required but no result → at most flagged |
 | `face_match_failed` | **critical** | 0.25 | Face-required session, wrong face → **rejected** |
+| `face_match_failed` | high | 0 | Any other session, wrong face → at most flagged (`FACE_MISMATCH_ENFORCEMENT=flag`, the default) |
 | `face_match_unverified` | high | 0 | Face required but no comparison → at most flagged |
 | `replay_suspected` | **critical** | 0.30 | Re-used photo or frame (same student) → **rejected** |
 | `rapid_succession` | high | 0 | Device used by another student < 10 min ago → at most flagged |
 | `unusual_time` | low | 0 | > 15 min after start; informational |
 | `consent_missing` | medium | 0 | Camera or location consent not `true` on the account → at most flagged (on by default) |
 | `device_unbound` | medium | 0 | Only with `DEVICE_BINDING_ENFORCEMENT=flag` |
+| `manual_checkin` | — | 0 | Created by staff (`entry_method: manual`); no GPS, face or liveness data |
+| `manual_override` | — | 0 | Approved by staff over the earlier outcome; the factors before it are the original evidence |
 
 **Critical = rejects on its own.** `risk_level` bands: `LOW` < 0.3 ≤
 `MEDIUM` < 0.5 ≤ `HIGH` < 0.7 ≤ `CRITICAL` (always rejected).
@@ -519,21 +561,63 @@ The reason is HTML-escaped when stored.
 Query: `session_id`, `course_id`, `student_id`, `status`, `min_risk_score`,
 `max_risk_score`, `start_date`, `end_date`, `limit` (max 100), `offset`. →
 paginated, scoped to what you staff (admin sees all). Items:
-`{ id, session_id, session_name, student_id, student_name, student_email, status, checked_in_at, distance_from_venue_meters, risk_score, risk_level, liveness_passed }`.
+`{ id, session_id, session_name, student_id, student_name, student_email, status, checked_in_at, distance_from_venue_meters, risk_score, risk_level, liveness_passed, entry_method }`.
 
 ### `GET /api/v1/checkins/session/{session_id}` — staff who manage the session
-Plain array with `risk_factors`, `risk_level` and `device_trusted`. For a
-"who checked in" screen.
+Plain array of `{ id, student_id, student_name, student_email, status,
+checked_in_at, distance_from_venue_meters, risk_score, risk_level,
+risk_factors, liveness_passed, device_trusted, entry_method }`. For a "who
+checked in" screen.
 
 ### `GET /api/v1/checkins/flagged` — instructor/ta/admin
 Query: `course_id`, `session_id`, `limit` (max 100), `offset`. →
-**paginated** `{items, total, limit, offset}`. Includes `appealed` rows. This
-is the review queue. Each item's `risk_factors` are `{type, severity,
+**paginated** `{items, total, limit, offset}`. Items: `{ id, session_id,
+session_name, student_id, student_name, status, checked_in_at, risk_score,
+risk_level, risk_factors, appeal_reason, appealed_at }`. Includes `appealed`
+rows. This is the review queue. Each item's `risk_factors` are `{type, severity,
 weight}`, where `severity` ∈ `critical|high|medium|low` (table above).
 
 ### `POST /api/v1/checkins/{id}/review` — staff who manage the session
 `{ "status": "approved" | "rejected", "review_notes": "..." }`. Only on
 `flagged`/`appealed`. **200** → `{ id, status, reviewed_by_id, reviewed_at, review_notes }`.
+
+### `POST /api/v1/checkins/manual` — staff who manage the session (instructor, assigned TA, admin)
+For a student who is in class but couldn't check in (phone dead, camera
+broken, GPS refused).
+```json
+{ "session_id": "...", "student_id": "...", "reason": "Phone died, seen in class" }
+```
+`reason` is required (1–500 characters, HTML-escaped when stored as
+`review_notes`). What happens depends on the student's existing check-in:
+
+| Existing check-in | Result |
+|---|---|
+| None | **201** `CheckinResponse`: `approved`, `entry_method: manual`, risk 0, `risk_factors: [manual_checkin]` |
+| `flagged` / `appealed` / `rejected` | **200** `CheckinResponse`, same `id`: `approved`, `entry_method: override`. The original risk data and `appeal_reason` stay; `manual_override` is added to `risk_factors` |
+| `approved` | **400 ALREADY_CHECKED_IN** |
+
+The staff member is stored as `reviewed_by_id`. Allowed from the moment the
+check-in window opens until **7 days after the session's scheduled end**,
+whatever the session's `status` says, except `cancelled`.
+
+| Response | Meaning |
+|---|---|
+| `400 SESSION_NOT_ACTIVE` | Session cancelled, or its check-in window hasn't opened yet |
+| `400 MANUAL_CHECKIN_WINDOW_CLOSED` | More than 7 days after the session ended |
+| `400 NOT_ENROLLED` | Student not actively enrolled in the session's course |
+| `403` | Not staff of this session |
+| `404 SESSION_NOT_FOUND` / `STUDENT_NOT_FOUND` | Unknown session; unknown, non-student or deactivated student |
+
+### `POST /api/v1/checkins/{id}/manual/undo` — staff who manage the session
+No body. Only for `entry_method` `manual` or `override`, within the same 7
+days (any staff of the session, not only whoever made it).
+- `manual` → the check-in is **deleted**; the student is absent again and
+  can still check in themselves while the window is open.
+- `override` → the previous status, reviewer and notes are restored exactly.
+
+**200** → `{ "id", "status" }` (`status`: the restored one, or `deleted`).
+**400 MANUAL_UNDO_NOT_ALLOWED** on any other check-in;
+**400 MANUAL_CHECKIN_WINDOW_CLOSED** after 7 days.
 
 ---
 
@@ -542,20 +626,21 @@ weight}`, where `severity` ∈ `critical|high|medium|low` (table above).
 | Endpoint | Body | Notes |
 |---|---|---|
 | `PATCH /api/v1/admin/users/{id}/deactivate` | — | → `{id, email, is_active: false, message}` |
-| `PATCH /api/v1/admin/users/{id}/activate` | — | Also **clears a login lockout** and **cancels a pending account deletion** |
-| `DELETE /api/v1/users/{id}` | — | Admin account deletion (no password); **202** |
+| `PATCH /api/v1/admin/users/{id}/activate` | — | → `{id, email, is_active: true, message}`. Also **clears a login lockout** and **cancels a pending account deletion** |
+| `DELETE /api/v1/users/{id}` | — | Admin account deletion (no password); **202** `{message, scheduled_deletion_at}`, as `DELETE /users/me` |
 | `POST /api/v1/admin/users/bulk` | `{"users": [{"email","password","full_name","role"}]}` | **201** → `{created, failed, users, errors}`. Users can then set their own password with `POST /users/me/password` (§2) |
-| `PATCH /api/v1/admin/sessions/{id}/status` | `{"status": "active"}` | Bypasses session ownership |
-| `POST /api/v1/admin/enrollments/` | `{"student_id","course_id"}` | Bypasses course ownership |
-| `POST /api/v1/admin/retention/run` | — | Runs the retention sweep now (it also runs automatically every hour) |
+| `PATCH /api/v1/admin/sessions/{id}/status` | `{"status": "active"}` | → `{id, name, status, message}`. Bypasses session ownership |
+| `POST /api/v1/admin/enrollments/` | `{"student_id","course_id"}` | **201** → `{id, student_id, course_id, is_active, enrolled_at}`. Bypasses course ownership |
+| `POST /api/v1/admin/retention/run` | — | → `{users_anonymized, checkins_anonymized, message}`. Runs the retention sweep now (it also runs automatically every hour) |
 
 Also, for user and device management screens:
-- `GET /api/v1/users/` (admin; filters `role`, `is_active`, `search`;
-  paginated); `GET /api/v1/users/{id}` (admin, yourself, or an instructor of
-  one of that student's courses); `PATCH /api/v1/users/{id}` (admin;
-  `{role, is_active}`, `null` ignored).
+- `GET /api/v1/users/` (admin; filters `role`, `is_active`, `search`,
+  `limit` max 100, `offset`; paginated `UserResponse`, §2);
+  `GET /api/v1/users/{id}` (admin, yourself, or an instructor of one of that
+  student's courses; → `UserResponse`); `PATCH /api/v1/users/{id}` (admin;
+  `{role, is_active}`, `null` ignored; → `UserResponse`).
 - `GET /api/v1/devices/` (admin; filters `user_id`, `is_trusted`,
-  `is_active`; paginated). An admin `PATCH /devices/{id} {"is_trusted": true}`
+  `is_active`, `limit`, `offset`; paginated `DeviceResponse`, §6). An admin `PATCH /devices/{id} {"is_trusted": true}`
   marks a device trusted.
 
 ---

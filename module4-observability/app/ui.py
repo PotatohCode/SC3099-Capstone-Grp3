@@ -44,6 +44,8 @@ RISK_REASONS = {
     "unusual_time": "Checked in more than 15 min after start",
     "consent_missing": "Camera/location consent not given",
     "device_unbound": "Device not bound to this student",
+    "manual_checkin": "Checked in manually by staff",
+    "manual_override": "Approved by staff (manual override)",
 }
 
 AUDIT_ACTION_LABELS = {
@@ -55,6 +57,10 @@ AUDIT_ACTION_LABELS = {
     "checkin_rejected_geo": "Check-in blocked (outside Singapore)", "checkin_appealed": "Check-in appealed",
     "checkin_reviewed": "Check-in reviewed",
     "liveness_challenge_verified": "Liveness challenge attempt",
+    "face_reset_code_issued": "Face reset code issued", "face_reset_code_rejected": "Wrong face reset code",
+    "face_reenrolled": "Face re-registered with a reset code",
+    "checkin_manual": "Manual check-in by staff", "checkin_manual_override": "Check-in approved by staff (override)",
+    "checkin_manual_undone": "Staff check-in undone",
     "password_changed": "Password changed", "password_change_failed": "Password change failed", "session_created": "Session created",
     "session_updated": "Session updated", "session_deleted": "Session deleted",
     "enrollment_added": "Enrolment added", "enrollment_removed": "Enrolment removed",
@@ -173,6 +179,15 @@ def pct(value) -> str:
 def status_label(status: str | None) -> str:
     status = (status or "").lower()
     return f"{STATUS_ICONS.get(status, '⚪')} {status.title()}" if status else "—"
+
+
+ENTRY_LABELS = {"app": "📱 App", "manual": "✍️ Manual", "override": "✅ Override"}
+
+
+def entry_label(method: str | None) -> str:
+    """How a check-in was made: the student's app, a staff manual check-in, or
+    staff approving over the app's result."""
+    return ENTRY_LABELS.get(method or "app", method or "")
 
 
 def risk_label(level: str | None, score: float | None = None) -> str:

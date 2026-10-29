@@ -4,7 +4,8 @@
  *
  * Caching strategy (IMPLEMENTATION_PLAN.html Section 4, Task 1.8 / Decision 4):
  *   - Cache-First:            static assets (JS, CSS, images, fonts, icons, manifest)
- *   - Stale-While-Revalidate: GET /sessions*, GET /checkins/my-checkins
+ *   - Stale-While-Revalidate: GET /sessions*
+ *   - Network-First:          GET /checkins/my-checkins (must be fresh to hide checked-in sessions)
  *   - Network-Only:           /auth/*, any non-GET request (incl. POST /checkins/)
  *
  * Section 7 Risk Analysis: "Service Worker Cache Poisoning" -> mitigated by the strict
@@ -58,10 +59,11 @@ function isNetworkOnly(request, url) {
 }
 
 function isStaleWhileRevalidate(url) {
-  return (
-    /\/sessions(\/|$)/.test(url.pathname) ||
-    /\/checkins\/my-checkins/.test(url.pathname)
-  )
+  return /\/sessions(\/|$)/.test(url.pathname)
+}
+
+function isNetworkFirst(url) {
+  return /\/checkins\/my-checkins/.test(url.pathname)
 }
 
 function isStaticAsset(request, url) {
@@ -80,6 +82,11 @@ self.addEventListener('fetch', (event) => {
 
   if (isNetworkOnly(request, url)) {
     event.respondWith(self.networkOnly(request))
+    return
+  }
+
+  if (isNetworkFirst(url)) {
+    event.respondWith(self.networkFirst(request, READS_CACHE))
     return
   }
 

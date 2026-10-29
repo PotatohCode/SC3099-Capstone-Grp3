@@ -42,6 +42,8 @@ class Settings(BaseSettings):
     # --- Risk scoring defaults (overridable per course/session) ------------
     RISK_SCORE_THRESHOLD: float = 0.5
     LIVENESS_THRESHOLD: float = 0.6
+    # Not used for decisions: Module 3's /face/verify decides match_passed
+    # with its own threshold (dlib distance <= 0.6), and we act on that.
     FACE_MATCH_THRESHOLD: float = 0.7
     DEFAULT_GEOFENCE_RADIUS_METERS: float = 100.0
 
@@ -118,6 +120,15 @@ class Settings(BaseSettings):
     #   flag - device not registered to this student -> device_unbound,
     #          at most "flagged"
     DEVICE_BINDING_ENFORCEMENT: Literal["off", "flag"] = "off"
+    # FACE_MISMATCH_ENFORCEMENT - a wrong face (Module 3 match_passed=false)
+    # on a session that does NOT require a face match. On face-required
+    # sessions a mismatch always rejects, whatever this is set to.
+    #   off  - not acted on (the match score only feeds the risk score)
+    #   flag - face_match_failed (high, weight 0) + security_violation, at
+    #          most "flagged"
+    # On by default: since M1 PR #5 every student enrols before checking
+    # in, so the comparison runs on almost every check-in.
+    FACE_MISMATCH_ENFORCEMENT: Literal["off", "flag"] = "flag"
 
     # --- Concurrency ---------------------------------------------------------
     # Worker threads for sync endpoints AND their response validation
@@ -176,6 +187,22 @@ class Settings(BaseSettings):
     # (challenge_passed) first; with it on today, every check-in from the
     # website would go to review.
     LIVENESS_CHALLENGE_ENFORCEMENT: Literal["off", "flag"] = "off"
+
+    # --- Face re-enrolment codes (POST /users/{id}/face/reset-code) ----------
+    # Once a face is enrolled, replacing it needs a one-time code from an
+    # instructor of one of the student's courses (or an admin), so someone
+    # who only knows the password can't swap in their own face.
+    # FACE_REENROLL_REQUIRES_CODE=false turns the check off (first
+    # enrolment never needs a code).
+    FACE_REENROLL_REQUIRES_CODE: bool = True
+    FACE_RESET_CODE_TTL_SECONDS: int = Field(default=900, ge=60)
+    # Wrong codes before the code is burned and a new one must be issued.
+    FACE_RESET_CODE_MAX_ATTEMPTS: int = Field(default=5, ge=1)
+
+    # --- Manual check-ins (POST /checkins/manual) ----------------------------
+    # Staff can check a student in by hand (or undo it) until this many days
+    # after the session's scheduled end. Same as the appeal window.
+    MANUAL_CHECKIN_DAYS: int = Field(default=7, ge=0)
 
     # --- CORS ----------------------------------------------------------------
     CORS_ORIGINS: list[str] = [

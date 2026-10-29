@@ -7,6 +7,7 @@ module.exports = nextJest({ dir: './' })({
     '^@/(.*)$': '<rootDir>/$1',
     '^axios$': '<rootDir>/node_modules/axios/dist/node/axios.cjs',
   },
+  globalSetup: '<rootDir>/test/global-setup.js',
   setupFilesAfterEnv: ['<rootDir>/test/setup.ts'],
   testMatch: ['**/__tests__/**/*.test.ts?(x)'],
   collectCoverageFrom: ['lib/**/*.{ts,tsx}', 'components/**/*.tsx', 'app/**/*.tsx', '!**/__tests__/**'],

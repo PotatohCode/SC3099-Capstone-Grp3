@@ -48,6 +48,22 @@ async function staleWhileRevalidate(request, cacheName) {
   return cached || (await networkFetch) || Response.error()
 }
 
+/** Network-First: fetch fresh data and refresh the cache; fall back to the cached copy only when the network fails. */
+async function networkFirst(request, cacheName) {
+  const cache = await caches.open(cacheName)
+  try {
+    const response = await fetch(request)
+    if (response && response.ok) {
+      cache.put(request, response.clone())
+    }
+    return response
+  } catch (err) {
+    const cached = await cache.match(request)
+    if (cached) return cached
+    throw err
+  }
+}
+
 /** Network-Only: never touch the cache. Used for /auth/* and all mutating requests. */
 async function networkOnly(request) {
   return fetch(request)
@@ -58,3 +74,4 @@ async function networkOnly(request) {
 self.cacheFirst = cacheFirst
 self.staleWhileRevalidate = staleWhileRevalidate
 self.networkOnly = networkOnly
+self.networkFirst = networkFirst

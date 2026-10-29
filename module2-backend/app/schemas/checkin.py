@@ -97,6 +97,24 @@ class CheckinResponse(_RiskLevelMixin):
     review_notes: Optional[str] = None
     appeal_reason: Optional[str] = None
     appealed_at: Optional[datetime] = None
+    # app (the student's own check-in), manual (created by staff) or
+    # override (staff approved it over an earlier outcome).
+    entry_method: str = "app"
+
+
+class ManualCheckinRequest(BaseModel):
+    """POST /checkins/manual (staff). The reason is stored as review_notes
+    and in the audit log."""
+    session_id: str = Field(min_length=1, max_length=36)
+    student_id: str = Field(min_length=1, max_length=36)
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class ManualUndoResponse(BaseModel):
+    """POST /checkins/{id}/manual/undo. status: the restored status, or
+    "deleted" when the undone check-in had been created by staff."""
+    id: str
+    status: str
 
 
 class CheckinListItem(_RiskLevelMixin):
@@ -113,6 +131,7 @@ class CheckinListItem(_RiskLevelMixin):
     distance_from_venue_meters: Optional[float] = None
     risk_score: float
     liveness_passed: Optional[bool] = None
+    entry_method: str = "app"
 
 
 class MyCheckinItem(_RiskLevelMixin):
@@ -141,6 +160,7 @@ class SessionCheckinItem(_RiskLevelMixin):
     risk_factors: List[RiskFactorItem] = []
     liveness_passed: Optional[bool] = None
     device_trusted: Optional[bool] = None
+    entry_method: str = "app"
 
 
 class FlaggedCheckinRiskFactor(BaseModel):

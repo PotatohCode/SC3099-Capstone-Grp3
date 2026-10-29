@@ -4,18 +4,17 @@ export const HARD_MAX_FRAMES = 30
 
 export const CAPTURE = {
   intervalMs: 200,
-  framesPerStep: 8,
+  framesPerStep: 10,
   countdownMs: 3000,
-  leadInMs: 500,
-  gapMs: 500,
+  captureMs: 2000,
   hardMaxFrames: HARD_MAX_FRAMES,
   freshForMs: 80_000,
 } as const
 
 const PROMPTS: Record<string, string> = {
-  blink: 'Blink a few times',
-  turn_left: 'Slowly turn your head to your left',
-  turn_right: 'Slowly turn your head to your right',
+  blink: 'Close your eyes for 1 second and open them',
+  turn_left: 'Turn your head to your left and look back in the camera within 2 seconds',
+  turn_right: 'Turn your head to your right and look back in the camera within 2 seconds',
 }
 
 const MISSED_HINTS: Record<string, string> = {
@@ -38,6 +37,7 @@ export interface StepPlan {
   action: string
   prompt: string
   startMs: number
+  captureStartMs: number
   frameOffsetsMs: number[]
   endMs: number
 }
@@ -55,12 +55,12 @@ export function planCapture(sequence: string[], maxFrames: number): CapturePlan 
   const perStep = Math.min(CAPTURE.framesPerStep, Math.floor(cap / sequence.length))
   if (perStep < 1) return null
   const steps: StepPlan[] = []
-  let cursor: number = CAPTURE.countdownMs
-  sequence.forEach((action, index) => {
-    const first = cursor + CAPTURE.leadInMs
-    const frameOffsetsMs = Array.from({ length: perStep }, (_, i) => first + i * CAPTURE.intervalMs)
-    const endMs = frameOffsetsMs[frameOffsetsMs.length - 1] + (index < sequence.length - 1 ? CAPTURE.gapMs : 0)
-    steps.push({ action, prompt: promptFor(action), startMs: cursor, frameOffsetsMs, endMs })
+  let cursor = 0
+  sequence.forEach((action) => {
+    const captureStartMs = cursor + CAPTURE.countdownMs
+    const frameOffsetsMs = Array.from({ length: perStep }, (_, i) => captureStartMs + i * CAPTURE.intervalMs)
+    const endMs = captureStartMs + CAPTURE.captureMs
+    steps.push({ action, prompt: promptFor(action), startMs: cursor, captureStartMs, frameOffsetsMs, endMs })
     cursor = endMs
   })
   return { steps, totalFrames: perStep * sequence.length, durationMs: cursor }

@@ -44,6 +44,8 @@ def can(action: str) -> bool:
     rules = {
         "manage_sessions": r in {"instructor", "admin"},      # create / activate / close
         "review": r in {"ta", "instructor", "admin"},
+        "manual_checkin": r in {"ta", "instructor", "admin"},  # backend: staff who manage the session
+        "face_reset": r in {"instructor", "admin"},          # backend: the student's instructor, or admin
         "course_analytics": r in {"instructor", "admin"},
         "student_analytics": r in {"instructor", "admin"},
         "manage_accounts": r in {"instructor", "admin"},
@@ -68,17 +70,29 @@ def my_course_ids() -> set[str] | None:
             me = user().get("id")
             ids = {c["id"] for c in courses if c.get("instructor_id") == me}
         else:
-            ids = set()
-            for course in courses:
-                try:
-                    api.get(f"/api/v1/enrollments/course/{course['id']}")
-                    ids.add(course["id"])
-                except api.SessionExpired:
-                    raise
-                except api.ApiError:
-                    pass
+            api.get("/api/v1/users/me")  # renews the access token first if it has expired
+            ids = set(_ta_course_ids(user().get("id"), tuple(c["id"] for c in courses),
+                                     st.session_state.access_token))
         st.session_state.scope_course_ids = ids
     return st.session_state.scope_course_ids
+
+
+@st.cache_data(ttl=600, show_spinner="Loading your courses…")
+def _ta_course_ids(user_id: str, course_ids: tuple[str, ...], _token: str) -> list[str]:
+    """Courses a TA is assigned to. The backend has no "my courses" call for TAs,
+    so this asks for each course's roster (allowed only for its own TAs). That's
+    one request per course, so the answer is remembered for 10 minutes per TA,
+    across sign-ins and tabs, instead of being rebuilt at every sign-in.
+    (`_token` is left out of the cache key; the key is the TA and the course list.)"""
+    mine = []
+    for course_id in course_ids:
+        response = api._send("GET", f"/api/v1/enrollments/course/{course_id}", token=_token)
+        if response.status_code == 401:
+            # Don't cache an answer built with a dead token.
+            raise api.SessionExpired("Your session has expired. Please sign in again.", 401)
+        if response.ok:
+            mine.append(course_id)
+    return mine
 
 
 def my_courses() -> list[dict]:

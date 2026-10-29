@@ -3,6 +3,7 @@ import type { CapturePlan, StepPlan } from '@/lib/liveness/challenge'
 
 export interface RunCallbacks {
   onStep: (index: number, step: StepPlan) => void
+  onCapture?: (index: number, step: StepPlan) => void
 }
 
 export interface RunClock {
@@ -55,6 +56,8 @@ export async function runCapturePlan(
     const step = plan.steps[index]
     await waitUntil(step.startMs)
     callbacks.onStep(index, step)
+    await waitUntil(step.captureStartMs)
+    callbacks.onCapture?.(index, step)
     let taken = 0
     for (const offset of step.frameOffsetsMs) {
       await waitUntil(offset)

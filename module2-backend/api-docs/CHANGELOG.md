@@ -14,6 +14,52 @@ below.
 
 ---
 
+## 2026-10-27 — `backend/face-reset-and-manual-checkin`: face reset codes, manual check-ins
+
+**Rebuild needed:** `docker compose up -d --build backend` (one migration,
+`b9d4e1f7a2c6`, runs on start: two columns on `checkins`).
+
+| Area | Before | Now | Why |
+|---|---|---|---|
+| Replacing an enrolled face | `POST /users/me/face/enroll` overwrote it with no check | Needs a one-time `reset_code` from an instructor of one of the student's courses (or an admin): `POST /users/{student_id}/face/reset-code`. 15 min, single use, bound to the student, 5 wrong tries burn it. The first enrolment is unchanged | Anyone who knew a student's password could enrol **their own** face, and the face match would then pass for them on every check-in. Instructors (not TAs) because they manage enrolment and know their students (team decision 2026-10-27) |
+| A student in class who couldn't check in | No way to record it: no check-in = nothing to review or appeal | `POST /checkins/manual` (instructor or assigned TA, reason required): creates an approved check-in, or approves a flagged/appealed/rejected one in place (evidence kept). `POST /checkins/{id}/manual/undo` restores exactly what was there. Up to 7 days after the session | Phone dead, camera broken, GPS refused, blocked by the Singapore check. The student came to staff in person, which is a stronger check than the app's |
+| Check-in responses | — | New `entry_method`: `app` / `manual` / `override`; new `risk_factors` `manual_checkin` / `manual_override` (weight 0) | Lets dashboards label and filter staff-entered attendance |
+| Audit | — | `face_reset_code_issued`, `face_reset_code_rejected`, `face_reenrolled`, `checkin_manual`, `checkin_manual_override`, `checkin_manual_undone`; violation `face_reset_code_guessing` | Every staff action records who did it and why |
+
+Switch `FACE_REENROLL_REQUIRES_CODE` (default `true`; `false` lets a
+student replace their face freely, as before). Manual check-ins aren't
+counted in the Prometheus check-in counters, so the success rate still
+describes real check-ins. The CSV export is unchanged (it shows the
+status, `approved`).
+
+**Action needed:** M1 (code field on the settings page) and M4 (generate-code
+screen, manual check-in form with undo, labels): see the checklist.
+
+---
+
+## 2026-10-26 — `backend/face-mismatch-review`: a wrong face is flagged on every session
+
+**Rebuild needed:** `docker compose up -d --build backend`.
+
+| Area | Before | Now | Why |
+|---|---|---|---|
+| Wrong face (`match_passed: false`) on a session that **doesn't** require a face match | No signal; the match score only fed the risk score, so the check-in was usually **approved** | `face_match_failed` (severity `high`, weight 0, `details.face_match_required: false`) → at most **flagged** for review | Since M1 PR #5 every student enrols before checking in, so the backend knows when someone else's face is used on a student's account. Not proof enough to reject (one bad frame can miss), but it mustn't be auto-approved |
+| Wrong face on a face-required session | **Rejected** (`critical`, +0.25) | Unchanged | |
+| Security violations | `face_match_failed` logged only when it rejected | Logged for every wrong face (`security_violation`, and `security_violations_total{violation_type="face_match_failed"}`) | A wrong face is an impersonation attempt either way |
+
+No comparison (no enrolled face, no photo, face service down) behaves as
+before. `risk_factors` shows both cases as `face_match_failed`; the weight
+(0 vs 0.25) tells them apart. New switch `FACE_MISMATCH_ENFORCEMENT`
+(default `flag`; `off` restores the old behaviour).
+
+**What you'll notice:** more check-ins in the review queue, a lower
+`approval_rate` until they're reviewed, and higher violation counts.
+Attendance rates don't change (flagged counts as attended). Students see
+"flagged" instead of "approved" and can appeal as usual. **No action
+needed from any module** (M4: see the FYI row in the checklist).
+
+---
+
 ## 2026-10-23 — `backend/password-change`: liveness retries
 
 **Rebuild needed:** `docker compose up -d --build backend`.
@@ -198,6 +244,49 @@ Tasks from the [checklist](CHANGES-2026-10-01.md) that the other modules
 have finished, newest first. Moved here so the checklist only shows what's
 left.
 
+### Module 1 — Frontend: PR #10 (`e0279eb`, merged 2026-10-27)
+
+| Was | Task | Done how |
+|---|---|---|
+| Should | Show times in Singapore time (they were 8 h early) | `lib/utils/datetime.ts` `parseServerDate` reads a backend timestamp without an offset as UTC, and every time is shown in `Asia/Singapore` whatever the device's timezone (History list, detail, month filter, session windows) |
+
+### Module 4 — Dashboard: PR #8 (`5612fbb`, merged 2026-10-25)
+
+| Was | Task | Done how |
+|---|---|---|
+| FYI | Face-service metrics are live | System Health's "Face checks" shows totals since the face service started (counters with labels only appear on first use, so a range increase missed early events), including `not_compared` / `not_assessed`. Face request rate and p95 latency leave out Prometheus's own `/metrics` scrapes. Backend 4xx/5xx error rate shows 0% instead of "no data" when nothing fails |
+
+### Module 3 — Face recognition: PR #7 (`03adb9f`, merged 2026-10-24)
+
+| Was | Task | Done how |
+|---|---|---|
+| **Should** | `/liveness/check`: frames + `challenge_sequence`, return `challenge_passed` | Frame bursts are judged step by step: `blink` (eyelids open → closed → open, on refined face-mesh landmarks, only on frames facing the camera) and `turn_left` / `turn_right` (yaw past a threshold from where the step started, then back toward centre; raw frames, direction checked on real recordings). Steps are searched in order, and `steps_passed` is returned, so liveness retries answer `passed` / `failed` with `failed_step`. Tuned on 46 real recordings. `null` (no attempt used) when a step has fewer than 3 frames with a face. For a burst, `liveness_passed` is `true` or `null`, never `false` |
+| **Should** | `/face/verify`: "no face" → `match_passed: null` | `null` on decode failure, no face, no embedding or an invalid reference hash; `false` only for two different faces (`98885bf`) |
+| **Should** | Don't score private / Docker IPs as VPN | The IP is no longer scored (the backend already blocks foreign public IPs); only the user agent is checked, and `tor` now has to be a whole word (it matched `motorola`) |
+| **Should** | `GET /metrics` | `prometheus_client` in multiprocess mode (counts both workers), with the metric names Module 4's panels query |
+| Optional | Cap `opencv-python<4.12`, `numpy<2` | In `requirements.txt` and the root `requirements-test.txt` |
+| Optional | Strip whitespace before base64-decoding | Spaces and line breaks are removed first |
+| — | Concurrency (still open, improved) | 2 workers with models loaded once and dlib reusing MediaPipe's face box: ~30–35 simultaneous photo check-ins inside 5 s in Docker. The row stays in the checklist |
+
+### Module 4 — Dashboard: PR #6 (`367fd8b`, merged 2026-10-23)
+
+| Was | Task | Done how |
+|---|---|---|
+| Optional | Leave TAs out of "absent students" and the Students picker | Both use `?role=student`; the Accounts roster lists TAs with a Role column |
+| FYI | Attendance numbers changed | The overview tooltip describes held sessions and attended ÷ enrolled |
+| FYI | Names come back HTML-escaped | `api.py` unescapes every response; pages show it as plain text |
+| FYI | Session venue defaults to the course's | The create-session form offers the course's location and then sends no coordinates. Without a course location, coordinates are required; anything outside Singapore is refused. Map preview with the radius |
+| FYI | New liveness and password events | `liveness_challenge_failed`, `liveness_challenge_verified`, `password_changed` and `password_change_failed` labelled; failed password changes count as security events in the audit filter |
+| FYI | Flagged list `severity` is real now | Review reasons show the real severity, worst first |
+
+### Module 1 — Frontend: PR #5 (`fb6de41`, merged 2026-10-23)
+
+| Was | Task | Done how |
+|---|---|---|
+| **Should** | Face-enrolment step (settings page) | `/dashboard/settings`: re-enter the password (checked with `POST /auth/login`), camera consent saved once the browser grants it, a 5 s countdown, then one frame to `POST /users/me/face/enroll`. Students without an enrolled face are prompted at login, and check-in (page, nav, offline sync) is blocked in the app until they enrol |
+| **Should** | Change-password page | Settings form calling `POST /users/me/password`; handles `PASSWORD_UNCHANGED`, `PASSWORD_INCORRECT`, the shared lockout and weak passwords; stays logged in on errors |
+| **Should** | Liveness retries | Each Start verifies its burst first; `passed` submits the same `challenge_id` and frames. Differently from the checklist: `unverified` also asks for another Start (an optional follow-up is in the checklist). The third attempt, or the server's "no tries left", submits for review. Attempts are counted per student and session in `sessionStorage` |
+
 ### Module 1 — Frontend: PR #4 (`52112ca`, merged 2026-10-23)
 
 | Was | Task | Done how |
@@ -230,6 +319,7 @@ The defaults are what's running. Invalid values stop the backend at startup.
 | `CONSENT_ENFORCEMENT` | `flag` (was `off` until 2026-10-23) | `off` / `flag` / `reject`. Keep it off `reject` (graded fixtures check in without consent) |
 | `DEVICE_BINDING_ENFORCEMENT` | `off` | `off` / `flag` |
 | `LIVENESS_CHALLENGE_ENFORCEMENT` | `off` | `off` / `flag` |
+| `FACE_MISMATCH_ENFORCEMENT` | `flag` (since 2026-10-26) | `off` / `flag`. A wrong face on a session that doesn't require a face match: `flag` = review, `off` = only affects the score. Face-required sessions always reject |
 | `LIVENESS_CHALLENGE_ACTIONS` | `["blink","turn_left","turn_right"]` | Actions a challenge is drawn from; Module 3 must detect every one |
 | `LIVENESS_CHALLENGE_STEPS` / `LIVENESS_CHALLENGE_TTL_SECONDS` | `2` / `90` | Challenge length (1–3) and lifetime |
 | `MAX_LIVENESS_FRAMES` / `LIVENESS_TIMEOUT_SECONDS` | `30` / `15` | Frame cap; Module 3 timeout for bursts |
@@ -275,6 +365,8 @@ Interactive docs for every endpoint: http://localhost:8000/docs
 
 | Merged as | Contents |
 |---|---|
+| `backend/face-mismatch-review` | 2026-10-26: a wrong face is flagged on every session; team checklist and completed-task records for M1 PR #5, M3 PR #7, M4 PRs #6 and #8 |
+| `backend/password-change` (`6b2c854`) | 2026-10-23: password change, liveness retries, API docs sweep |
 | `backend/consent-flag` | 2026-10-23: consent enforced as `flag` |
 | `backend/enrollment-and-stats-fixes` | 2026-10-23 release above |
 | `backend/docs-errata` (`950af50`) | 2026-10-22 corrections above |

@@ -8,6 +8,7 @@ import random
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import streamlit as st
 
@@ -72,6 +73,7 @@ def _build() -> dict:
                 "checked_in_at": _iso(opened + timedelta(minutes=rng.uniform(1, 35))),
                 "distance_from_venue_meters": round(rng.uniform(3, 60) + (150 if "geo_out_of_bounds" in str(factors) else 0)),
                 "appeal_reason": "I was in the lecture, my phone's GPS was slow." if status == "flagged" and rng.random() < 0.2 else None,
+                "entry_method": "app",
             })
     for c in checkins:
         if c["appeal_reason"]:
@@ -247,6 +249,38 @@ def handle(method: str, path: str, params: dict | None = None, body: dict | None
         for item in items:
             item["risk_factors"] = [{**f, "severity": "medium"} for f in item["risk_factors"]]
         return _page(sorted(items, key=lambda c: c["checked_in_at"], reverse=True), params)
+    if method == "POST" and path == "/checkins/manual":
+        existing = next((c for c in db["checkins"] if c["session_id"] == body["session_id"]
+                         and c["student_id"] == body["student_id"]), None)
+        if existing and existing["status"] == "approved":
+            raise api.ApiError("Student already checked in", 400, "ALREADY_CHECKED_IN")
+        if existing:
+            existing["previous"] = {k: existing.get(k) for k in ("status", "entry_method", "risk_factors")}
+            existing.update(status="approved", entry_method="override",
+                            risk_factors=existing["risk_factors"] + [{"type": "manual_override", "weight": 0}])
+            checkin, code = existing, 200
+        else:
+            checkin = {"id": str(uuid.uuid4()), "session_id": body["session_id"], "student_id": body["student_id"],
+                       "status": "approved", "entry_method": "manual", "risk_score": 0.0,
+                       "risk_factors": [{"type": "manual_checkin", "weight": 0}],
+                       "checked_in_at": _iso(datetime.now(timezone.utc)), "distance_from_venue_meters": None,
+                       "appeal_reason": None}
+            db["checkins"].append(checkin)
+            code = 201
+        return SimpleNamespace(status_code=code, json=lambda: checkin) if raw else checkin
+    if m := re.fullmatch(r"/checkins/([^/]+)/manual/undo", path):
+        checkin = find("checkins", m[1])
+        if checkin.get("entry_method") == "manual":
+            db["checkins"].remove(checkin)
+            return {"id": checkin["id"], "status": "deleted"}
+        if checkin.get("entry_method") == "override":
+            checkin.update(checkin.pop("previous"))
+            return {"id": checkin["id"], "status": checkin["status"]}
+        raise api.ApiError("Only manual check-ins and overrides can be undone", 400, "MANUAL_UNDO_NOT_ALLOWED")
+    if m := re.fullmatch(r"/users/([^/]+)/face/reset-code", path):
+        code = "".join(random.choice("ABCDEFGHJKLMNPQRSTUVWXYZ23456789") for _ in range(8))
+        return {"student_id": m[1], "code": f"{code[:4]}-{code[4:]}",
+                "expires_at": _iso(datetime.now(timezone.utc) + timedelta(hours=24))}
     if m := re.fullmatch(r"/checkins/([^/]+)/review", path):
         checkin = find("checkins", m[1])
         checkin["status"] = body["status"]

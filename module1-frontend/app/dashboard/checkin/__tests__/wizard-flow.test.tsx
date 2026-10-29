@@ -6,6 +6,7 @@ import type { CheckInRequest } from '@/lib/types'
 import { installCamera, installGeolocation, installPermissions } from '@/test/browser-mocks'
 import { stubAdapter, type RecordedRequest, type StubReply } from '@/test/axios-stub'
 import { resetVerifyCalls } from '@/lib/liveness/verify'
+import { planCapture } from '@/lib/liveness/challenge'
 
 jest.mock('@/lib/hooks/useAuth', () => ({
   useAuth: () => ({
@@ -37,6 +38,8 @@ const session = {
   venue_name: 'LT1',
 }
 
+const CAPTURE_MS = planCapture(['blink', 'turn_left'], 30)!.durationMs
+
 async function flush(ms = 0) {
   await act(async () => {
     await jest.advanceTimersByTimeAsync(ms)
@@ -67,7 +70,7 @@ async function runToConfirm() {
   await flush()
   await flush()
   fireEvent.click(await screen.findByRole('button', { name: 'Start' }))
-  await flush(7400)
+  await flush(CAPTURE_MS + 100)
   await flush(100)
   expect(screen.getByText('Review & submit')).toBeTruthy()
 }
@@ -102,7 +105,7 @@ describe('check-in wizard', () => {
       challenge_id: 'ch-1',
       challenge_type: 'sequence',
     })
-    expect(submit.liveness_challenge_frames).toHaveLength(16)
+    expect(submit.liveness_challenge_frames).toHaveLength(20)
     expect(submit.device_fingerprint).toMatch(/^web-[0-9a-f-]{36}$/)
     expect(screen.getByText('Check-in submitted')).toBeTruthy()
     expect(screen.getByText('Medium (0.42)')).toBeTruthy()
@@ -127,7 +130,7 @@ describe('check-in wizard', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Redo face check' }))
     await flush()
     fireEvent.click(await screen.findByRole('button', { name: 'Start' }))
-    await flush(7400)
+    await flush(CAPTURE_MS + 100)
     await flush(100)
     fireEvent.click(screen.getByRole('button', { name: 'Submit check-in' }))
     await flush()
@@ -214,13 +217,13 @@ describe('check-in wizard', () => {
     await flush()
     await flush()
     fireEvent.click(await screen.findByRole('button', { name: 'Start' }))
-    await flush(7500)
+    await flush(CAPTURE_MS + 200)
     expect(screen.getByText('Unsuccessful capture, please retry.')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Start' }))
-    await flush(7500)
+    await flush(CAPTURE_MS + 200)
     expect(screen.getByText('Unsuccessful capture, please retry.')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Start' }))
-    await flush(7500)
+    await flush(CAPTURE_MS + 200)
     expect(
       screen.getByText('Your liveliness check was unsuccessful, please approach your instructor to mark your attendance.')
     ).toBeTruthy()
@@ -246,12 +249,12 @@ describe('check-in wizard', () => {
     await flush()
     await flush()
     fireEvent.click(await screen.findByRole('button', { name: 'Start' }))
-    await flush(7500)
+    await flush(CAPTURE_MS + 200)
     expect(screen.getByText('Unsuccessful capture, please retry.')).toBeTruthy()
     expect(screen.getByText(/We couldn't see you turn your head to your right\. 2 tries left\./)).toBeTruthy()
     expect(calls.some((c) => c.url === '/checkins/')).toBe(false)
     fireEvent.click(screen.getByRole('button', { name: 'Start' }))
-    await flush(7500)
+    await flush(CAPTURE_MS + 200)
     expect(screen.getByText('Review & submit')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Submit check-in' }))
     await flush()
@@ -276,11 +279,11 @@ describe('check-in wizard', () => {
     await flush()
     await flush()
     fireEvent.click(await screen.findByRole('button', { name: 'Start' }))
-    await flush(7500)
+    await flush(CAPTURE_MS + 200)
     fireEvent.click(screen.getByRole('button', { name: 'Start' }))
-    await flush(7500)
+    await flush(CAPTURE_MS + 200)
     fireEvent.click(screen.getByRole('button', { name: 'Start' }))
-    await flush(7500)
+    await flush(CAPTURE_MS + 200)
     expect(screen.getByText('Review & submit')).toBeTruthy()
     expect(
       screen.getByText('Your liveliness check was unsuccessful, please approach your instructor to mark your attendance.')
@@ -328,12 +331,13 @@ describe('check-in wizard', () => {
     await flush()
     for (let i = 0; i < 3; i++) {
       fireEvent.click(await screen.findByRole('button', { name: 'Start' }))
-      await flush(7500)
+      await flush(CAPTURE_MS + 200)
     }
     expect(screen.getByText('Review & submit')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Back' }))
     await flush()
-    fireEvent.click(await screen.findByRole('button', { name: 'Start' }))
+    expect(screen.queryByRole('button', { name: 'Start' })).toBeNull()
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue' }))
     await flush(100)
     expect(screen.getByText('Review & submit')).toBeTruthy()
     expect(screen.getByText('Not completed')).toBeTruthy()
