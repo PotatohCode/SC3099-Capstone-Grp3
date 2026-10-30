@@ -365,10 +365,20 @@ def enroll_face(request: FaceEnrollRequest):
     quality_score are required fields on the response model even when
     there's nothing real to put there, hence the placeholders.
 
-    "No face detected" here covers three distinct failure reasons (no
-    consent, decode failure, no usable face) - the reason is only for our
-    own logging via `details`, since module2 says they just need the
-    boolean.
+    "No face detected" here covers four distinct failure reasons (no
+    consent, decode failure, no usable face, a print/screen) - each has its
+    own `details.reason` (camera_consent_required, invalid_image: ...,
+    no_face_detected, spoof_detected); module2 reads only the boolean today,
+    so all four reach the student as their 400 NO_FACE_DETECTED.
+
+    Anti-spoofing (added 2026-10-30, CHANGES.md): the same _anti_spoofing
+    check as /liveness/check runs before the embedding, and both "spoof" and
+    "suspect" refuse the enrolment (reason spoof_detected). Stricter than a
+    check-in, where "suspect" only flags for review: the enrolled face is
+    what every later check-in is compared with, so it should be a live face,
+    and a refused student simply tries again (better light, holding still) -
+    nothing is lost. On our recordings no genuine photo was even "suspect".
+    If the check can't run (unusable face box), enrolment proceeds as before.
 
     quality_score (on success) averages three 0-1 components: detection
     confidence, image resolution (relative to a 640x480 baseline), and
@@ -403,6 +413,20 @@ def enroll_face(request: FaceEnrollRequest):
             details={"face_detected": False, "reason": "no_face_detected"},
         )
 
+    spoof_check = _anti_spoofing(image_array, detection)
+    if spoof_check is not None and spoof_check["verdict"] != "real":
+        return FaceEnrollResponse(
+            enrollment_successful=False,
+            face_template_hash="",
+            quality_score=0.0,
+            details={
+                "face_detected": True,
+                "reason": "spoof_detected",
+                "anti_spoofing": spoof_check["verdict"],
+                "texture_analysis_score": round(spoof_check["real_probability"], 4),
+            },
+        )
+
     embedding = extract_face_embedding(image_array)
     if embedding is None:
         return FaceEnrollResponse(
@@ -428,15 +452,21 @@ def enroll_face(request: FaceEnrollRequest):
     else:
         image_quality = "poor"
 
+    details = {
+        "face_detected": True,
+        "face_detection_confidence": round(confidence, 4),
+        "image_quality": image_quality,
+        "anti_spoofing": "not_assessed",
+    }
+    if spoof_check is not None:
+        details.update(anti_spoofing=spoof_check["verdict"],
+                       texture_analysis_score=round(spoof_check["real_probability"], 4))
+
     return FaceEnrollResponse(
         enrollment_successful=True,
         face_template_hash=face_hash,
         quality_score=round(quality_score, 4),
-        details={
-            "face_detected": True,
-            "face_detection_confidence": round(confidence, 4),
-            "image_quality": image_quality,
-        },
+        details=details,
     )
 
 

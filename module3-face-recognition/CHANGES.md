@@ -186,6 +186,59 @@ worker.
 
 ---
 
+## 2026-10-30 (3) — Anti-spoofing at enrolment (`/face/enroll`)
+
+**Branch `module3-passive-liveness`** (with (2) and the ArcFace switch).
+
+### For the backend (Module 2) — summary of all 2026-10-30 changes
+
+| Change | Contract | What you need to do |
+|---|---|---|
+| **ArcFace replaces dlib** (entry "2026-10-30" below) | Same requests/responses; hash still 64 lowercase hex | **Required at merge:** every stored `face_embedding_hash` is from dlib and can't be compared any more (we answer `match_passed: null` for those, never a wrong `false`). Agree one: (a) clear `face_embedding_hash` / set `face_enrolled = false` once at the merge, or (b) set `FACE_REENROLL_REQUIRES_CODE=false` until students have re-enrolled |
+| **Check-in anti-spoofing** (entry (2)) | `/liveness/check` single image: prints/screens now `liveness_passed: false` (you reject), suspected close-up screens `null` with score < 0.60 (you flag). Bursts: unchanged, never `false` | Nothing. New `details` fields are ignorable |
+| **Enrolment anti-spoofing** (this entry) | `/face/enroll` refuses prints/screens with the **existing** failure shape: 201 + `enrollment_successful: false` | Nothing required - you already turn that into 400 `NO_FACE_DETECTED`. **Optional, recommended:** read `details.reason` for a better message (below) |
+
+**What `/face/enroll` returns now** (unchanged fields in plain, new in bold):
+
+| Case | `enrollment_successful` | `details.reason` | Other `details` |
+|---|---|---|---|
+| no camera consent | false | `camera_consent_required` | `face_detected: false` |
+| image won't decode | false | `invalid_image: <error>` | `face_detected: false` |
+| no usable face | false | `no_face_detected` | `face_detected: false` |
+| **print / screen detected** | **false** | **`spoof_detected`** | **`face_detected: true`, `anti_spoofing: "spoof"` or `"suspect"`, `texture_analysis_score`** |
+| success | true | - | `face_detection_confidence`, `image_quality`, **`anti_spoofing: "real"`, `texture_analysis_score`** |
+
+**Optional backend change (recommended):** today a refused photo reaches the
+student as 400 `NO_FACE_DETECTED` / "No face detected", which is misleading
+when a face clearly is in the picture. In `routers/users.py` `enroll_face`,
+where `enrollment_successful` is false, branch on
+`result.get("details", {}).get("reason") == "spoof_detected"` and return a
+400 with its own code (e.g. `FACE_NOT_ACCEPTED`) and a **generic** message
+such as "We couldn't verify your face. Use your camera directly, in good
+light, and try again." - don't say a photo/screen was detected (we don't
+reveal anti-spoof reasoning to students). Module 1 would then show that
+message for the new code.
+
+### What changed (Module 3)
+
+`enroll_face` runs the same `_anti_spoofing` check as `/liveness/check`
+(entry (2)) after face detection, before the embedding. **Both `spoof` and
+`suspect` refuse** - stricter than a check-in, where `suspect` only flags:
+the enrolled face is what every later check-in is compared with, so it
+should be a live face, and a refused student just tries again (nothing
+lost). If the check can't run (unusable face box), enrolment proceeds as
+before. Before this change every attack photo enrolled (print, phone:
+`enrollment_successful: true`, quality 0.73–0.97).
+
+**Results** (every recorded photo through `/face/enroll`): genuine
+**28/28 enrolled** (normal, dim, far, moving, course samples); attacks
+**39/40 refused** (all prints and far/angled/dim phones as `spoof`,
+close-ups as `suspect`; the one close-up that passes check-ins passes here
+too). Unit tests 40 passed; public suite **92/92** (the enrolment tests use
+the course's real photos: P(real) 0.986–1.0).
+
+---
+
 ## 2026-10-30 (2) — Passive anti-spoofing: MiniFASNet + close-up screen check
 
 **Branch `module3-passive-liveness`** (from `module3-arcface`). Plan and
