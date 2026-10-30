@@ -1,0 +1,22 @@
+# Keeps the image to what the service runs: app/, models/, requirements.txt.
+# Without this, `COPY . .` also copied the local venv (~1 GB) and tests/,
+# including tests/fixtures/ (webcam recordings of real faces).
+
+# Local Python environments and caches
+venv/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Tests and recordings (face images)
+tests/
+
+# Local tools and notes, not used by the service
+load_test.py
+record_burst.py
+record_photo.py
+stress_checkins.py
+diagnose_*.py
+TODO.md
+NOTES-*.md
