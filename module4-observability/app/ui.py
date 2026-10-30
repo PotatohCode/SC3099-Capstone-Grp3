@@ -146,7 +146,9 @@ def local_datetime_column(frame: pd.DataFrame, *columns: str) -> pd.DataFrame:
     """Converts timestamp columns to timezone-naive Singapore time for display."""
     for name in columns:
         if name in frame:
-            frame[name] = pd.to_datetime(frame[name], utc=True, errors="coerce").dt.tz_convert(
+            # ISO8601: the backend sends some times with microseconds and some without;
+            # pandas would otherwise guess one format from the first row and blank the rest.
+            frame[name] = pd.to_datetime(frame[name], utc=True, errors="coerce", format="ISO8601").dt.tz_convert(
                 config.LOCAL_TZ).dt.tz_localize(None)
     return frame
 
