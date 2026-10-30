@@ -62,6 +62,16 @@ describe('wizardReducer', () => {
     expect(s).toMatchObject({ location: null, media: null, result: null, step: 'location' })
   })
 
+  it('uses photo mode only when the session explicitly does not require a liveness check', () => {
+    const pick = (flags: Partial<typeof session>) => wizardReducer(initialWizardState, { type: 'SELECT_SESSION', session: { ...session, ...flags } })
+    expect(shouldUsePhotoMode(pick({ require_liveness_check: false, require_face_match: true }))).toBe(true)
+    expect(shouldUsePhotoMode(pick({ require_liveness_check: false, require_face_match: false }))).toBe(true)
+    expect(shouldUsePhotoMode(pick({ require_liveness_check: true, require_face_match: false }))).toBe(false)
+    expect(shouldUsePhotoMode(pick({ require_liveness_check: true, require_face_match: true }))).toBe(false)
+    expect(shouldUsePhotoMode(pick({ require_liveness_check: undefined }))).toBe(false)
+    expect(shouldUsePhotoMode(initialWizardState)).toBe(false)
+  })
+
   it('switches to photo mode after two consecutive invalid challenges and resets on success', () => {
     let s = wizardReducer(atConfirm(), { type: 'SUBMIT_FAILED', challengeInvalid: true })
     expect(shouldUsePhotoMode(s)).toBe(false)
