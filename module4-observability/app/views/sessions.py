@@ -553,29 +553,43 @@ def render() -> None:
     } for s in sessions])
     ui.local_datetime_column(frame, "Starts")
 
-    # Pick a session from a list (or tick its row in the table below).
+    # The "Open session" dropdown and the table stay in step: ticking a row picks it
+    # in the dropdown, and picking in the dropdown highlights its row (Streamlit can't
+    # tick a table row from code, so the table is redrawn unticked and highlighted).
     by_id = {s["id"]: s for s in sessions}
+    table_key = f"sessions-table-{st.session_state.get('sessions_table_round', 0)}"
+    ticked = (st.session_state.get(table_key) or {}).get("selection", {}).get("rows", [])
+    if ticked != st.session_state.get("sessions_table_ticked"):  # only a new tick counts
+        st.session_state.sessions_table_ticked = ticked
+        if ticked:
+            st.session_state.selected_session_id = frame.iloc[ticked[0]]["id"]
+
     current = st.session_state.get("selected_session_id")
-    if current in by_id and st.session_state.get("open-session-pick") != current:
-        st.session_state["open-session-pick"] = current  # keep in step with the table / Today
-    elif current not in by_id:
+    if current in by_id:
+        st.session_state["open-session-pick"] = current
+    else:
         st.session_state.pop("open-session-pick", None)
 
-    def opened() -> None:
+    def picked() -> None:
         st.session_state.selected_session_id = st.session_state.get("open-session-pick")
+        st.session_state.sessions_table_round = st.session_state.get("sessions_table_round", 0) + 1
+        st.session_state.sessions_table_ticked = []
 
-    st.selectbox("Open session", list(by_id), index=None, key="open-session-pick", on_change=opened,
+    st.selectbox("Open session", list(by_id), index=None, key="open-session-pick", on_change=picked,
                  placeholder="Choose a session to see its details…",
                  format_func=lambda sid: f"{ui.session_label(by_id[sid])} · {ui.status_label(by_id[sid].get('status'))}")
-    st.caption("Or tick the box at the left edge of a row in the table.")
-    event = st.dataframe(
-        frame.drop(columns=["id"]), hide_index=True, use_container_width=True,
-        on_select="rerun", selection_mode="single-row", key="sessions-table",
+    st.caption("Or tick the box at the left edge of a row in the table. The open session is highlighted.")
+
+    shown = frame.drop(columns=["id"])
+    highlight = frame["id"].eq(current).tolist()
+    styled = shown.style.apply(
+        lambda row: ["background-color: rgba(15, 118, 110, 0.18); font-weight: 600" if highlight[row.name] else ""]
+        * len(row), axis=1)
+    st.dataframe(
+        styled, hide_index=True, use_container_width=True,
+        on_select="rerun", selection_mode="single-row", key=table_key,
         column_config={"Starts": st.column_config.DatetimeColumn(format="ddd D MMM, HH:mm")},
     )
-    selected_rows = event.selection.rows if event and event.selection else []
-    if selected_rows:
-        st.session_state.selected_session_id = frame.iloc[selected_rows[0]]["id"]
 
     selected = next((s for s in sessions if s["id"] == st.session_state.get("selected_session_id")), None)
     if selected is None and st.session_state.get("selected_session_id"):
