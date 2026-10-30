@@ -79,6 +79,30 @@ def _now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+SGT = timezone(timedelta(hours=8))  # Singapore has no DST
+
+
+def _sgt(moment: datetime, now: datetime) -> str:
+    """Naive UTC -> "14:15 SGT", with the date when it isn't today in SGT."""
+    local = moment.replace(tzinfo=timezone.utc).astimezone(SGT)
+    today = now.replace(tzinfo=timezone.utc).astimezone(SGT).date()
+    if local.date() == today:
+        return f"{local:%H:%M} SGT"
+    return f"{local.day} {local:%b %H:%M} SGT"
+
+
+def _require_window_open(session_obj: ClassSession, now: datetime) -> None:
+    """Same code either way (clients and tests switch on it); the detail
+    says whether the window hasn't opened yet or is over."""
+    if now < session_obj.checkin_opens_at:
+        detail = f"Check-in opens at {_sgt(session_obj.checkin_opens_at, now)}"
+    elif now > session_obj.checkin_closes_at:
+        detail = f"Check-in closed at {_sgt(session_obj.checkin_closes_at, now)}"
+    else:
+        return
+    raise APIError(status.HTTP_400_BAD_REQUEST, detail, ErrorCode.SESSION_WINDOW_CLOSED)
+
+
 def _image_hash(image_b64: str) -> str:
     """SHA-256 of the decoded image bytes (data-URL prefix and whitespace
     ignored), so the same photo re-encoded with different padding or line
@@ -220,8 +244,7 @@ def create_checkin(
         raise APIError(status.HTTP_400_BAD_REQUEST, "Session is not active", ErrorCode.SESSION_NOT_ACTIVE)
 
     now = _now()
-    if not (session_obj.checkin_opens_at <= now <= session_obj.checkin_closes_at):
-        raise APIError(status.HTTP_400_BAD_REQUEST, "Check-in window is closed", ErrorCode.SESSION_WINDOW_CLOSED)
+    _require_window_open(session_obj, now)
 
     existing = (
         db.query(CheckIn)
@@ -633,8 +656,7 @@ def issue_liveness_challenge(
     if session_obj.status != "active":
         raise APIError(status.HTTP_400_BAD_REQUEST, "Session is not active", ErrorCode.SESSION_NOT_ACTIVE)
     now = _now()
-    if not (session_obj.checkin_opens_at <= now <= session_obj.checkin_closes_at):
-        raise APIError(status.HTTP_400_BAD_REQUEST, "Check-in window is closed", ErrorCode.SESSION_WINDOW_CLOSED)
+    _require_window_open(session_obj, now)
 
     try:
         issued = liveness_challenge.issue(current_user.id, session_obj.id, session_obj.checkin_closes_at)

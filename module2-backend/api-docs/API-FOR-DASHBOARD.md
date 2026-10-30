@@ -3,7 +3,7 @@
 Read [API-CONVENTIONS.md](API-CONVENTIONS.md) first (auth, error format,
 pagination). **Your tasks:** the Module 4 table in
 [CHANGES-2026-10-01.md](CHANGES-2026-10-01.md). **Why things changed:**
-[CHANGELOG.md](CHANGELOG.md). Last updated 2026-10-29.
+[CHANGELOG.md](CHANGELOG.md). Last updated 2026-10-30.
 
 This covers the `/stats/*` analytics, `/export/*` data export, `/audit/*`
 compliance log, and `/metrics` for Prometheus/Grafana. Everything here needs
@@ -18,7 +18,10 @@ student's instructor or an admin; not TAs) in §2. Check-ins carry an
 `entry_method` (`app` / `manual` / `override`) to label them. Manual
 check-ins are not counted in the Prometheus check-in counters. Creating and editing sessions is in its §4,
 including the venue rule: leave a session's coordinates out and it uses the
-course's venue.
+course's venue. **Activating a session doesn't open its check-in window**:
+students can check in only once `checkin_opens_at` has passed. To open
+check-in early, send `{"status": "active", "checkin_opens_at": "<now, UTC>"}`
+in one `PATCH /sessions/{id}` (same §4).
 
 ---
 
@@ -230,7 +233,7 @@ Useful `details` fields:
 | `security_violation` | **`violation_type`**: `account_lockout`, `outside_singapore`, `geo_out_of_bounds`, `liveness_failed`, `face_match_failed` (a wrong face on any session: rejected if the session requires a face match, flagged otherwise), `replay_suspected`, `impossible_travel`, `gps_spoof_suspected`, `rapid_succession`, `challenge_reuse` (a liveness challenge used twice or by another student; `details.reason` = `reused` / `other_student`), `liveness_spoof` (a liveness attempt judged a spoof), `challenge_frames_mismatch` (a check-in named a verified challenge but sent different frames), `face_reset_code_guessing` (5 wrong face reset codes; the code was burned) |
 | `checkin_rejected_geo` | `reason` (`ip`/`gps`/`gps_and_ip`), `gps_in_singapore`, `ip_country` (no coordinates) |
 | `account_locked` | `failed_attempts`, `lockout_minutes` (wrong passwords at login and on the change-password page count together) |
-| `login_failed` | `email`, or `reason: "account_locked"` |
+| `login_failed` | `email` (wrong email or password), or `reason`: `account_locked` / `account_disabled` (right password, deactivated account) |
 | `password_change_failed` | `reason`: `password_incorrect` / `account_locked` (never the password) |
 | `liveness_challenge_verified` | `outcome` (`passed`/`failed`/`spoof`/`unverified`), `attempt` (1–3), `sequence`, `steps_passed`, `liveness_score`. `resource_id` = the session |
 | `retention_sweep_run` | `users_anonymized`, `checkins_anonymized`, `trigger: "scheduled"` (hourly, no user) |
@@ -242,6 +245,7 @@ Useful `details` fields:
 | `checkin_manual_override` | `student_id`, `session_id`, `previous_status` (`flagged`/`appealed`/`rejected`), `reason` |
 | `checkin_manual_undone` | `student_id`, `session_id`, `entry_method` (`manual`/`override`), `restored_status` (`deleted` for a removed manual check-in) |
 | `session_created` | `course_id`, `owner_id` (the course's instructor when an admin created it; the actor is still the admin) |
+| `session_updated` | The fields that changed, as sent (times as ISO strings in UTC), e.g. `{"status": "active", "checkin_opens_at": "2026-10-30T06:00:00"}`. From `PATCH /admin/sessions/{id}/status`: `old_status`, `new_status` |
 
 - **Append-only, enforced by the database.** No row can be edited or
   deleted, even with SQL, so it's safe as a permanent activity feed. Don't

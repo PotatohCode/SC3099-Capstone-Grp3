@@ -15,6 +15,8 @@ from app.schemas.user import (
     AccountDeletionResponse,
     FaceEnrollRequest,
     FaceEnrollResponse,
+    FaceResetCodeCheckRequest,
+    FaceResetCodeCheckResponse,
     FaceResetCodeResponse,
     PasswordChangeRequest,
     UserAdminUpdate,
@@ -26,6 +28,7 @@ from app.services.audit import log_event, log_security_violation
 from app.services.authz import teaches_student
 from app.services.client_ip import get_client_ip
 from app.services.partial_update import drop_nulls_for_required
+from app.services.rate_limit import enforce_rate_limit
 from app.services.sanitize import sanitize_text
 from app.services.uploads import require_image_size
 
@@ -168,6 +171,28 @@ def _require_reset_code(db: Session, user: User, code: Optional[str], ip: Option
         )
     db.commit()
     raise APIError(status.HTTP_403_FORBIDDEN, "Reset code is invalid or expired", ErrorCode.FACE_RESET_CODE_INVALID)
+
+
+RESET_CODE_CHECKS_PER_MINUTE = 10
+
+
+@router.post("/me/face/reset-code/check", response_model=FaceResetCodeCheckResponse)
+def check_face_reset_code(
+    payload: FaceResetCodeCheckRequest,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Lets the app check the code before the camera opens. Doesn't use the
+    code up (enrol does), but a wrong one costs an attempt like at enrol,
+    so this is no extra room for guessing."""
+    enforce_rate_limit(f"rate_limit:{current_user.id}:reset_code_check", RESET_CODE_CHECKS_PER_MINUTE, 60)
+    if not (current_user.face_enrolled and settings.FACE_REENROLL_REQUIRES_CODE):
+        return FaceResetCodeCheckResponse(required=False, valid=True)
+    _require_reset_code(
+        db, current_user, payload.reset_code, get_client_ip(request), request.headers.get("user-agent")
+    )
+    return FaceResetCodeCheckResponse(required=True, valid=True)
 
 
 @router.post("/me/face/enroll", response_model=FaceEnrollResponse)

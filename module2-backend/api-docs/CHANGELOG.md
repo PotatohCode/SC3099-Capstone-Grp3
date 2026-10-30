@@ -14,6 +14,16 @@ below.
 
 ---
 
+## 2026-10-30 — `backend/window-and-reset-check`: "opens at" message, reset-code check, session PATCH fix
+
+**Rebuild needed:** `docker compose up -d --build backend` (no migration).
+
+| Area | Before | Now | Why |
+|---|---|---|---|
+| Check-in before the window opens | `400 SESSION_WINDOW_CLOSED`, "Check-in window is closed" | Same status and code; `detail` is `Check-in opens at 14:15 SGT` before the window and `Check-in closed at 14:45 SGT` after it (date added when it isn't today). Also on `POST /checkins/challenge` | An instructor who activated a session before its window opened saw students told check-in was "closed" (reported by M1). Activating still doesn't open the window early; see "Open check-in now" in the checklist |
+| Checking a face reset code | Only by sending it with the photo, so a typo showed up after the face scan | `POST /users/me/face/reset-code/check {reset_code}` checks it without using it up; enrol is unchanged and still uses it up | Asked for by M1. A wrong check counts toward the same 5 tries, so it gives no extra guesses; 10 checks a minute per user |
+| `PATCH /sessions/{id}` with a time field | **500** for any time change: times with `Z`/an offset couldn't be compared with the stored ones, and no time could be written to the audit log | Works; times may be naive UTC or carry an offset, stored as UTC | Found while testing the "open check-in now" call. The dashboard only ever PATCHed `status`, so nothing visible broke |
+
 ## 2026-10-30 — `backend/enroll-spoof-and-keepalive`: refused enrolment photos, keep-alive
 
 **Rebuild needed:** `docker compose up -d --build backend` (no migration).
@@ -398,7 +408,8 @@ Interactive docs for every endpoint: http://localhost:8000/docs
 
 | Merged as | Contents |
 |---|---|
-| `backend/enroll-spoof-and-keepalive` | 2026-10-30: `FACE_NOT_ACCEPTED`, keep-alive 130 s; checklist and completed-task records for M3 PRs #13 + #14 and M4 PRs #11 + #12 |
+| `backend/window-and-reset-check` | 2026-10-30: "opens at" / "closed at" check-in message, `POST /users/me/face/reset-code/check`, session PATCH with time fields fixed (was a 500); API docs sweep |
+| `backend/enroll-spoof-and-keepalive` (`667a0ac`) | 2026-10-30: `FACE_NOT_ACCEPTED`, keep-alive 130 s; checklist and completed-task records for M3 PRs #13 + #14 and M4 PRs #11 + #12 |
 | `backend/face-reset-and-manual-checkin` (`b9f8e77`) | 2026-10-27: face reset codes, manual check-ins, `entry_method` |
 | `backend/face-mismatch-review` | 2026-10-26: a wrong face is flagged on every session; team checklist and completed-task records for M1 PR #5, M3 PR #7, M4 PRs #6 and #8 |
 | `backend/password-change` (`6b2c854`) | 2026-10-23: password change, liveness retries, API docs sweep |
