@@ -81,7 +81,7 @@ Build error handling on **`code`**, not the `detail` text. Codes you'll see:
 | Auth | `INVALID_CREDENTIALS`, `ACCOUNT_LOCKED` (429), `ACCOUNT_DISABLED`, `INVALID_TOKEN`, `INVALID_REFRESH_TOKEN`, `PASSWORD_INCORRECT`, `PASSWORD_UNCHANGED` (400), `EMAIL_ALREADY_REGISTERED` |
 | Permissions | `INSUFFICIENT_PERMISSIONS`, `NOT_ENROLLED` |
 | Not found | `*_NOT_FOUND` (course, session, user, student, device, enrollment, checkin) |
-| Check-ins | `ALREADY_CHECKED_IN`, `SESSION_NOT_ACTIVE`, `SESSION_WINDOW_CLOSED`, `OUTSIDE_SINGAPORE`, `CONSENT_REQUIRED` (only if enabled), `ALREADY_APPEALED`, `APPEAL_NOT_ALLOWED`, `APPEAL_WINDOW_EXPIRED`, `REVIEW_NOT_ALLOWED`, `CHALLENGE_INVALID` (400), `LIVENESS_ATTEMPTS_EXHAUSTED` (409), `CHALLENGE_UNAVAILABLE` (503), `MANUAL_CHECKIN_WINDOW_CLOSED` (400), `MANUAL_UNDO_NOT_ALLOWED` (400) |
+| Check-ins | `ALREADY_CHECKED_IN`, `SESSION_NOT_ACTIVE`, `SESSION_WINDOW_CLOSED` (`detail` says "opens at …" or "closed at …" in SGT), `OUTSIDE_SINGAPORE`, `CONSENT_REQUIRED` (only if enabled), `ALREADY_APPEALED`, `APPEAL_NOT_ALLOWED`, `APPEAL_WINDOW_EXPIRED`, `REVIEW_NOT_ALLOWED`, `CHALLENGE_INVALID` (400), `LIVENESS_ATTEMPTS_EXHAUSTED` (409), `CHALLENGE_UNAVAILABLE` (503), `MANUAL_CHECKIN_WINDOW_CLOSED` (400), `MANUAL_UNDO_NOT_ALLOWED` (400) |
 | Sessions/courses | `INVALID_SCHEDULE`, `COURSE_CODE_TAKEN`, `SESSION_NOT_DELETABLE`, `ALREADY_ENROLLED` |
 | Devices/face | `DEVICE_FINGERPRINT_TAKEN`, `CAMERA_CONSENT_REQUIRED`, `NO_FACE_DETECTED`, `FACE_NOT_ACCEPTED` (400), `FACE_SERVICE_UNAVAILABLE` (503), `FACE_RESET_CODE_REQUIRED` (403), `FACE_RESET_CODE_INVALID` (403), `FACE_NOT_ENROLLED` (400), `FACE_RESET_CODE_UNAVAILABLE` (503) |
 | Limits | `RATE_LIMITED` (429), `IMAGE_TOO_LARGE` (413), `TOO_MANY_FRAMES` (413), `REQUEST_TOO_LARGE` (413) |
@@ -118,6 +118,7 @@ and registration have per-IP limits.
 | Check-in submission | 10/minute | user | `429 RATE_LIMITED` |
 | Liveness challenge (`POST /checkins/challenge`) | 30/minute | user | `429 RATE_LIMITED` |
 | Liveness verify (`POST /checkins/challenge/{id}/verify`) | 30/minute, and **3 attempts per session** | user | `429 RATE_LIMITED`; attempts used up → `409 LIVENESS_ATTEMPTS_EXHAUSTED` |
+| Reset-code check (`POST /users/me/face/reset-code/check`) | 10/minute; wrong codes also count toward the code's 5 tries | user | `429 RATE_LIMITED` |
 | Everything else | 1000/hour | user | `429 RATE_LIMITED` |
 
 ## Request and response details
