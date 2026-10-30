@@ -94,6 +94,47 @@ def _saved_venue_picker(key: str) -> None:
                  placeholder=f"Pick one of {len(by_label)} saved venue(s), or type coordinates below")
 
 
+NTU_CENTRE = (1.3483, 103.6831)  # where the pick-a-spot map starts when there's no pin yet
+
+
+def _apply_map_click(key: str) -> None:
+    """Moves the pin to the last spot clicked on the map, if it's a new click."""
+    clicked = st.session_state.pop(f"loc-map-click-{key}", None)
+    if not clicked:
+        return
+    st.session_state[f"loc-lat-{key}"] = round(float(clicked["lat"]), 6)
+    st.session_state[f"loc-lon-{key}"] = round(float(clicked["lng"]), 6)
+    st.session_state[f"loc-saved-{key}"] = None
+    st.session_state.pop(f"loc-geo-accuracy-{key}", None)
+
+
+def _pick_on_map(key: str, lat: float | None, lon: float | None, radius: float, venue: str) -> None:
+    """Map with the pin and check-in circle. Drag to look around, scroll to zoom,
+    click once to move the pin there (Leaflet tells a click from a drag)."""
+    import folium
+    from streamlit_folium import st_folium
+
+    has_pin = lat is not None and lon is not None
+    centre = (lat, lon) if has_pin else NTU_CENTRE
+    fmap = folium.Map(location=centre, zoom_start=17 if has_pin else 16, control_scale=True)
+    if has_pin:
+        folium.Circle(centre, radius=float(radius), color="#0f766e", weight=2, fill=True, fill_opacity=0.15,
+                      tooltip=f"Check-in radius: {radius:.0f} m").add_to(fmap)
+        folium.Marker(centre, tooltip=venue or "Venue", icon=folium.Icon(color="red", icon="map-marker")).add_to(fmap)
+    st.caption("🖱️ **Click the map to move the pin there.** Drag to look around, scroll to zoom.")
+    result = st_folium(fmap, key=f"loc-map-{key}", height=320, use_container_width=True,
+                       returned_objects=["last_clicked"])
+    clicked = (result or {}).get("last_clicked")
+    if clicked and clicked != st.session_state.get(f"loc-map-used-{key}"):
+        # The boxes above are already drawn, so hand the click to the next run.
+        st.session_state[f"loc-map-used-{key}"] = clicked
+        st.session_state[f"loc-map-click-{key}"] = clicked
+        st.rerun()
+    if has_pin:
+        st.caption(f"📍 {lat:.5f}, {lon:.5f} · students must be within **{radius:.0f} m** of the pin "
+                   f"([open in Google Maps](https://www.google.com/maps?q={lat},{lon})).")
+
+
 def _current_location(key: str) -> None:
     """'Use my current location': asks the browser where the instructor is and fills
     the latitude/longitude boxes. Browsers only share it on localhost or HTTPS, and a
@@ -165,6 +206,9 @@ def _location_section(course: dict) -> dict | None:
     st.session_state.setdefault(f"loc-lon-{key}", saved[1] if saved else None)
     st.session_state.setdefault(f"loc-r-{key}", int(saved[2]) if saved else 100)
     st.session_state.setdefault(f"loc-name-{key}", "")
+    # A click on the map (below) arrives on the next rerun; apply it before the
+    # boxes are drawn so they show the new position.
+    _apply_map_click(key)
     # Location first: it may reset the saved-venue picker, which must happen before
     # that widget is drawn.
     _current_location(key)
@@ -184,14 +228,14 @@ def _location_section(course: dict) -> dict | None:
     radius = c.number_input("Radius (m)", 20, 2000, step=10, key=f"loc-r-{key}", on_change=typed)
     venue = d.text_input("Venue name", placeholder="e.g. Exam Hall A", key=f"loc-name-{key}", on_change=typed)
     st.caption("Or type them: in Google Maps, right-click the room's building and click the coordinates to copy them.")
+    _pick_on_map(key, lat, lon, radius, venue)
     if lat is None or lon is None:
-        st.info("Enter the latitude and longitude to see the location on the map.")
+        st.info("Click the map where the session takes place, or enter the latitude and longitude.")
         return None
     if not ui.in_singapore(lat, lon):
         st.error("Those coordinates are outside Singapore. The backend refuses check-ins from outside "
                  "Singapore, so nobody could check in. Check the numbers (latitude first).")
         return None
-    ui.location_map(lat, lon, radius, venue)
     return {"venue_latitude": lat, "venue_longitude": lon, "geofence_radius_meters": float(radius),
             "venue_name": venue.strip() or None}
 

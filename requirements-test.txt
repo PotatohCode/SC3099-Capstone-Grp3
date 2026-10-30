@@ -52,6 +52,8 @@ requests==2.32.3
 fpdf2==2.8.3
 tzdata==2025.2
 streamlit-js-eval==0.1.7
+folium==0.17.0
+streamlit-folium==0.22.1
 
 # ============================================
 # Observability (shared across modules)
