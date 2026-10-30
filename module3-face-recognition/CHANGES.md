@@ -186,6 +186,87 @@ worker.
 
 ---
 
+## 2026-10-30 (2) — Passive anti-spoofing: MiniFASNet + close-up screen check
+
+**Branch `module3-passive-liveness`** (from `module3-arcface`). Plan and
+background: `NOTES-ON-PASSIVE.md`. Targets the hidden tests "Face Recognition
+Advanced: anti-spoofing with real attack images" (10 pts) and "Liveness"
+(3 pts).
+
+**The gap:** the passive score (detection confidence, quality, depth from
+`nose_tip_z`, mesh completeness) rates a photo of a face as highly as a face:
+MediaPipe predicts depth from the 2D image. Every print and phone attack we
+recorded passed (0.89–0.99).
+
+**What changed** (`app/main.py`, `models/`):
+- **`_anti_spoofing`** on the single-image path (and the front frame of a
+  burst):
+  - **MiniFASNetV2 + MiniFASNetV1SE** (Minivision Silent-Face-Anti-Spoofing,
+    Apache-2.0; ONNX from github.com/yakhyo/face-anti-spoofing, SHA-256
+    `b32929ad…`/`ebab7f90…` = the files LocalAI pins; 1.7 MB each) on the
+    MediaPipe face box enlarged 2.7× / 4.0×, BGR 0–255, 80×80; softmax
+    averaged → P(real). Runs on onnxruntime (already there for ArcFace), one
+    thread, under `_model_lock`. ~6 ms.
+  - **Close-up screen check:** on a 128×128 face crop, Laplacian variance
+    (sharpness) and the peak of the FFT's mid/high band (moiré).
+- **Tiered verdict** (can only lower the result, never raise it):
+
+  | Verdict | Trigger | Response | Backend |
+  |---|---|---|---|
+  | `spoof` | P(real) < 0.5 | `liveness_passed: false`, score ≤ P(real) | rejects (determined spoof) |
+  | `suspect` | P(real) < 0.85, **or** sharpness < 120 **and** moiré > 30 | `liveness_passed: null`, score ≤ 0.5 | flags for review |
+  | `real` | otherwise | unchanged | unchanged |
+
+  Weak evidence never hard-rejects: the close-up signals drift toward
+  "attack" for genuine faces in dim light / movement. Bursts: as before,
+  never `false` (spoof → `null`).
+- **EXIF orientation** applied in `decode_base64_image`
+  (`ImageOps.exif_transpose`): phone photos are often stored sideways with a
+  rotate tag; a Silent-Face sample attack scored "real" (0.60) sideways and
+  "fake" (0.22) upright. Student-app frames carry no tag.
+- **Spec response fields:** `challenge_type` echoed (request default
+  `"blink"` → `"passive"`, the spec's); `details.depth_detected`,
+  `details.threshold`, `details.texture_analysis_score` (= P(real)), plus
+  `anti_spoofing`, `sharpness`, `moire_peak`.
+- Colour (saturation, chroma spread, Cr−Cb) and glare were measured too and
+  **didn't separate** attacks from genuine faces at all, so they're not used.
+
+**Why a model and not only heuristics (approach B over A):** onnxruntime was
+already a dependency (ArcFace), so the model costs only two small files. It
+was checked on Silent-Face's own labelled samples first (print 0.01, tablet
+0.22, real 0.999 → the pipeline is right).
+
+**Validation** (local recordings, git-ignored; all through
+`_passive_liveness` via `record_photo.py --analyze-all`):
+
+| Set | n | Result |
+|---|---|---|
+| Prints: far (sheet + fingers), close, bent | 15 | **15 `fail`** (0.001–0.11) |
+| Phone screen: far, angled with glare, dim room | 15 | **15 `fail`** (0.00–0.46) |
+| Phone screen filling the view | 10 photos + a 16-frame burst | 9 photos `null`, burst `null`; **1 missed** (P(real) 0.898, sharp and bright - looks real on every signal) |
+| Genuine photos: normal, dim, far, moving, course samples | 24 | **all pass** (0.86–0.97) |
+| Genuine burst front frames | 37 | **all pass** (0.935–0.993) |
+
+Closest genuine margins: a moving photo at P(real) 0.896 (suspect cut 0.85);
+a dim photo with moiré 27.9 (cut 30) and sharpness 74. These would be
+flagged for review, not rejected, if a real student's conditions were a bit
+worse. Caveat: one person, one webcam, one phone, one printer.
+
+**Other checks:** unit tests 40 passed; challenge detection unchanged (same
+40/46 on the recorded bursts); public suite **92/92**; single-image
+liveness ~62 ms locally; `load_test.py mixed 100` 2.7 s warm (4.3 s first
+run); `burst 40` 8.6–9.6 s warm, but **16.9 s on the first run after a
+restart** (25/40 over 15 s) - cold start with more models; a start-up
+warm-up would fix it (TODO, later/optional).
+
+**Backend:** no change needed (`false` = determined spoof → reject, `null` →
+flagged are already in the contract). FYI to send: single-photo attacks now
+come back `false`/`null` instead of passing. Still open with the professor
+(NOTES-ON-PASSIVE question 3): whether tests expect `false` for every attack;
+our close-up `null` has a score under 0.60 and isn't `true`.
+
+---
+
 ## 2026-10-30 — Face matching switched from dlib to ArcFace (MobileFaceNet)
 
 **Branch `module3-arcface`. Not merged yet: needs the re-enrolment step agreed

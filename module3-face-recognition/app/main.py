@@ -31,7 +31,7 @@ import numpy as np
 import onnxruntime as ort
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from PIL import Image
+from PIL import Image, ImageOps
 from prometheus_client import (
     CONTENT_TYPE_LATEST,
     CollectorRegistry,
@@ -208,7 +208,7 @@ class LivenessRequest(BaseModel):
     challenge_response: str  # Base64 encoded image (in shape (b): the middle frame or a separate photo)
     # "passive", "sequence" (backend-issued challenge) or any client label;
     # free text on purpose - the backend forwards labels it doesn't validate.
-    challenge_type: str = "blink"
+    challenge_type: str = "passive"  # the spec's default
     frames: Optional[List[str]] = None
     challenge_sequence: Optional[List[str]] = None  # e.g. ["blink", "turn_left"]
 
@@ -224,6 +224,7 @@ class LivenessResponse(BaseModel):
     liveness_passed: Optional[bool]
     liveness_score: float  # 0.0 to 1.0
     liveness_threshold: float  # Default: 0.60
+    challenge_type: Optional[str] = None  # echoes the request's, as in the spec's example
     face_embedding_hash: str
     details: Dict[str, Any]
     # Frame bursts with a challenge_sequence only (None otherwise):
@@ -602,15 +603,26 @@ def check_liveness(request: LivenessRequest):
     resolution/face-size "quality" - reusing enroll_face's
     _QUALITY_RESOLUTION_BASELINE_PX/_QUALITY_FACE_AREA_RATIO_TARGET
     constants) plus the BONUS depth + mesh-completeness signals from
-    analyze_face_mesh, averaged equally (25% each). Texture analysis and
-    color-distribution analysis (the other two BONUS signals
-    docs/API-SPECIFICATION.md lists) are NOT implemented - those need
-    print/screen artifact and skin-tone-variance detection, a
-    meaningfully larger scope than what's built here. This isn't a
-    spec'd weighting scheme either way (API-SPECIFICATION.md's 30/25/25/20
-    split only covers the 3D-cue portion, not how to blend it with the
-    REQUIRED-tier signals), so treat the equal 25% split as a reasonable
-    default open to adjustment.
+    analyze_face_mesh, averaged equally (25% each). This isn't a spec'd
+    weighting scheme (API-SPECIFICATION.md's 30/25/25/20 split only covers
+    the 3D-cue portion, not how to blend it with the REQUIRED-tier
+    signals), so treat the equal 25% split as a reasonable default open to
+    adjustment.
+
+    Those signals all look fine for a photo of a face too (MediaPipe
+    predicts depth from the 2D image), so print/screen attacks are caught
+    separately by _anti_spoofing - the spec's "texture analysis" - which can
+    only lower the result, never raise it:
+    - "spoof" (the MiniFASNet models are confident it's a print or a
+      screen): liveness_passed=False, score at most the model's P(real).
+      A determined spoof, which is what the backend reserves False for.
+    - "suspect" (the models are unsure, or the face is blurry with a
+      screen's moire pattern - a screen held close): liveness_passed=None,
+      score capped at _SUSPECT_SCORE_CAP (below 0.60). Weaker evidence, so
+      the backend flags for review instead of rejecting.
+    - "real": unchanged, liveness_passed = (score >= 0.60).
+    Colour distribution (the spec's other suggested signal) didn't separate
+    attacks from real faces at all on our recordings, so it isn't used.
 
     Request shape (a), a single image, is scored this way whatever its
     challenge_type: one image can't show a blink or a head turn. Shape (b),
@@ -632,19 +644,22 @@ def check_liveness(request: LivenessRequest):
     There's nothing to hash either way, so face_embedding_hash is "".
     """
     if request.frames:
-        return _check_liveness_burst(request)
-
-    try:
-        image_array = decode_base64_image(request.challenge_response)
-    except ValueError:
-        return LivenessResponse(
-            liveness_passed=None,
-            liveness_score=0.0,
-            liveness_threshold=0.60,
-            face_embedding_hash="",
-            details={"face_detected": False, "reason": "invalid_image"},
-        )
-    return _passive_liveness(image_array)
+        response = _check_liveness_burst(request)
+    else:
+        try:
+            image_array = decode_base64_image(request.challenge_response)
+        except ValueError:
+            response = LivenessResponse(
+                liveness_passed=None,
+                liveness_score=0.0,
+                liveness_threshold=0.60,
+                face_embedding_hash="",
+                details={"face_detected": False, "reason": "invalid_image"},
+            )
+        else:
+            response = _passive_liveness(image_array)
+    response.challenge_type = request.challenge_type
+    return response
 
 
 def _passive_liveness(image_array) -> LivenessResponse:
@@ -680,20 +695,43 @@ def _passive_liveness(image_array) -> LivenessResponse:
     mesh_signal = 1.0 if mesh_result["face_mesh_complete"] else 0.0
 
     liveness_score = (confidence + quality_signal + depth_signal + mesh_signal) / 4
+    liveness_passed = liveness_score >= 0.60
+
+    # Anti-spoofing can only lower the result (see check_liveness).
+    spoof_check = _anti_spoofing(image_array, detection)
+    if spoof_check is not None and spoof_check["verdict"] == "spoof":
+        liveness_score = min(liveness_score, spoof_check["real_probability"])
+        liveness_passed = False
+    elif spoof_check is not None and spoof_check["verdict"] == "suspect":
+        liveness_score = min(liveness_score, spoof_check["real_probability"], _SUSPECT_SCORE_CAP)
+        liveness_passed = None
+
+    details = {
+        "face_detected": True,
+        "face_detection_confidence": round(confidence, 4),
+        "face_mesh_complete": mesh_result["face_mesh_complete"],
+        "landmark_count": mesh_result["landmark_count"],
+        "nose_tip_z": mesh_result["nose_tip_z"],
+        "depth_quality": mesh_result["depth_quality"],
+        "depth_detected": mesh_result["depth_quality"] == "good",
+        "threshold": 0.60,
+    }
+    if spoof_check is not None:
+        details.update(
+            anti_spoofing=spoof_check["verdict"],
+            texture_analysis_score=round(spoof_check["real_probability"], 4),
+            sharpness=round(spoof_check["sharpness"], 1),
+            moire_peak=round(spoof_check["moire_peak"], 1),
+        )
+    else:
+        details["anti_spoofing"] = "not_assessed"
 
     return LivenessResponse(
-        liveness_passed=liveness_score >= 0.60,
+        liveness_passed=liveness_passed,
         liveness_score=round(liveness_score, 4),
         liveness_threshold=0.60,
         face_embedding_hash=face_hash,
-        details={
-            "face_detected": True,
-            "face_detection_confidence": round(confidence, 4),
-            "face_mesh_complete": mesh_result["face_mesh_complete"],
-            "landmark_count": mesh_result["landmark_count"],
-            "nose_tip_z": mesh_result["nose_tip_z"],
-            "depth_quality": mesh_result["depth_quality"],
-        },
+        details=details,
     )
 
 
@@ -953,6 +991,13 @@ def decode_base64_image(base64_string: str) -> np.ndarray:
     Whitespace (spaces, line breaks) is removed before decoding: base64
     wrapped across lines is still valid data, but validate=True rejects it,
     which made /face/verify report "couldn't compare" for a good photo.
+
+    The EXIF orientation tag is applied: phone cameras often store a
+    portrait photo as landscape pixels plus a "rotate 90°" tag, and without
+    it the face is analysed lying on its side (worse detection, mesh,
+    matching and anti-spoofing - a sample attack photo scored "real" sideways
+    and "fake" upright). The student app's frames come from a canvas and
+    carry no tag, so they're unaffected.
     """
     base64_string = "".join((base64_string or "").split())
     if not base64_string:
@@ -961,7 +1006,7 @@ def decode_base64_image(base64_string: str) -> np.ndarray:
     try:
         image_bytes = base64.b64decode(base64_string, validate=True)
         image = Image.open(BytesIO(image_bytes))
-        image = image.convert("RGB")
+        image = ImageOps.exif_transpose(image).convert("RGB")
     except Exception as exc:
         raise ValueError(f"Could not decode image: {exc}") from exc
 
@@ -1046,14 +1091,15 @@ _FACE_MESH_LANDMARK_COUNT = 468  # total landmarks in a complete MediaPipe FaceM
 # loss on WebFace600K, from the buffalo_s pack, release v0.7). insightface's
 # pretrained models are for non-commercial research use only - fine for
 # this coursework, but needs replacing for any commercial deployment.
-_ARCFACE_MODEL_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                                   "models", "w600k_mbf.onnx")
+_MODELS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "models")
+_ARCFACE_MODEL_PATH = os.path.join(_MODELS_DIR, "w600k_mbf.onnx")
 _EMBEDDING_DIM = 512
 
-_arcface_options = ort.SessionOptions()
-_arcface_options.intra_op_num_threads = 1  # one core per worker process; see _model_lock
-_arcface_options.inter_op_num_threads = 1
-_arcface = ort.InferenceSession(_ARCFACE_MODEL_PATH, _arcface_options, providers=["CPUExecutionProvider"])
+# Shared by every ONNX model here (ArcFace, anti-spoofing).
+_onnx_options = ort.SessionOptions()
+_onnx_options.intra_op_num_threads = 1  # one core per worker process; see _model_lock
+_onnx_options.inter_op_num_threads = 1
+_arcface = ort.InferenceSession(_ARCFACE_MODEL_PATH, _onnx_options, providers=["CPUExecutionProvider"])
 _ARCFACE_INPUT = _arcface.get_inputs()[0].name
 
 # Where the 5 alignment points land in ArcFace's 112x112 input (insightface's
@@ -1166,6 +1212,119 @@ def extract_face_embedding(image_array, landmarks=None):
     with _model_lock:
         embedding = _arcface.run(None, {_ARCFACE_INPUT: blob})[0][0]
     return embedding / np.linalg.norm(embedding)
+
+
+# --- Anti-spoofing (MiniFASNet + close-up screen check) ---
+#
+# MiniFASNetV2 and MiniFASNetV1SE from Minivision's Silent-Face-Anti-Spoofing
+# (Apache-2.0), as ONNX exports from github.com/yakhyo/face-anti-spoofing
+# (release "weights"; SHA-256 b32929ad... / ebab7f90..., the same files
+# LocalAI pins). Each looks at the face plus its surroundings (the face box
+# enlarged 2.7x / 4.0x) and outputs [fake, real, fake] - it catches prints
+# and screens mostly from context: paper or phone edges, fingers, a bright
+# rectangle in a room. ~6 ms for both.
+#
+# Measured 2026-10-30 (CHANGES.md) on 69 genuine webcam/course images and 81
+# attacks we recorded: genuine P(real) >= 0.90; prints and phones with any
+# context <= 0.46 (most ~0.00). Its blind spot is a screen held so close it
+# fills the view (P(real) up to 1.0) - the close-up check below covers most
+# of those.
+_ANTISPOOF_MODELS = (("MiniFASNetV2.onnx", 2.7), ("MiniFASNetV1SE.onnx", 4.0))
+_antispoof = [
+    (ort.InferenceSession(os.path.join(_MODELS_DIR, name), _onnx_options, providers=["CPUExecutionProvider"]), scale)
+    for name, scale in _ANTISPOOF_MODELS
+]
+_ANTISPOOF_INPUT_SIZE = 80
+# Images are analysed at most this size (as recorded/measured): the close-up
+# check's sharpness depends on resolution.
+_ANTISPOOF_MAX_SIDE = 640
+
+# Verdicts (see check_liveness for what each returns):
+_ANTISPOOF_SPOOF_BELOW = 0.5  # P(real) under this: "spoof" (the models' own decision boundary)
+# P(real) under this: "suspect". Genuine images measured >= 0.896; three
+# close-up screens the models weren't sure about sat at 0.60-0.77.
+_ANTISPOOF_SUSPECT_BELOW = 0.85
+# Close-up screen: blurry face (a photo of a photo loses fine detail) AND a
+# moire spike (the screen's pixel grid against the camera's). Neither alone
+# is enough: dim light and movement blur genuine faces, and dim-light noise
+# can spike too (genuine: sharpness 74-452, moire 16-52; close-up screens:
+# sharpness 5-83, moire 32-154). Measured on a 128x128 face crop.
+_CLOSEUP_SHARPNESS_BELOW = 120.0
+_CLOSEUP_MOIRE_ABOVE = 30.0
+# Liveness score for a "suspect" image: under the 0.60 pass mark.
+_SUSPECT_SCORE_CAP = 0.5
+
+_FFT_SIZE = 128
+_FFT_RADIUS = np.hypot(*np.mgrid[-_FFT_SIZE // 2:_FFT_SIZE // 2, -_FFT_SIZE // 2:_FFT_SIZE // 2])
+_MOIRE_BAND = (_FFT_RADIUS > 16) & (_FFT_RADIUS < 60)
+
+
+def _anti_spoofing(image_array, detection):
+    """
+    Is the detected face a print or a screen? Returns None if the face box
+    is unusable, otherwise:
+    - real_probability: MiniFASNet's P(real), the two models averaged;
+    - sharpness, moire_peak: the close-up screen signals on the face crop;
+    - verdict: "spoof", "suspect" or "real" (thresholds above).
+    """
+    height, width = image_array.shape[:2]
+    if max(height, width) > _ANTISPOOF_MAX_SIDE:
+        factor = _ANTISPOOF_MAX_SIDE / max(height, width)
+        image_array = cv2.resize(image_array, (round(width * factor), round(height * factor)),
+                                 interpolation=cv2.INTER_AREA)
+        height, width = image_array.shape[:2]
+    box = detection.location_data.relative_bounding_box
+    x, y = int(box.xmin * width), int(box.ymin * height)
+    w, h = int(box.width * width), int(box.height * height)
+    if w <= 0 or h <= 0:
+        return None
+
+    bgr = cv2.cvtColor(image_array, cv2.COLOR_RGB2BGR)  # the models were trained on BGR, 0-255
+    probabilities = np.zeros(3)
+    for session, scale in _antispoof:
+        crop = _antispoof_crop(bgr, (x, y, w, h), scale)
+        blob = crop.astype(np.float32).transpose(2, 0, 1)[np.newaxis]
+        with _model_lock:
+            logits = session.run(None, {session.get_inputs()[0].name: blob})[0][0]
+        exp = np.exp(logits - logits.max())
+        probabilities += exp / exp.sum()
+    real_probability = float(probabilities[1] / len(_antispoof))
+
+    face = image_array[max(0, y):min(height, y + h), max(0, x):min(width, x + w)]
+    if face.size == 0:
+        return None
+    gray = cv2.cvtColor(cv2.resize(face, (_FFT_SIZE, _FFT_SIZE), interpolation=cv2.INTER_AREA),
+                        cv2.COLOR_RGB2GRAY).astype(np.float32)
+    sharpness = float(cv2.Laplacian(gray, cv2.CV_32F).var())
+    spectrum = np.abs(np.fft.fftshift(np.fft.fft2(gray - gray.mean())))[_MOIRE_BAND]
+    moire_peak = float(spectrum.max() / (np.median(spectrum) + 1e-6))
+
+    if real_probability < _ANTISPOOF_SPOOF_BELOW:
+        verdict = "spoof"
+    elif real_probability < _ANTISPOOF_SUSPECT_BELOW or (
+        sharpness < _CLOSEUP_SHARPNESS_BELOW and moire_peak > _CLOSEUP_MOIRE_ABOVE
+    ):
+        verdict = "suspect"
+    else:
+        verdict = "real"
+    return {"real_probability": real_probability, "sharpness": sharpness, "moire_peak": moire_peak,
+            "verdict": verdict}
+
+
+def _antispoof_crop(bgr, box, scale):
+    """
+    MiniFASNet's input: the face box (x, y, w, h) enlarged `scale` times
+    about its centre (less if that would leave the image), clamped to the
+    image, resized to 80x80 - as in Silent-Face-Anti-Spoofing's CropImage.
+    """
+    src_h, src_w = bgr.shape[:2]
+    x, y, w, h = box
+    scale = min((src_h - 1) / h, (src_w - 1) / w, scale)
+    center_x, center_y = x + w / 2, y + h / 2
+    new_w, new_h = w * scale, h * scale
+    x1, y1 = max(0, int(center_x - new_w / 2)), max(0, int(center_y - new_h / 2))
+    x2, y2 = min(src_w - 1, int(center_x + new_w / 2)), min(src_h - 1, int(center_y + new_h / 2))
+    return cv2.resize(bgr[y1:y2 + 1, x1:x2 + 1], (_ANTISPOOF_INPUT_SIZE, _ANTISPOOF_INPUT_SIZE))
 
 
 def generate_face_hash(embedding) -> str:
