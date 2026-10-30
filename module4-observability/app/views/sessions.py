@@ -57,6 +57,42 @@ def course_location(course: dict) -> tuple[float, float, float] | None:
     return course["venue_latitude"], course["venue_longitude"], float(course.get("geofence_radius_meters") or 100)
 
 
+def _known_venues() -> list[dict]:
+    """Named venues already saved on courses and sessions, so instructors can pick
+    one instead of typing coordinates. Loaded once per sign-in."""
+    if "known_venues" not in st.session_state:
+        places = ui.safe(api.get_all, "/api/v1/courses/", default=[]) + \
+            ui.safe(lambda: visible_sessions(api.get_all("/api/v1/sessions/")), default=[])
+        venues: dict[tuple, dict] = {}
+        for p in places:
+            name, lat, lon = (p.get("venue_name") or "").strip(), p.get("venue_latitude"), p.get("venue_longitude")
+            if not name or lat is None or lon is None or not ui.in_singapore(lat, lon):
+                continue
+            radius = int(p.get("geofence_radius_meters") or 100)
+            venues.setdefault((name.lower(), round(lat, 5), round(lon, 5), radius),
+                              {"name": name, "lat": lat, "lon": lon, "radius": radius})
+        st.session_state.known_venues = sorted(venues.values(), key=lambda v: (v["name"].lower(), v["radius"]))
+    return st.session_state.known_venues
+
+
+def _saved_venue_picker(key: str) -> None:
+    venues = _known_venues()
+    if not venues:
+        return
+    by_label = {f"{v['name']} · {v['lat']:.4f}, {v['lon']:.4f} · {v['radius']} m": v for v in venues}
+
+    def fill() -> None:
+        venue = by_label.get(st.session_state.get(f"loc-saved-{key}"))
+        if venue:
+            st.session_state[f"loc-lat-{key}"] = venue["lat"]
+            st.session_state[f"loc-lon-{key}"] = venue["lon"]
+            st.session_state[f"loc-r-{key}"] = venue["radius"]
+            st.session_state[f"loc-name-{key}"] = venue["name"]
+
+    st.selectbox("Saved venue", list(by_label), index=None, key=f"loc-saved-{key}", on_change=fill,
+                 placeholder=f"Pick one of {len(by_label)} saved venue(s), or type coordinates below")
+
+
 def _location_section(course: dict) -> dict | None:
     """Where students must be to check in. Returns the location fields for the
     request ({} = use the course's location), or None if it isn't valid yet.
@@ -82,14 +118,20 @@ def _location_section(course: dict) -> dict | None:
         st.warning("This course has no classroom location saved, so enter where this session takes place. "
                    "Without a location, students could check in from anywhere.", icon="📍")
 
+    # Starting values set once through session state (not value=), so picking a
+    # saved venue below can fill the boxes in.
+    st.session_state.setdefault(f"loc-lat-{key}", saved[0] if saved else None)
+    st.session_state.setdefault(f"loc-lon-{key}", saved[1] if saved else None)
+    st.session_state.setdefault(f"loc-r-{key}", int(saved[2]) if saved else 100)
+    st.session_state.setdefault(f"loc-name-{key}", "")
+    _saved_venue_picker(key)
+
     a, b, c, d = st.columns([1, 1, 0.8, 1.2])
-    lat = a.number_input("Latitude", -90.0, 90.0, value=saved[0] if saved else None, format="%.6f",
-                         placeholder="1.3483", key=f"loc-lat-{key}")
-    lon = b.number_input("Longitude", -180.0, 180.0, value=saved[1] if saved else None, format="%.6f",
-                         placeholder="103.6831", key=f"loc-lon-{key}")
-    radius = c.number_input("Radius (m)", 20, 2000, int(saved[2]) if saved else 100, step=10, key=f"loc-r-{key}")
+    lat = a.number_input("Latitude", -90.0, 90.0, format="%.6f", placeholder="1.3483", key=f"loc-lat-{key}")
+    lon = b.number_input("Longitude", -180.0, 180.0, format="%.6f", placeholder="103.6831", key=f"loc-lon-{key}")
+    radius = c.number_input("Radius (m)", 20, 2000, step=10, key=f"loc-r-{key}")
     venue = d.text_input("Venue name", placeholder="e.g. Exam Hall A", key=f"loc-name-{key}")
-    st.caption("Tip: in Google Maps, right-click the room's building and click the coordinates to copy them.")
+    st.caption("Or type them: in Google Maps, right-click the room's building and click the coordinates to copy them.")
     if lat is None or lon is None:
         st.info("Enter the latitude and longitude to see the location on the map.")
         return None
@@ -114,7 +156,10 @@ def _create_form() -> None:
     left, right = st.columns(2)
     name = left.text_input("Session name", placeholder="Week 9 Lecture", key="new-session-name")
     session_type = right.selectbox("Type", ["lecture", "tutorial", "lab", "exam"], key="new-session-type")
-    soon = datetime.now(config.LOCAL_TZ) + timedelta(minutes=30)
+    # Default: the next 5-minute mark at least 5 min away, so check-in (opening 15 min
+    # before start) is already open and a new session works as soon as it's activated.
+    soon = datetime.now(config.LOCAL_TZ) + timedelta(minutes=5)
+    soon += timedelta(minutes=(5 - soon.minute % 5) % 5)
     day = left.date_input("Date", value=soon.date(), min_value=datetime.now(config.LOCAL_TZ).date(),
                           key="new-session-day")
     start = right.time_input("Starts", value=soon.time().replace(second=0, microsecond=0), step=300,
@@ -123,6 +168,12 @@ def _create_form() -> None:
     a, b = right.columns(2)
     opens_before = a.number_input("Check-in opens (min before)", 0, 120, 15, step=5, key="new-session-opens")
     closes_after = b.number_input("Check-in closes (min after)", 5, 240, 30, step=5, key="new-session-closes")
+    start_at = datetime.combine(day, start, tzinfo=config.LOCAL_TZ)
+    opens_at = start_at - timedelta(minutes=int(opens_before))
+    closes_at = start_at + timedelta(minutes=int(closes_after))
+    when = "now (once activated)" if opens_at <= datetime.now(config.LOCAL_TZ) else opens_at.strftime("%d %b %H:%M")
+    st.caption(f"Students can check in from **{when}** until **{closes_at:%H:%M}**. "
+               "The session must also be activated.")
     a, b = st.columns(2)
     liveness = a.toggle("Require liveness check", value=True, key="new-session-liveness")
     face = b.toggle("Require face match", value=False, key="new-session-face")
@@ -159,24 +210,70 @@ def _create_form() -> None:
 # Status changes
 # ---------------------------------------------------------------------------
 
-ACTIONS = {
-    # current status: [(button label, new status, confirmation text)]
-    "scheduled": [("Activate check-in", "active", "Students will be able to check in now."),
-                  ("Cancel session", "cancelled", "The session will be marked cancelled.")],
-    "active": [("Close check-in", "closed", "No more check-ins will be accepted.")],
-}
+REOPEN_MINUTES = 30
+
+
+def _utc_in(minutes: int = 0) -> str:
+    return (datetime.now(timezone.utc) + timedelta(minutes=minutes)).replace(tzinfo=None).isoformat()
+
+
+def _actions(session: dict) -> list[tuple[str, str, list[tuple[str, dict, str]]]]:
+    """Buttons for a session: (label, explanation, [(choice, PATCH body, done message)]).
+
+    Students can check in only when the session is active AND now is inside its
+    check-in window, so 'Activate check-in' also offers to move the window when
+    it hasn't opened yet (or has already ended)."""
+    status, window = session.get("status"), ui.checkin_window(session)
+    opens = ui.fmt_time(session.get("checkin_opens_at"), "%H:%M")
+    closes = ui.fmt_time(session.get("checkin_closes_at"), "%H:%M")
+    actions = []
+    if status == "scheduled":
+        if window == "not_open":
+            actions.append(("Activate check-in", f"Check-in is set to open at {opens}, so students can't check in before then.", [
+                ("Activate and open check-in now", {"status": "active", "checkin_opens_at": _utc_in()},
+                 "Check-in is open now."),
+                (f"Activate, open at {opens}", {"status": "active"}, f"Activated. Check-in opens at {opens}."),
+            ]))
+        elif window == "closed":
+            actions.append(("Activate check-in", f"The check-in window already ended at {closes}.", [
+                (f"Activate and keep check-in open {REOPEN_MINUTES} min",
+                 {"status": "active", "checkin_closes_at": _utc_in(REOPEN_MINUTES)}, "Check-in is open now."),
+                ("Activate anyway", {"status": "active"}, "Activated (check-in window has ended)."),
+            ]))
+        else:
+            actions.append(("Activate check-in", f"Students can check in now, until {closes}.", [
+                ("Activate", {"status": "active"}, "Check-in is open now."),
+            ]))
+        actions.append(("Cancel session", "The session will be marked cancelled.", [
+            ("Cancel session", {"status": "cancelled"}, "Session cancelled."),
+        ]))
+    elif status == "active":
+        if window == "not_open":
+            actions.append(("Open check-in now", f"Check-in is set to open at {opens}.", [
+                ("Open check-in now", {"checkin_opens_at": _utc_in()}, "Check-in is open now."),
+            ]))
+        elif window == "closed":
+            actions.append(("Reopen check-in", f"The check-in window ended at {closes}.", [
+                (f"Keep check-in open {REOPEN_MINUTES} more min", {"checkin_closes_at": _utc_in(REOPEN_MINUTES)},
+                 "Check-in is open again."),
+            ]))
+        actions.append(("Close check-in", "No more check-ins will be accepted.", [
+            ("Close check-in", {"status": "closed"}, "Check-in closed."),
+        ]))
+    return actions
 
 
 @st.dialog("Confirm")
-def _confirm_status(session: dict, new_status: str, message: str) -> None:
-    st.write(f"**{ui.md(session['name'])}** → {ui.status_label(new_status)}")
-    st.caption(message)
-    left, right = st.columns(2)
-    if left.button("Confirm", type="primary", use_container_width=True):
-        if ui.safe(api.patch, f"/api/v1/sessions/{session['id']}", {"status": new_status}) is not None:
-            ui.flash(f"Session is now {new_status}.", "✅")
-            st.rerun()
-    if right.button("Back", use_container_width=True):
+def _confirm_change(session: dict, explanation: str, choices: list[tuple[str, dict, str]]) -> None:
+    st.write(f"**{ui.md(session['name'])}**")
+    st.caption(explanation)
+    for index, (label, body, done) in enumerate(choices):
+        if st.button(label, key=f"choice-{index}", type="primary" if index == 0 else "secondary",
+                     use_container_width=True):
+            if ui.safe(api.patch, f"/api/v1/sessions/{session['id']}", body) is not None:
+                ui.flash(done, "✅")
+                st.rerun()
+    if st.button("Back", use_container_width=True):
         st.rerun()
 
 
@@ -337,12 +434,13 @@ def _session_detail(session: dict) -> None:
         f"{' · ' + ui.md(session['venue_name']) if session.get('venue_name') else ''}"
     )
     status_col, *buttons = st.columns([2, 1, 1])
-    status_col.markdown(f"Status: **{ui.status_label(session.get('status'))}**")
+    status_col.markdown(f"Status: **{ui.status_label(session.get('status'))}**  \n"
+                        f"Check-in: **{ui.checkin_state(session)}**")
     if auth.can("manage_sessions"):
-        for column, (label, new_status, message) in zip(buttons, ACTIONS.get(session.get("status"), [])):
-            if column.button(label, key=f"{new_status}-{session['id']}", use_container_width=True,
-                             type="primary" if new_status == "active" else "secondary"):
-                _confirm_status(session, new_status, message)
+        for index, (column, (label, explanation, choices)) in enumerate(zip(buttons, _actions(session))):
+            if column.button(label, key=f"action-{index}-{session['id']}", use_container_width=True,
+                             type="primary" if index == 0 and label != "Close check-in" else "secondary"):
+                _confirm_change(session, explanation, choices)
 
     def live_part() -> None:
         stats = ui.safe(api.get, f"/api/v1/stats/sessions/{session['id']}")
@@ -444,6 +542,7 @@ def render() -> None:
     frame = pd.DataFrame([{
         "id": s["id"], "Session": s.get("name"), "Course": s.get("course_code"),
         "Starts": s.get("scheduled_start"), "Status": ui.status_label(s.get("status")),
+        "Check-in": ui.checkin_state(s),
         "Checked in": f"{s.get('checked_in_count') or 0} / {s.get('total_enrolled') or 0}",
     } for s in sessions])
     ui.local_datetime_column(frame, "Starts")

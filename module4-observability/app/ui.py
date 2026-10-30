@@ -181,6 +181,43 @@ def status_label(status: str | None) -> str:
     return f"{STATUS_ICONS.get(status, '⚪')} {status.title()}" if status else "—"
 
 
+def checkin_window(session: dict) -> str:
+    """Where the check-in window is now: 'not_open', 'open' or 'closed'."""
+    now = pd.Timestamp.now(tz=config.LOCAL_TZ)
+    opens, closes = to_local(session.get("checkin_opens_at")), to_local(session.get("checkin_closes_at"))
+    if opens is not None and now < opens:
+        return "not_open"
+    if closes is not None and now > closes:
+        return "closed"
+    return "open"
+
+
+def _clock(stamp) -> str:
+    """'17:15' today, otherwise '31 Oct 17:15'."""
+    local = to_local(stamp)
+    if local is None:
+        return "—"
+    today = pd.Timestamp.now(tz=config.LOCAL_TZ).date()
+    return local.strftime("%H:%M" if local.date() == today else "%d %b %H:%M")
+
+
+def checkin_state(session: dict) -> str:
+    """Whether students can check in right now, in plain words. Students need
+    both an active session and the current time inside the check-in window."""
+    status = session.get("status")
+    if status == "cancelled":
+        return "—"
+    if status == "closed":
+        return "⛔ Closed"
+    window = checkin_window(session)
+    opens, closes = _clock(session.get("checkin_opens_at")), _clock(session.get("checkin_closes_at"))
+    if status == "active":
+        return {"open": f"🟢 Open now · closes {closes}", "not_open": f"⏳ Opens {opens}",
+                "closed": f"⛔ Window ended {closes}"}[window]
+    return {"open": f"🔵 Not activated · window open until {closes}", "not_open": f"🔵 Opens {opens} once activated",
+            "closed": f"⛔ Window ended {closes}"}[window]
+
+
 ENTRY_LABELS = {"app": "📱 App", "manual": "✍️ Manual", "override": "✅ Override"}
 
 
