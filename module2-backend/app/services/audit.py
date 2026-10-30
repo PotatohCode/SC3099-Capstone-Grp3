@@ -8,12 +8,21 @@ there's no user row being written, and a successful registration's audit
 entry should never exist without the user row actually having been created).
 """
 import json
+from datetime import date, datetime
 from typing import Any, Optional
 
 from sqlalchemy.orm import Session
 
 from app.core.metrics import security_violations_total
 from app.db.models.audit_log import AuditLog
+
+
+def _json_default(value: Any) -> str:
+    # Callers pass request fields straight through (e.g. a session PATCH with
+    # new times); json.dumps alone would raise on a datetime and 500 the call.
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 
 def log_event(
@@ -35,7 +44,7 @@ def log_event(
             resource_id=resource_id,
             ip_address=ip_address,
             user_agent=user_agent,
-            details=json.dumps(details) if details is not None else None,
+            details=json.dumps(details, default=_json_default) if details is not None else None,
             success=success,
         )
     )

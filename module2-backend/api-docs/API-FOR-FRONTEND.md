@@ -7,7 +7,7 @@ pagination, rate limits). **Your tasks:** the Module 1 table in
 
 This covers every endpoint your UI is likely to call, across all four roles
 (student/instructor/ta/admin), since one frontend serves all of them. Each
-entry notes who can call it. Last updated 2026-10-27.
+entry notes who can call it. Last updated 2026-10-30.
 
 ---
 
@@ -92,6 +92,7 @@ with no face, or a face-service error, doesn't use it up.
 |---|---|
 | `400 CAMERA_CONSENT_REQUIRED` | `camera_consent` is false; call `PUT /users/me` first |
 | `400 NO_FACE_DETECTED` | No usable face in the image |
+| `400 FACE_NOT_ACCEPTED` | A face was found, but the face service didn't accept it as a live face (e.g. a printed photo or a screen held up to the camera). Show the `detail` as is ("We couldn't verify your face. Use your camera directly, in good light, and try again") and let them retry. Don't tell the student a photo or screen was detected. A reset code isn't used up |
 | `403 FACE_RESET_CODE_REQUIRED` | A face is already enrolled and no `reset_code` was sent. Show a code field: "ask your instructor for a reset code" |
 | `403 FACE_RESET_CODE_INVALID` | Wrong, expired, already used or replaced code. 5 wrong tries burn the code; the instructor then generates a new one |
 | `413 IMAGE_TOO_LARGE` | Image over 10,000,000 base64 characters |
@@ -103,6 +104,30 @@ stored face; the match score feeds the risk score. A mismatch rejects on
 face-required sessions and is `flagged` for review on all others. Without an enrolled face, check-ins on
 face-required sessions are always `flagged`, so an enrolment step matters.
 Enrolling again replaces the stored face, and needs a reset code (above).
+
+### `POST /api/v1/users/me/face/reset-code/check` — any authenticated role
+```json
+{ "reset_code": "K7QM-4XPA" }
+```
+Checks a reset code **before** the camera opens, so a typo shows up straight
+away instead of after the photo. It **doesn't use the code up**: after the
+photo, send the same code with `POST /users/me/face/enroll` as above.
+Suggested flow on the settings page: code field → check → camera → enrol.
+
+| Response | Meaning |
+|---|---|
+| `200 {"required": false, "valid": true}` | No code needed (first enrolment). Skip the code step |
+| `200 {"required": true, "valid": true}` | Code is right. Open the camera; keep the code for the enrol call |
+| `403 FACE_RESET_CODE_REQUIRED` | A face is enrolled and no `reset_code` was sent |
+| `403 FACE_RESET_CODE_INVALID` | Wrong, expired, already used or replaced code |
+| `422` | `reset_code` longer than 32 characters |
+| `429 RATE_LIMITED` | More than 10 checks a minute (`Retry-After`) |
+| `503 FACE_RESET_CODE_UNAVAILABLE` | Codes can't be checked right now (Redis down). Retry later |
+
+A wrong code here counts toward the **same 5 tries** as at enrol, so the
+check gives no extra guesses. The code still expires 15 min after it was
+generated, so one checked near the end can expire before the photo is sent;
+enrol then answers `403 FACE_RESET_CODE_INVALID` as usual.
 
 ### `POST /api/v1/users/{student_id}/face/reset-code` — instructor of the student's course, or admin
 No body. **201** → `{ "student_id", "code": "K7QM-4XPA", "expires_at" }`
@@ -266,6 +291,11 @@ assigned TAs aren't included.
 Partial update: any field from create except `course_id`, plus
 `status`. **200** → `SessionResponse`. `status: "active"` stamps `actual_start`;
 `"closed"` stamps `actual_end`. Use these for "start/end session" controls.
+Activating **doesn't move the check-in window**: students can check in only
+when the session is `active` **and** `checkin_opens_at <= now <= checkin_closes_at`.
+To open check-in early, send both in one call:
+`{"status": "active", "checkin_opens_at": "<now, UTC>"}`. Times may be naive
+UTC or carry an offset (`Z`, `+08:00`); they're stored as UTC.
 `null` for a required field is ignored; for an optional one it clears it.
 E.g. `venue_latitude`/`venue_longitude`/`geofence_radius_meters: null` → the
 session uses the course's venue again (that's also the default when they're
@@ -371,7 +401,8 @@ Get a random liveness challenge for the next check-in.
   `expires_at` is **UTC** with no `Z` (like every timestamp; see
   API-CONVENTIONS), so `2026-10-20T04:01:30` is 12:01:30 in Singapore.
 - Checks the session first: `404 SESSION_NOT_FOUND`, `403 NOT_ENROLLED`,
-  `400 SESSION_NOT_ACTIVE` / `SESSION_WINDOW_CLOSED`. It does **not** check
+  `400 SESSION_NOT_ACTIVE` / `SESSION_WINDOW_CLOSED` (with the same "opens at" /
+  "closed at" `detail` as the check-in). It does **not** check
   "already checked in" or the Singapore rule; those still come from the
   check-in itself. More than 30 per minute → `429 RATE_LIMITED`.
 - `attempts_left`: liveness attempts this student has left **for this
@@ -450,6 +481,10 @@ without verifying it first (checked at check-in, no retry).
   never rejected for that alone. Can't confirm the steps → at most
   `flagged` (`liveness_unverified`). Judged a spoof (here or in any verify
   attempt for this session) → `rejected` (`liveness_failed`).
+- **A single photo is checked for spoofing too:** a printed photo or a screen
+  held up to the camera is `rejected` (`liveness_failed`); a doubtful one
+  (e.g. a screen very close to the camera) is `flagged` on liveness-required
+  sessions. A genuine face in normal or dim light passes.
 - `challenge_type` (lowercase letters and `_`) is only a label stored with
   the check-in when you send frames **without** a challenge.
 - **Send a fresh photo or burst every time.** If **any** image (the photo or
@@ -477,7 +512,8 @@ without verifying it first (checked at check-in, no retry).
 | `413 IMAGE_TOO_LARGE` | Any one frame over the size limit | Retake with smaller frames |
 | `404 SESSION_NOT_FOUND` | Unknown session | |
 | `403 NOT_ENROLLED` | Not enrolled in the course | |
-| `400 SESSION_NOT_ACTIVE` / `SESSION_WINDOW_CLOSED` | Not open right now | |
+| `400 SESSION_NOT_ACTIVE` | Session isn't `active` (not started, closed or cancelled) | |
+| `400 SESSION_WINDOW_CLOSED` | Session is active but outside its check-in window. `detail` says which: `Check-in opens at 14:15 SGT` (not open yet) or `Check-in closed at 14:45 SGT` (over); the date is added when it isn't today (`Check-in opens at 2 Nov 09:45 SGT`) | Show the `detail` as is |
 | `400 ALREADY_CHECKED_IN` | Already has a check-in for this session | Offer appeal if it was rejected |
 | `403 CONSENT_REQUIRED` | Only if the backend's consent enforcement is set to `reject` (it's `flag`: missing consent is stored and reviewed, not refused) | Ask for camera + location permission |
 | `403 OUTSIDE_SINGAPORE` | GPS outside Singapore (including Johor Bahru and Batam, just across the straits), or a public IP outside Singapore. **Nothing saved, retry allowed** | "Check-in is only available within Singapore. If you're using a VPN, turn it off and try again." |

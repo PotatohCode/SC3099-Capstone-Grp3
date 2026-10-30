@@ -14,6 +14,30 @@ below.
 
 ---
 
+## 2026-10-30 — `backend/window-and-reset-check`: "opens at" message, reset-code check, session PATCH fix
+
+**Rebuild needed:** `docker compose up -d --build backend` (no migration).
+
+| Area | Before | Now | Why |
+|---|---|---|---|
+| Check-in before the window opens | `400 SESSION_WINDOW_CLOSED`, "Check-in window is closed" | Same status and code; `detail` is `Check-in opens at 14:15 SGT` before the window and `Check-in closed at 14:45 SGT` after it (date added when it isn't today). Also on `POST /checkins/challenge` | An instructor who activated a session before its window opened saw students told check-in was "closed" (reported by M1). Activating still doesn't open the window early; see "Open check-in now" in the checklist |
+| Checking a face reset code | Only by sending it with the photo, so a typo showed up after the face scan | `POST /users/me/face/reset-code/check {reset_code}` checks it without using it up; enrol is unchanged and still uses it up | Asked for by M1. A wrong check counts toward the same 5 tries, so it gives no extra guesses; 10 checks a minute per user |
+| `PATCH /sessions/{id}` with a time field | **500** for any time change: times with `Z`/an offset couldn't be compared with the stored ones, and no time could be written to the audit log | Works; times may be naive UTC or carry an offset, stored as UTC | Found while testing the "open check-in now" call. The dashboard only ever PATCHed `status`, so nothing visible broke |
+
+## 2026-10-30 — `backend/enroll-spoof-and-keepalive`: refused enrolment photos, keep-alive
+
+**Rebuild needed:** `docker compose up -d --build backend` (no migration).
+
+| Area | Before | Now | Why |
+|---|---|---|---|
+| Enrolment photo refused by the face service's anti-spoofing (M3 PR #14) | `400 NO_FACE_DETECTED`, "No face detected in image" | `400 FACE_NOT_ACCEPTED`, "We couldn't verify your face. Use your camera directly, in good light, and try again" | "No face" was misleading when a face is clearly in the picture. The message doesn't say a photo or screen was detected, so it doesn't explain how to get round the check. A reset code still isn't used up |
+| Idle connections | Closed by the server after 5 s (uvicorn's default) | Kept for 130 s | A client that reused the connection right at 5 s (e.g. log in, then check in on the same connection) could lose that request: ~1 in 150 in our test, about 10 in 100 in Module 3's stress test with photo check-ins. 130 s is longer than the frontend proxy keeps idle connections (2 min) |
+
+Old face hashes after M3's model change: nothing changes in the backend.
+They answer `match_passed: null` until the student re-enrols; the
+[checklist](CHANGES-2026-10-01.md) has the one-off reset for local
+databases.
+
 ## 2026-10-27 — `backend/face-reset-and-manual-checkin`: face reset codes, manual check-ins
 
 **Rebuild needed:** `docker compose up -d --build backend` (one migration,
@@ -244,6 +268,24 @@ Tasks from the [checklist](CHANGES-2026-10-01.md) that the other modules
 have finished, newest first. Moved here so the checklist only shows what's
 left.
 
+### Module 3 — Face recognition: PRs #13 + #14 (`3734492`, `9327132`, merged 2026-10-30)
+
+| Was | Task | Done how |
+|---|---|---|
+| **Should** | Handle ~100 concurrent calls | Face matching moved from dlib to ArcFace (MobileFaceNet, ONNX), and the service runs 3 workers instead of 2. 100 students logging in and checking in with a photo at once, through the backend: check-in median / p95 / max **4.8 / 5.2 / 5.3 s** warm (dlib: 7.6 / 9.9 / 11.7 s), none over 10 s, no calls to the face service timing out. The first run after a restart is slower (34 of 100 over 10 s); a start-up warm-up is left as an Optional |
+| — | Also: anti-spoofing | Single photos: MiniFASNet (two small ONNX models) plus a check for screens held close to the camera. A print or screen → `liveness_passed: false` (we reject); a suspected close-up screen → `null` with a score under 0.60 (we flag). Bursts are unchanged (never `false`). `/face/enroll` refuses `spoof` and `suspect` with the existing 201 + `enrollment_successful: false` (`details.reason: spoof_detected`), which we return as `400 FACE_NOT_ACCEPTED` (release above). On M3's recordings: 28/28 genuine photos enrolled, 39/40 attacks refused |
+| — | Also: face hash | Still 64 hex characters (240 SimHash bits + version tag `a1f0`). Hashes from dlib can't be compared and get `match_passed: null`, so **every face enrolled before 2026-10-30 has to be enrolled again** (see the checklist) |
+| — | Also | `.dockerignore` (the image no longer contains the local venv or test recordings of real faces); EXIF orientation applied to uploaded photos; `challenge_type` echoed, spec liveness fields in `details`; head-turn notes for M1 in `NOTES-FOR-FRONTEND.md` |
+
+### Module 4 — Dashboard: PRs #11 + #12 (`031ca98`, `0324492`, merged 2026-10-29)
+
+| Was | Task | Done how |
+|---|---|---|
+| Should | Face reset code screen | Students page, instructor/admin only: an "I've checked the student's card" tick enables **Generate code**; the code and its expiry (Singapore time) are shown once until "Done". Students without a face get "no code needed" (from `face_enrolled` on the roster / user list, and on `400 FACE_NOT_ENROLLED`); `403`, `404` and `503 FACE_RESET_CODE_UNAVAILABLE` have their own messages |
+| Should | Manual check-in + undo | "Manual check-in" panel on a session (instructor, TA, admin): pick a student not yet approved (each shows "not checked in" or their current status), reason required. `201` → "checked in", `200` → "earlier check-in is now approved (override)". "Staff check-ins" list with **Undo** (confirm dialog) for `manual` / `override` rows. Cancelled sessions: no new manual check-ins, earlier ones can still be undone. If the roster can't be loaded (e.g. `403` for an instructor who owns the session but no longer the course) it says so instead of "everyone is checked in" |
+| Should | Show and label staff entries | "How" column (📱 App / ✍️ Manual / ✅ Override) on session check-ins; labels for `manual_checkin` / `manual_override` and the six new audit actions; `face_reset_code_rejected` added to the security filter. `face_reset_code_guessing` shows as a security violation with its type in the details, like the other violations |
+| — | Also | TA course list cached for 10 minutes; seed script and smoke test page through `GET /courses/` (100 per page) |
+
 ### Module 1 — Frontend: PR #10 (`e0279eb`, merged 2026-10-27)
 
 | Was | Task | Done how |
@@ -320,6 +362,7 @@ The defaults are what's running. Invalid values stop the backend at startup.
 | `DEVICE_BINDING_ENFORCEMENT` | `off` | `off` / `flag` |
 | `LIVENESS_CHALLENGE_ENFORCEMENT` | `off` | `off` / `flag` |
 | `FACE_MISMATCH_ENFORCEMENT` | `flag` (since 2026-10-26) | `off` / `flag`. A wrong face on a session that doesn't require a face match: `flag` = review, `off` = only affects the score. Face-required sessions always reject |
+| `FACE_REENROLL_REQUIRES_CODE` | `true` (since 2026-10-27) | Replacing an enrolled face needs an instructor's one-time reset code. Stays on after the face-model change of 2026-10-30; old faces are cleared instead (checklist) |
 | `LIVENESS_CHALLENGE_ACTIONS` | `["blink","turn_left","turn_right"]` | Actions a challenge is drawn from; Module 3 must detect every one |
 | `LIVENESS_CHALLENGE_STEPS` / `LIVENESS_CHALLENGE_TTL_SECONDS` | `2` / `90` | Challenge length (1–3) and lifetime |
 | `MAX_LIVENESS_FRAMES` / `LIVENESS_TIMEOUT_SECONDS` | `30` / `15` | Frame cap; Module 3 timeout for bursts |
@@ -365,6 +408,9 @@ Interactive docs for every endpoint: http://localhost:8000/docs
 
 | Merged as | Contents |
 |---|---|
+| `backend/window-and-reset-check` | 2026-10-30: "opens at" / "closed at" check-in message, `POST /users/me/face/reset-code/check`, session PATCH with time fields fixed (was a 500); API docs sweep |
+| `backend/enroll-spoof-and-keepalive` (`667a0ac`) | 2026-10-30: `FACE_NOT_ACCEPTED`, keep-alive 130 s; checklist and completed-task records for M3 PRs #13 + #14 and M4 PRs #11 + #12 |
+| `backend/face-reset-and-manual-checkin` (`b9f8e77`) | 2026-10-27: face reset codes, manual check-ins, `entry_method` |
 | `backend/face-mismatch-review` | 2026-10-26: a wrong face is flagged on every session; team checklist and completed-task records for M1 PR #5, M3 PR #7, M4 PRs #6 and #8 |
 | `backend/password-change` (`6b2c854`) | 2026-10-23: password change, liveness retries, API docs sweep |
 | `backend/consent-flag` | 2026-10-23: consent enforced as `flag` |
