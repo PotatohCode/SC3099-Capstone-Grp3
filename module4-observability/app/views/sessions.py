@@ -126,11 +126,17 @@ def _location_section(course: dict) -> dict | None:
     st.session_state.setdefault(f"loc-name-{key}", "")
     _saved_venue_picker(key)
 
+    def typed() -> None:
+        # Editing a box by hand means it's no longer the picked saved venue.
+        st.session_state[f"loc-saved-{key}"] = None
+
     a, b, c, d = st.columns([1, 1, 0.8, 1.2])
-    lat = a.number_input("Latitude", -90.0, 90.0, format="%.6f", placeholder="1.3483", key=f"loc-lat-{key}")
-    lon = b.number_input("Longitude", -180.0, 180.0, format="%.6f", placeholder="103.6831", key=f"loc-lon-{key}")
-    radius = c.number_input("Radius (m)", 20, 2000, step=10, key=f"loc-r-{key}")
-    venue = d.text_input("Venue name", placeholder="e.g. Exam Hall A", key=f"loc-name-{key}")
+    lat = a.number_input("Latitude", -90.0, 90.0, format="%.6f", placeholder="1.3483", key=f"loc-lat-{key}",
+                         on_change=typed)
+    lon = b.number_input("Longitude", -180.0, 180.0, format="%.6f", placeholder="103.6831", key=f"loc-lon-{key}",
+                         on_change=typed)
+    radius = c.number_input("Radius (m)", 20, 2000, step=10, key=f"loc-r-{key}", on_change=typed)
+    venue = d.text_input("Venue name", placeholder="e.g. Exam Hall A", key=f"loc-name-{key}", on_change=typed)
     st.caption("Or type them: in Google Maps, right-click the room's building and click the coordinates to copy them.")
     if lat is None or lon is None:
         st.info("Enter the latitude and longitude to see the location on the map.")
@@ -546,7 +552,22 @@ def render() -> None:
         "Checked in": f"{s.get('checked_in_count') or 0} / {s.get('total_enrolled') or 0}",
     } for s in sessions])
     ui.local_datetime_column(frame, "Starts")
-    st.caption("Select a row to open the session.")
+
+    # Pick a session from a list (or tick its row in the table below).
+    by_id = {s["id"]: s for s in sessions}
+    current = st.session_state.get("selected_session_id")
+    if current in by_id and st.session_state.get("open-session-pick") != current:
+        st.session_state["open-session-pick"] = current  # keep in step with the table / Today
+    elif current not in by_id:
+        st.session_state.pop("open-session-pick", None)
+
+    def opened() -> None:
+        st.session_state.selected_session_id = st.session_state.get("open-session-pick")
+
+    st.selectbox("Open session", list(by_id), index=None, key="open-session-pick", on_change=opened,
+                 placeholder="Choose a session to see its details…",
+                 format_func=lambda sid: f"{ui.session_label(by_id[sid])} · {ui.status_label(by_id[sid].get('status'))}")
+    st.caption("Or tick the box at the left edge of a row in the table.")
     event = st.dataframe(
         frame.drop(columns=["id"]), hide_index=True, use_container_width=True,
         on_select="rerun", selection_mode="single-row", key="sessions-table",
