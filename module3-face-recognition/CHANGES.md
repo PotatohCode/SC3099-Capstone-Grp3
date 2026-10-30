@@ -186,6 +186,104 @@ worker.
 
 ---
 
+## 2026-10-30 — Face matching switched from dlib to ArcFace (MobileFaceNet)
+
+**Branch `module3-arcface`. Not merged yet: needs the re-enrolment step agreed
+with the backend first (see "Before merging" below).**
+
+**Why:** the stress test (100 concurrent users) may have a 10 s limit per
+request, and a photo check-in calls us 3 times in a row. Measured through the
+backend (`stress_checkins.py`, 100 students logging in and checking in with a
+photo at once), dlib gave a check-in median of 7.6 s, p95 9.9 s, max 11.7 s;
+49 of 94 students over 10 s for login + check-in; 69 calls to us timing out.
+The dlib embedding was ~64% of each check-in's work (86 ms, computed twice).
+
+**What changed** (`app/main.py`, `requirements.txt`, root
+`requirements-test.txt`, `Dockerfile`, new `models/w600k_mbf.onnx`):
+- `extract_face_embedding`: 5 points from MediaPipe FaceMesh (eye centres,
+  nose tip, mouth corners) → similarity transform to insightface's 112×112
+  template → ArcFace MobileFaceNet (`w600k_mbf.onnx`, insightface buffalo_s,
+  release v0.7, 13.6 MB, SHA-256 `9cc6e4a7…b319eb4f`) via onnxruntime, one
+  CPU thread per worker, under `_model_lock` → 512-d unit vector. No second
+  face detector: the mesh gives the points.
+- `/liveness/check` (single image / burst's front frame) runs the face mesh
+  once for both the hash and the depth check (`_mesh_landmarks`).
+- Hash: still 64 lowercase hex characters, now 240 SimHash bits (60 hex) +
+  version tag `a1f0`. A hash without the tag (made by dlib) can't be
+  compared: `/face/verify` returns `match_passed: null` (flagged for review)
+  instead of a wrong `false`. A dlib hash ends in the tag by chance 1 in
+  65,536 times.
+- Verify decision: cosine similarity estimated from the Hamming distance,
+  match if ≥ **0.35**. `match_score` now maps cosine 0.35 → exactly 0.70, so
+  `match_passed = (match_score >= 0.70)` as the spec says and
+  `match_threshold: 0.70` is finally the real rule (before, the decision was
+  dlib's euclidean 0.6 and the reported 0.70 only roughly matched).
+- Removed: `face-recognition` (dlib), the `setuptools<81` pin,
+  `build-essential`/`cmake` in the Dockerfile (only dlib needed them), the
+  1.38-norm and euclidean-0.6 workarounds.
+
+**Licence:** insightface's pretrained models are for non-commercial research
+use. Fine for coursework; replace the model for any commercial use.
+
+**Feasibility check** (same images through both models; 45 front-facing
+frames of one student from several sessions, glasses on/off, plus
+obama ×3 and biden from `sample_images/`; 993 same-person and 183
+different-person pairs):
+
+| | Same person, lowest | Different people, highest |
+|---|---|---|
+| dlib, true cosine | 0.948 | 0.867 |
+| dlib, through the hash (the app's decision) | 0.919 (cut-off was 0.905) | 0.845 |
+| **ArcFace, true cosine** | **0.581** | **0.054** |
+| **ArcFace, through the hash** | **0.525** | **0.159** |
+
+dlib's worst genuine pair (obama2 vs obama3) was only 0.014 above its
+cut-off. ArcFace leaves ~0.17 on both sides of 0.35 (SimHash noise is about
+±0.09). Caveat: only 3 people in the set.
+
+**Results:**
+- Local smoke test: obama2 0.82, obama3 0.83, both partial-face samples
+  0.92–0.94 → match; biden 0.13 → no match; a dlib-style hash → `null`.
+- Unit tests 40 passed (2 skipped as before); public suite 92/92 except one
+  flaky `test_concurrent_logins` (backend-only, passed 3/3 on re-run);
+  `test_face_recognition.py` 15/15.
+- `load_test.py mixed 100`: **2.1–2.6 s** (dlib 3.9–4.9 s), none over 5 s.
+  `burst 40`: 12.2–13.8 s (dlib 10.2–14.7 s) - unchanged, bursts are
+  dominated by the per-frame face mesh, not the one embedding.
+- `stress_checkins.py 100 --fresh-conn` (through the backend):
+
+  | | Check-in median / p95 / max | Login + check-in over 10 s | Calls to us timing out |
+  |---|---|---|---|
+  | dlib | 7.6 / 9.9 / 11.7 s | 49 of 94 (+6 client timeouts) | 69 |
+  | ArcFace, first run after restart | 6.7 / 8.2 / 8.7 s | 34 of 100 | 0 |
+  | **ArcFace, warm** | **4.8 / 5.2 / 5.3 s** | **0 of 100** | **0** |
+
+  (All students sent the same photo, so the backend's replay check rejected
+  them and their stored hashes were still dlib's (`face_match_passed: null`);
+  only the timings are meaningful.)
+- Still there without `--fresh-conn`: 10 of 100 responses dropped at ~5 s
+  when the check-in reuses the login connection - the backend's uvicorn
+  keep-alive (default 5 s), not us. To report to the backend.
+
+**Before merging (coordination):** every stored face hash was made by dlib,
+so every student must re-enrol - and re-enrolling needs an instructor reset
+code since 2026-10-27. Agree with the backend: clear stored hashes once at the
+switch (everyone becomes a first enrolment), or temporarily
+`FACE_REENROLL_REQUIRES_CODE=false`. Until then the tag keeps stale hashes at
+`null` (flagged), never a wrong reject. Everyone rebuilds `face-recognition`;
+local venvs reinstall from `requirements-test.txt`.
+
+**To revert:** switch back to `module3-face-recognition` (or revert the
+merge) and rebuild; faces enrolled with ArcFace then need re-enrolling again.
+
+**Also: new `.dockerignore`.** Without it, `COPY . .` put the local `venv/`
+(~1.1 GB), `tests/` (including `tests/fixtures/`, webcam recordings of real
+faces) and the local tools/notes into the image. Now the image holds only
+`app/`, `models/`, `requirements.txt` and the Dockerfile/CHANGES. Local image
+5.5 → 3.9 GB; public tests 15/15 after the rebuild.
+
+---
+
 ## 2026-10-29 — 3 workers; concurrency re-measured with the whole stack running
 
 `Dockerfile`: `WEB_CONCURRENCY` 2 → **3**.

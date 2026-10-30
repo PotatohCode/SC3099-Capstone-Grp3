@@ -25,9 +25,10 @@ import threading
 import time
 from io import BytesIO
 
-import face_recognition
+import cv2
 import mediapipe as mp
 import numpy as np
+import onnxruntime as ort
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
@@ -401,7 +402,7 @@ def enroll_face(request: FaceEnrollRequest):
             details={"face_detected": False, "reason": "no_face_detected"},
         )
 
-    embedding = extract_face_embedding(image_array, detection)
+    embedding = extract_face_embedding(image_array)
     if embedding is None:
         return FaceEnrollResponse(
             enrollment_successful=False,
@@ -475,32 +476,25 @@ def verify_face(request: FaceVerifyRequest):
     for face-required sessions, so a blurry photo must not look like a
     different person. tests/public's no-face test accepts face_detected=False.
 
-    match_passed is decided directly against dlib's own documented
-    threshold (_DLIB_EUCLIDEAN_MATCH_THRESHOLD = 0.6 euclidean distance),
-    not by comparing match_score to 0.70 - deliberately simple for now.
-    The euclidean distance itself is reconstructed from the Hamming
-    distance between the two SimHash values (see _hamming_distance),
-    since only the hashes are available here, never the raw reference
-    embedding - SimHash preserves angle/cosine similarity, and cosine
-    similarity converts to euclidean distance via
-    ||a-b||^2 = ||a||^2+||b||^2-2*a.b, using _ASSUMED_EMBEDDING_NORM for
-    both vectors since actual magnitude can't be recovered from the hash.
-    Verified empirically against obama/obama2/obama3/biden before relying
-    on it (see diagnose_dlib.py).
+    Only the hashes are available here, never the raw reference embedding,
+    so the cosine similarity of the two embeddings is estimated from the
+    Hamming distance between their SimHash values (see _hamming_distance):
+    the fraction of differing bits approximates the angle between the
+    vectors divided by pi.
 
-    match_score is kept simple and just self-consistent with that same
-    0.6/0.70 boundary (match_score = 1 - euclidean/2, so euclidean==0.6
-    lands exactly on match_score==0.70) - it's reported for the response
-    schema and the "match_score >= 0.7 on a real match" test, but doesn't
-    itself drive match_passed. This can be revisited/made more precise
-    later if needed.
+    match_score maps that cosine onto 0-1 so that the decision is exactly
+    the spec's step 8, match_passed = (match_score >= 0.70): cosine
+    _ARCFACE_MATCH_COSINE (0.35) lands on 0.70, 1.0 (identical) on 1.0,
+    and 0 or below (unrelated faces) on 0.0, linear in between. Same-person
+    pairs measured 0.52-1.0 (score ~0.78-1.0); different people at most
+    0.16 (score ~0.32).
 
-    A reference_template_hash that isn't a valid 64-char hex SimHash
-    (e.g. empty string, from a user who never successfully enrolled, or
-    not valid hex) can't be compared - _hamming_distance raises
-    ValueError, treated as "couldn't compare" (match_passed=None,
-    match_score=0.0) rather than a crash, since it's an expected data
-    state, not a service failure.
+    A reference_template_hash that can't be compared - not a valid 64-char
+    hex SimHash (e.g. empty string, from a user who never successfully
+    enrolled), or one from the earlier dlib model (no _HASH_VERSION_TAG) -
+    makes _hamming_distance raise ValueError, treated as "couldn't compare"
+    (match_passed=None, match_score=0.0) rather than a crash, since it's an
+    expected data state, not a service failure.
     """
     try:
         image_array = decode_base64_image(request.image)
@@ -508,7 +502,7 @@ def verify_face(request: FaceVerifyRequest):
         return FaceVerifyResponse(
             match_passed=None,
             match_score=0.0,
-            match_threshold=0.70,
+            match_threshold=_MATCH_SCORE_THRESHOLD,
             face_detected=False,
             current_template_hash="",
         )
@@ -518,17 +512,17 @@ def verify_face(request: FaceVerifyRequest):
         return FaceVerifyResponse(
             match_passed=None,
             match_score=0.0,
-            match_threshold=0.70,
+            match_threshold=_MATCH_SCORE_THRESHOLD,
             face_detected=False,
             current_template_hash="",
         )
 
-    embedding = extract_face_embedding(image_array, detection)
+    embedding = extract_face_embedding(image_array)
     if embedding is None:
         return FaceVerifyResponse(
             match_passed=None,
             match_score=0.0,
-            match_threshold=0.70,
+            match_threshold=_MATCH_SCORE_THRESHOLD,
             face_detected=False,
             current_template_hash="",
         )
@@ -537,11 +531,9 @@ def verify_face(request: FaceVerifyRequest):
 
     try:
         distance = _hamming_distance(current_hash, request.reference_template_hash)
-        fraction = distance / _SIMHASH_BITS
-        estimated_cos_sim = np.cos(fraction * np.pi)
-        estimated_euclidean = np.sqrt(2 * (_ASSUMED_EMBEDDING_NORM ** 2) * (1 - estimated_cos_sim))
-        match_passed = bool(estimated_euclidean <= _DLIB_EUCLIDEAN_MATCH_THRESHOLD)
-        match_score = max(0.0, 1 - estimated_euclidean / 2.0)
+        estimated_cos_sim = float(np.cos(distance / _SIMHASH_BITS * np.pi))
+        match_score = _match_score(estimated_cos_sim)
+        match_passed = match_score >= _MATCH_SCORE_THRESHOLD
     except ValueError:
         match_passed = None
         match_score = 0.0
@@ -549,7 +541,7 @@ def verify_face(request: FaceVerifyRequest):
     return FaceVerifyResponse(
         match_passed=match_passed,
         match_score=round(match_score, 4),
-        match_threshold=0.70,
+        match_threshold=_MATCH_SCORE_THRESHOLD,
         face_detected=True,
         current_template_hash=current_hash,
     )
@@ -671,7 +663,9 @@ def _passive_liveness(image_array) -> LivenessResponse:
             details={"face_detected": False, "reason": "no_face_detected"},
         )
 
-    embedding = extract_face_embedding(image_array, detection)
+    # One mesh run for both the face hash and the depth/completeness signals.
+    landmarks = _mesh_landmarks(image_array)
+    embedding = extract_face_embedding(image_array, landmarks) if landmarks is not None else None
     face_hash = generate_face_hash(embedding) if embedding is not None else ""
 
     confidence = float(detection.score[0])
@@ -681,7 +675,7 @@ def _passive_liveness(image_array) -> LivenessResponse:
     face_size_score = min(1.0, (bbox.width * bbox.height) / _QUALITY_FACE_AREA_RATIO_TARGET)
     quality_signal = (resolution_score + face_size_score) / 2
 
-    mesh_result = analyze_face_mesh(image_array)
+    mesh_result = analyze_face_mesh(image_array, landmarks)
     depth_signal = min(1.0, abs(mesh_result["nose_tip_z"]) / 0.03)
     mesh_signal = 1.0 if mesh_result["face_mesh_complete"] else 0.0
 
@@ -980,10 +974,10 @@ def decode_base64_image(base64_string: str) -> np.ndarray:
 # (~40 threads) and quick endpoints like /risk/assess no longer wait behind
 # image work. The face models themselves, though, are used by one request at
 # a time per process, under _model_lock:
-# - dlib (via face_recognition) is ~95% of each request's time and its models
-#   are module-level objects that aren't safe to call from several threads at
-#   once, so it was going to be one-at-a-time anyway.
-# - MediaPipe solution objects aren't thread-safe either. An earlier version
+# - The ArcFace session (_arcface, see extract_face_embedding) is set to one
+#   CPU thread, so each worker process uses one core and 3 workers don't
+#   fight over the CPUs; under the lock it runs one face at a time.
+# - MediaPipe solution objects aren't thread-safe. An earlier version
 #   gave each thread its own copy instead; under load that built dozens of
 #   models at once after a restart (100 parallel requests hung for 120s) and
 #   left ~40 threads competing for the CPU, which delayed every response.
@@ -1031,7 +1025,7 @@ def detect_face(image_array):
 
 _FACE_MESH_LANDMARK_COUNT = 468  # total landmarks in a complete MediaPipe FaceMesh result
 
-# --- Identity embedding (dlib, via face_recognition) ---
+# --- Identity embedding (ArcFace MobileFaceNet, via onnxruntime) ---
 #
 # Two prior MediaPipe-landmark-based approaches (raw per-landmark
 # coordinates, then normalized pairwise distances between up to ~54
@@ -1041,31 +1035,84 @@ _FACE_MESH_LANDMARK_COUNT = 468  # total landmarks in a complete MediaPipe FaceM
 # raw cosine similarity was ~0.999 for EVERY pair tested, same-person or
 # not. MediaPipe FaceMesh simply wasn't built for identity discrimination.
 #
-# dlib's face_recognition, by contrast, gives a purpose-trained 128-d
-# embedding with real separation: obama-vs-obama2/3 (same person) sits at
-# cosine similarity ~0.97, obama-vs-biden (different) at ~0.82 - verified
-# directly against these sample images before switching.
-_DLIB_EMBEDDING_DIM = 128
+# dlib (via face_recognition) replaced them, and was in turn replaced by
+# ArcFace on 2026-10-30 (CHANGES.md): ~15 ms per face instead of dlib's
+# ~86 ms, and far wider separation. On 45 webcam frames of one person
+# (several sessions, glasses on/off) plus the course samples, same-person
+# cosine similarity was 0.58-1.0 and different people at most 0.05, vs
+# dlib's 0.95-1.0 and 0.87.
+#
+# Model: insightface's w600k_mbf.onnx (MobileFaceNet trained with ArcFace
+# loss on WebFace600K, from the buffalo_s pack, release v0.7). insightface's
+# pretrained models are for non-commercial research use only - fine for
+# this coursework, but needs replacing for any commercial deployment.
+_ARCFACE_MODEL_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                   "models", "w600k_mbf.onnx")
+_EMBEDDING_DIM = 512
 
-# dlib's face_encodings are NOT unit-length - measured norm is consistently
-# ~1.38 across sample photos (see diagnose_dlib.py). SimHash only ever
-# preserves the *direction* of a vector (sign(r.a) is invariant to scaling
-# a), so reconstructing a euclidean distance from the hash alone requires
-# assuming some typical norm for both vectors, since magnitude itself
-# can't be recovered from the hash. This is that assumption.
-_ASSUMED_EMBEDDING_NORM = 1.38
+_arcface_options = ort.SessionOptions()
+_arcface_options.intra_op_num_threads = 1  # one core per worker process; see _model_lock
+_arcface_options.inter_op_num_threads = 1
+_arcface = ort.InferenceSession(_ARCFACE_MODEL_PATH, _arcface_options, providers=["CPUExecutionProvider"])
+_ARCFACE_INPUT = _arcface.get_inputs()[0].name
 
-# dlib's own documented default (face_recognition/api.py: compare_faces's
-# `tolerance` parameter, "0.6 is typical best performance") - a euclidean
-# distance, not a similarity score. This is the actual pass/fail decision
-# boundary for /face/verify (see verify_face), not our match_score.
-_DLIB_EUCLIDEAN_MATCH_THRESHOLD = 0.6
+# Where the 5 alignment points land in ArcFace's 112x112 input (insightface's
+# standard template, image coordinates): the eye on the image's left, the eye
+# on the image's right, nose tip, left and right mouth corners.
+_ARCFACE_TEMPLATE = np.array([[38.2946, 51.6963], [73.5318, 51.5014], [56.0252, 71.7366],
+                              [41.5493, 92.3655], [70.7299, 92.2041]], dtype=np.float32)
+# The same 5 points from MediaPipe FaceMesh (each eye centre = the midpoint of
+# its two corners), so no second face detector is needed.
+_ALIGN_EYES = ((33, 133), (362, 263))  # image's left eye, image's right eye
+_ALIGN_NOSE = 4
+_ALIGN_MOUTH = (61, 291)  # image's left corner, image's right corner
 
-_SIMHASH_BITS = 256  # 256 bits = 32 bytes = exactly 64 hex characters once packed
-_SIMHASH_PLANES = np.random.RandomState(42).randn(_SIMHASH_BITS, _DLIB_EMBEDDING_DIM)
+_SIMHASH_BITS = 240  # 60 hex characters; the last 4 of the 64 are _HASH_VERSION_TAG
+_SIMHASH_PLANES = np.random.RandomState(42).randn(_SIMHASH_BITS, _EMBEDDING_DIM)
+# Marks a hash as made by the ArcFace model. Hashes from the earlier dlib
+# model (256 random-looking bits) can't be compared with these, and comparing
+# them anyway would say "different person" (match_passed: false), which the
+# backend flags on every session and rejects on face-required ones. With the
+# tag, verify_face answers None ("couldn't compare") for them instead, until
+# the student re-enrols. A dlib hash ends in this tag by chance 1 in 65,536
+# times.
+_HASH_VERSION_TAG = "a1f0"
+
+# /face/verify decision: estimated cosine similarity of the two embeddings.
+# Measured (see the comment above _ARCFACE_MODEL_PATH): same person >= 0.52,
+# different people <= 0.16 through the hash; 0.35 sits in the middle of that
+# gap, and is within insightface's usual 0.3-0.4 for this model.
+_ARCFACE_MATCH_COSINE = 0.35
+_MATCH_SCORE_THRESHOLD = 0.70  # the spec's match_passed = (match_score >= 0.70)
 
 
-def extract_face_embedding(image_array, detection):
+def _match_score(cosine):
+    """
+    Map an estimated cosine similarity onto the 0-1 match_score so that
+    _ARCFACE_MATCH_COSINE lands exactly on _MATCH_SCORE_THRESHOLD: linear
+    from 0 (cosine <= 0) up to the threshold, then linear to 1.0 at
+    cosine 1.0. See verify_face.
+    """
+    if cosine >= _ARCFACE_MATCH_COSINE:
+        above = (cosine - _ARCFACE_MATCH_COSINE) / (1 - _ARCFACE_MATCH_COSINE)
+        return min(1.0, _MATCH_SCORE_THRESHOLD + (1 - _MATCH_SCORE_THRESHOLD) * above)
+    return _MATCH_SCORE_THRESHOLD * max(0.0, cosine) / _ARCFACE_MATCH_COSINE
+
+
+def _mesh_landmarks(image_array):
+    """
+    The static FaceMesh's landmarks for the first face, or None if it finds
+    no face. Shared by the passive liveness check (analyze_face_mesh) and the
+    embedding, so a request that needs both runs the mesh once.
+    """
+    with _model_lock:
+        results = _face_mesh_static.process(image_array)
+    if not results.multi_face_landmarks:
+        return None
+    return results.multi_face_landmarks[0].landmark
+
+
+def extract_face_embedding(image_array, landmarks=None):
     """
     Extract face embedding/features for hashing.
 
@@ -1077,58 +1124,48 @@ def extract_face_embedding(image_array, detection):
     Return numpy array that can be hashed.
 
     ---
-    Implemented: the "Even more advanced" option (dlib, via the
-    face_recognition package) - see the module-level comment above
-    _DLIB_EMBEDDING_DIM for why: two MediaPipe-landmark-based attempts
-    were tried first and both empirically failed to discriminate real
-    people, which a purpose-trained embedding actually does.
+    Implemented: the "Even more advanced" option, with ArcFace (see the
+    comment above _ARCFACE_MODEL_PATH for why, and for the model's licence).
 
-    `detection` (from detect_face) supplies the face box: it's passed to
-    face_recognition.face_encodings() as known_face_locations, so dlib
-    skips its own face detector, which was ~60-85% of each request's time
-    (0.8-2.3s per image vs a steady ~0.35s with the box). Measured on the
-    sample images before switching: same-person distances stayed at
-    0.33-0.43 and obama-vs-biden at 0.81-0.87 (threshold 0.6), and the same
-    image's embedding moved only 0.04-0.07 between the two box sources, so
-    templates enrolled with dlib's own detector still match. If MediaPipe's
-    box is unusable (degenerate after clamping to the image), dlib's own
-    detector is used as before.
+    1. Five points from MediaPipe FaceMesh (`landmarks`, from _mesh_landmarks;
+       computed here if not given): both eye centres, nose tip, mouth
+       corners.
+    2. A similarity transform (rotation, scale, shift) maps them onto
+       _ARCFACE_TEMPLATE and crops the face to 112x112, the way ArcFace was
+       trained: eyes level and at fixed positions.
+    3. Pixels scaled to [-1, 1] (RGB, as decode_base64_image returns), run
+       through the model under _model_lock.
+    4. The 512-d output is normalised to unit length.
 
-    Returns None if no face can be encoded.
-
-    The dlib call runs under _model_lock, since its models are shared
-    module-level objects that aren't safe to use from several threads at
-    once.
+    Returns None if the mesh finds no face, or the points don't give a
+    usable transform.
     """
-    face_box = _dlib_face_box(image_array, detection)
-    with _model_lock:
-        if face_box is not None:
-            encodings = face_recognition.face_encodings(image_array, known_face_locations=[face_box])
-        else:
-            encodings = face_recognition.face_encodings(image_array)
-    if not encodings:
-        return None
-    return encodings[0]
+    if landmarks is None:
+        landmarks = _mesh_landmarks(image_array)
+        if landmarks is None:
+            return None
 
-
-def _dlib_face_box(image_array, detection):
-    """
-    Convert a MediaPipe detection into dlib's (top, right, bottom, left) pixel
-    box, clamped to the image. MediaPipe gives a box relative to image size
-    that can extend past the edges for faces partly out of frame. Returns
-    None if there's no detection or the clamped box has no area.
-    """
-    if detection is None:
-        return None
     height, width = image_array.shape[:2]
-    box = detection.location_data.relative_bounding_box
-    top = max(0, int(box.ymin * height))
-    left = max(0, int(box.xmin * width))
-    bottom = min(height, int((box.ymin + box.height) * height))
-    right = min(width, int((box.xmin + box.width) * width))
-    if bottom <= top or right <= left:
+
+    def point(index):
+        return np.array([landmarks[index].x * width, landmarks[index].y * height], dtype=np.float32)
+
+    source = np.stack([
+        (point(_ALIGN_EYES[0][0]) + point(_ALIGN_EYES[0][1])) / 2,
+        (point(_ALIGN_EYES[1][0]) + point(_ALIGN_EYES[1][1])) / 2,
+        point(_ALIGN_NOSE),
+        point(_ALIGN_MOUTH[0]),
+        point(_ALIGN_MOUTH[1]),
+    ])
+    transform, _ = cv2.estimateAffinePartial2D(source, _ARCFACE_TEMPLATE, method=cv2.LMEDS)
+    if transform is None:
         return None
-    return (top, right, bottom, left)
+    face = cv2.warpAffine(image_array, transform, (112, 112), borderValue=0.0)
+    blob = ((face.astype(np.float32) - 127.5) / 127.5).transpose(2, 0, 1)[np.newaxis]
+
+    with _model_lock:
+        embedding = _arcface.run(None, {_ARCFACE_INPUT: blob})[0][0]
+    return embedding / np.linalg.norm(embedding)
 
 
 def generate_face_hash(embedding) -> str:
@@ -1151,26 +1188,24 @@ def generate_face_hash(embedding) -> str:
     VARCHAR(64) and doesn't care which scheme produced it, only that it's
     a stable, comparable string that fits in 64 characters.
 
-    Normalizes the embedding to unit length first (dlib's encodings aren't
-    already unit-length - see _ASSUMED_EMBEDDING_NORM), then projects onto
-    _SIMHASH_BITS (256) fixed random hyperplanes (seeded, so the same
-    planes are used for every call) and records the sign of each
-    projection as a bit. Two embeddings from the same face land on the
-    same side of most hyperplanes (small Hamming distance); different
-    faces differ in many more bits.
+    Projects the (unit-length) embedding onto _SIMHASH_BITS (240) fixed
+    random hyperplanes (seeded, so the same planes are used for every
+    call) and records the sign of each projection as a bit. Two embeddings
+    from the same face land on the same side of most hyperplanes (small
+    Hamming distance); different faces differ in many more bits.
 
-    256 raw bits would be a 256-character '0'/'1' string, blowing past
+    240 raw bits would be a 240-character '0'/'1' string, blowing past
     module2's 64-character storage limit - packed into hex instead (4
-    bits/character) to fit exactly: 256 bits = 32 bytes = 64 hex chars.
-    This is strictly a storage encoding, not a change to the underlying
-    SimHash bit count. Comparison (Hamming distance on the *bits*, not
-    the hex characters - see _hamming_distance) + threshold happens in
-    /face/verify.
+    bits/character): 60 hex chars, then _HASH_VERSION_TAG (4 hex chars) to
+    make exactly 64, all lowercase hex like a SHA-256. This is strictly a
+    storage encoding, not a change to the underlying SimHash bit count.
+    Comparison (Hamming distance on the *bits*, not the hex characters -
+    see _hamming_distance) + threshold happens in /face/verify.
     """
     normalized = embedding / np.linalg.norm(embedding)
     projections = _SIMHASH_PLANES @ normalized
     bits = "".join("1" if p > 0 else "0" for p in projections)
-    return format(int(bits, 2), "064x")
+    return format(int(bits, 2), f"0{_SIMHASH_BITS // 4}x") + _HASH_VERSION_TAG
 
 
 def _hamming_distance(hash_a: str, hash_b: str) -> int:
@@ -1188,15 +1223,23 @@ def _hamming_distance(hash_a: str, hash_b: str) -> int:
     reference hash stored from a failed enrollment), rather than letting
     Python's arbitrary-precision int silently zero-pad a shorter hash and
     return a misleading distance.
+
+    Also raises ValueError if either hash lacks _HASH_VERSION_TAG, e.g. one
+    enrolled with the earlier dlib model: its bits come from different
+    hyperplanes and a different embedding, so a distance would be
+    meaningless. Only the bits before the tag are compared.
     """
     if len(hash_a) != len(hash_b):
         raise ValueError(
             f"Hash length mismatch: {len(hash_a)} vs {len(hash_b)}"
         )
-    return bin(int(hash_a, 16) ^ int(hash_b, 16)).count("1")
+    if not (hash_a.endswith(_HASH_VERSION_TAG) and hash_b.endswith(_HASH_VERSION_TAG)):
+        raise ValueError("Hash from another face model version")
+    bits = slice(0, -len(_HASH_VERSION_TAG))
+    return bin(int(hash_a[bits], 16) ^ int(hash_b[bits], 16)).count("1")
 
 
-def analyze_face_mesh(image_array):
+def analyze_face_mesh(image_array, landmarks=None):
     """
     Analyze face using MediaPipe Face Mesh (BONUS).
 
@@ -1218,15 +1261,15 @@ def analyze_face_mesh(image_array):
     docs/API-SPECIFICATION.md's differently-shaped "z < -0.05" signed
     threshold - the two docs don't actually agree on this number, and this
     function's own docstring is the more direct instruction for it.
-    Runs on the full image (not a pre-cropped region), unlike
-    extract_face_embedding, since check_liveness calls this directly on
-    the decoded image. Uses the process-wide _face_mesh_static under
-    _model_lock (built once at import).
+    Runs on the full image (not a pre-cropped region), since check_liveness
+    calls this directly on the decoded image. Uses the process-wide
+    _face_mesh_static (via _mesh_landmarks, built once at import), unless
+    the caller passes `landmarks` it already got from _mesh_landmarks.
     """
-    with _model_lock:
-        results = _face_mesh_static.process(image_array)
+    if landmarks is None:
+        landmarks = _mesh_landmarks(image_array)
 
-    if not results.multi_face_landmarks:
+    if landmarks is None:
         return {
             "face_mesh_complete": False,
             "landmark_count": 0,
@@ -1234,7 +1277,6 @@ def analyze_face_mesh(image_array):
             "depth_quality": "poor",
         }
 
-    landmarks = results.multi_face_landmarks[0].landmark
     nose_tip_z = float(landmarks[1].z)
     landmark_count = len(landmarks)
     abs_z = abs(nose_tip_z)
