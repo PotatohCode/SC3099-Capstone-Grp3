@@ -20,7 +20,6 @@ import { extractErrorMessage } from '@/lib/utils/http-client'
 import { submitAttempt } from '@/lib/checkin/submit'
 import { ALREADY_CHECKED_IN_VIEW, QUEUED_CHECKIN_VIEW, type CheckInErrorAction, type CheckInErrorView } from '@/lib/checkin/errors'
 import { hasCheckIn, loadCheckedInSessions, PRECHECK_TIMEOUT_MS } from '@/lib/checkin/checked-in'
-import { clearProgress, readProgress } from '@/lib/checkin/progress'
 import { REVIEW_MESSAGE } from '@/lib/liveness/verify'
 import { useAuth } from '@/lib/hooks/useAuth'
 import { FlaggedNotice } from '@/components/FlaggedNotice'
@@ -113,13 +112,6 @@ function SessionSelectStep() {
         ])
         if (cancelled) return
         const open = done ? data.filter((s) => !hasCheckIn(done, s.id)) : data
-        const resumeId = readProgress(userId)
-        const resume = done && resumeId ? open.find((s) => s.id === resumeId) : undefined
-        if (resume) {
-          selectSession(resume)
-          return
-        }
-        if (resumeId && done) clearProgress(userId)
         setSessions(open)
         setHiddenCount(data.length - open.length)
         setHiddenQueued(!!done && data.some((s) => done.queued.has(s.id)))
@@ -133,7 +125,7 @@ function SessionSelectStep() {
     return () => {
       cancelled = true
     }
-  }, [userId, selectSession])
+  }, [userId])
 
   async function choose(session: SessionSummary) {
     setCheckingId(session.id)
@@ -248,7 +240,7 @@ function CheckInErrorPanel({ view, onAction }: { view: CheckInErrorView; onActio
 }
 
 function ConfirmStep() {
-  const { session, media, location, result, alreadyCheckedIn, previousStep, goToStep, retakeLocation, reset, submitSucceeded, submitQueued, submitFailed } =
+  const { session, media, location, result, alreadyCheckedIn, previousStep, goToStep, retakeLocation, reset, submitSucceeded, submitQueued, submitFailed, setSubmitting } =
     useCheckIn()
   const { isOnline, queueCheckIn } = useOfflineSync()
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -258,6 +250,7 @@ function ConfirmStep() {
   async function handleSubmit() {
     if (!session || !media || !location) return
     setIsSubmitting(true)
+    setSubmitting(true)
     setErrorView(null)
     setQueuedOffline(false)
     const outcome = await submitAttempt({
@@ -270,7 +263,7 @@ function ConfirmStep() {
       now: () => performance.now(),
       submit: submitCheckIn,
       queue: queueCheckIn,
-    })
+    }).finally(() => setSubmitting(false))
     if (outcome.kind === 'success') {
       submitSucceeded(outcome.result)
     } else if (outcome.kind === 'queued') {
@@ -418,7 +411,7 @@ function ConfirmStep() {
 }
 
 export default function CheckInWizardPage() {
-  const { step, photoMode, session, location, setMedia, setLocation, continueFromLocation, previousStep, reset } = useCheckIn()
+  const { step, photoMode, session, location, setMedia, setLocation, continueFromLocation, previousStep, reset, restartCount } = useCheckIn()
 
   return (
     <div>
@@ -430,7 +423,7 @@ export default function CheckInWizardPage() {
         </p>
       )}
 
-      {step === 'session-select' && <SessionSelectStep />}
+      {step === 'session-select' && <SessionSelectStep key={restartCount} />}
 
       {step === 'location' && (
         <div className="space-y-4">

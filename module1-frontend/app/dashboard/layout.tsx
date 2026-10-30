@@ -14,6 +14,7 @@ import { OnlineStatusIndicator } from '@/components/OnlineStatusIndicator'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { FaceEnrollmentPrompt } from '@/components/FaceEnrollmentPrompt'
 import { needsFaceEnrollment } from '@/lib/face/enrollment'
+import { requestCheckInRestart } from '@/lib/checkin/restart'
 
 const NAV_LINKS = [
   { href: '/dashboard', label: 'Home' },
@@ -83,7 +84,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       <Link
         key={link.href}
         href={link.href}
-        onClick={() => setMenuOpen(false)}
+        onClick={(event) => {
+          setMenuOpen(false)
+          const newTab = event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0
+          if (!newTab && link.href === '/dashboard/checkin' && pathname === link.href) requestCheckInRestart()
+        }}
         aria-current={pathname === link.href ? 'page' : undefined}
         className={`${base} ${pathname === link.href ? 'bg-blue-100 text-blue-800' : 'text-gray-600 hover:bg-gray-100'}`}
       >
