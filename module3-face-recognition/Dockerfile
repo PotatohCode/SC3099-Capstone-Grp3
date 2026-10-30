@@ -22,9 +22,10 @@ COPY . .
 EXPOSE 8001
 
 # Number of uvicorn worker processes (uvicorn reads WEB_CONCURRENCY as its
-# --workers default). Each worker loads its own MediaPipe and dlib models, so
-# memory grows roughly per worker. See CHANGES.md before changing it.
-ENV WEB_CONCURRENCY=2
+# --workers default). Each worker loads its own MediaPipe and dlib models
+# (~0.25-0.3 GiB more per worker under load). 3 measured as the balance of
+# speed vs memory on the full stack; see CHANGES.md 2026-10-29 before changing.
+ENV WEB_CONCURRENCY=3
 
 # Lets /metrics add up the counters of all workers (prometheus_client
 # multiprocess mode). Must be set before the app starts; see app/main.py.
