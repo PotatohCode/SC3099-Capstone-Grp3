@@ -40,8 +40,7 @@ mediapipe==0.10.18  # pinned - newer versions removed mp.solutions
 opencv-python>=4.9.0.80,<4.12  # caps match the course's re-released starter
 numpy>=1.24.3,<2
 pillow>=10.2.0
-face-recognition==1.3.0  # identity matching - builds dlib from source
-setuptools<81  # face-recognition-models needs pkg_resources (removed in newer setuptools)
+onnxruntime==1.20.1  # identity matching: ArcFace model (module3-face-recognition/models/)
 
 # ============================================
 # From module4-observability/requirements.txt

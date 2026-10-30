@@ -14,7 +14,7 @@ import exports
 import ui
 
 SECURITY_ACTIONS = ["security_violation", "account_locked", "login_failed", "checkin_rejected_geo",
-                    "checkin_rejected", "password_change_failed"]
+                    "checkin_rejected", "password_change_failed", "face_reset_code_rejected"]
 
 
 def _utc(day, end: bool = False) -> str:

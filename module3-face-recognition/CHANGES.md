@@ -186,6 +186,320 @@ worker.
 
 ---
 
+## 2026-10-30 (3) — Anti-spoofing at enrolment (`/face/enroll`)
+
+**Branch `module3-passive-liveness`** (with (2) and the ArcFace switch).
+
+### For the backend (Module 2) — summary of all 2026-10-30 changes
+
+| Change | Contract | What you need to do |
+|---|---|---|
+| **ArcFace replaces dlib** (entry "2026-10-30" below) | Same requests/responses; hash still 64 lowercase hex | **Required at merge:** every stored `face_embedding_hash` is from dlib and can't be compared any more (we answer `match_passed: null` for those, never a wrong `false`). Agree one: (a) clear `face_embedding_hash` / set `face_enrolled = false` once at the merge, or (b) set `FACE_REENROLL_REQUIRES_CODE=false` until students have re-enrolled |
+| **Check-in anti-spoofing** (entry (2)) | `/liveness/check` single image: prints/screens now `liveness_passed: false` (you reject), suspected close-up screens `null` with score < 0.60 (you flag). Bursts: unchanged, never `false` | Nothing. New `details` fields are ignorable |
+| **Enrolment anti-spoofing** (this entry) | `/face/enroll` refuses prints/screens with the **existing** failure shape: 201 + `enrollment_successful: false` | Nothing required - you already turn that into 400 `NO_FACE_DETECTED`. **Optional, recommended:** read `details.reason` for a better message (below) |
+
+**What `/face/enroll` returns now** (unchanged fields in plain, new in bold):
+
+| Case | `enrollment_successful` | `details.reason` | Other `details` |
+|---|---|---|---|
+| no camera consent | false | `camera_consent_required` | `face_detected: false` |
+| image won't decode | false | `invalid_image: <error>` | `face_detected: false` |
+| no usable face | false | `no_face_detected` | `face_detected: false` |
+| **print / screen detected** | **false** | **`spoof_detected`** | **`face_detected: true`, `anti_spoofing: "spoof"` or `"suspect"`, `texture_analysis_score`** |
+| success | true | - | `face_detection_confidence`, `image_quality`, **`anti_spoofing: "real"`, `texture_analysis_score`** |
+
+**Optional backend change (recommended):** today a refused photo reaches the
+student as 400 `NO_FACE_DETECTED` / "No face detected", which is misleading
+when a face clearly is in the picture. In `routers/users.py` `enroll_face`,
+where `enrollment_successful` is false, branch on
+`result.get("details", {}).get("reason") == "spoof_detected"` and return a
+400 with its own code (e.g. `FACE_NOT_ACCEPTED`) and a **generic** message
+such as "We couldn't verify your face. Use your camera directly, in good
+light, and try again." - don't say a photo/screen was detected (we don't
+reveal anti-spoof reasoning to students). Module 1 would then show that
+message for the new code.
+
+### What changed (Module 3)
+
+`enroll_face` runs the same `_anti_spoofing` check as `/liveness/check`
+(entry (2)) after face detection, before the embedding. **Both `spoof` and
+`suspect` refuse** - stricter than a check-in, where `suspect` only flags:
+the enrolled face is what every later check-in is compared with, so it
+should be a live face, and a refused student just tries again (nothing
+lost). If the check can't run (unusable face box), enrolment proceeds as
+before. Before this change every attack photo enrolled (print, phone:
+`enrollment_successful: true`, quality 0.73–0.97).
+
+**Results** (every recorded photo through `/face/enroll`): genuine
+**28/28 enrolled** (normal, dim, far, moving, course samples); attacks
+**39/40 refused** (all prints and far/angled/dim phones as `spoof`,
+close-ups as `suspect`; the one close-up that passes check-ins passes here
+too). Unit tests 40 passed; public suite **92/92** (the enrolment tests use
+the course's real photos: P(real) 0.986–1.0).
+
+---
+
+## 2026-10-30 (2) — Passive anti-spoofing: MiniFASNet + close-up screen check
+
+**Branch `module3-passive-liveness`** (from `module3-arcface`). Plan and
+background: `NOTES-ON-PASSIVE.md`. Targets the hidden tests "Face Recognition
+Advanced: anti-spoofing with real attack images" (10 pts) and "Liveness"
+(3 pts).
+
+**The gap:** the passive score (detection confidence, quality, depth from
+`nose_tip_z`, mesh completeness) rates a photo of a face as highly as a face:
+MediaPipe predicts depth from the 2D image. Every print and phone attack we
+recorded passed (0.89–0.99).
+
+**What changed** (`app/main.py`, `models/`):
+- **`_anti_spoofing`** on the single-image path (and the front frame of a
+  burst):
+  - **MiniFASNetV2 + MiniFASNetV1SE** (Minivision Silent-Face-Anti-Spoofing,
+    Apache-2.0; ONNX from github.com/yakhyo/face-anti-spoofing, SHA-256
+    `b32929ad…`/`ebab7f90…` = the files LocalAI pins; 1.7 MB each) on the
+    MediaPipe face box enlarged 2.7× / 4.0×, BGR 0–255, 80×80; softmax
+    averaged → P(real). Runs on onnxruntime (already there for ArcFace), one
+    thread, under `_model_lock`. ~6 ms.
+  - **Close-up screen check:** on a 128×128 face crop, Laplacian variance
+    (sharpness) and the peak of the FFT's mid/high band (moiré).
+- **Tiered verdict** (can only lower the result, never raise it):
+
+  | Verdict | Trigger | Response | Backend |
+  |---|---|---|---|
+  | `spoof` | P(real) < 0.5 | `liveness_passed: false`, score ≤ P(real) | rejects (determined spoof) |
+  | `suspect` | P(real) < 0.85, **or** sharpness < 120 **and** moiré > 30 | `liveness_passed: null`, score ≤ 0.5 | flags for review |
+  | `real` | otherwise | unchanged | unchanged |
+
+  Weak evidence never hard-rejects: the close-up signals drift toward
+  "attack" for genuine faces in dim light / movement. Bursts: as before,
+  never `false` (spoof → `null`).
+- **EXIF orientation** applied in `decode_base64_image`
+  (`ImageOps.exif_transpose`): phone photos are often stored sideways with a
+  rotate tag; a Silent-Face sample attack scored "real" (0.60) sideways and
+  "fake" (0.22) upright. Student-app frames carry no tag.
+- **Spec response fields:** `challenge_type` echoed (request default
+  `"blink"` → `"passive"`, the spec's); `details.depth_detected`,
+  `details.threshold`, `details.texture_analysis_score` (= P(real)), plus
+  `anti_spoofing`, `sharpness`, `moire_peak`.
+- Colour (saturation, chroma spread, Cr−Cb) and glare were measured too and
+  **didn't separate** attacks from genuine faces at all, so they're not used.
+
+**Why a model and not only heuristics (approach B over A):** onnxruntime was
+already a dependency (ArcFace), so the model costs only two small files. It
+was checked on Silent-Face's own labelled samples first (print 0.01, tablet
+0.22, real 0.999 → the pipeline is right).
+
+**Validation** (local recordings, git-ignored; all through
+`_passive_liveness` via `record_photo.py --analyze-all`):
+
+| Set | n | Result |
+|---|---|---|
+| Prints: far (sheet + fingers), close, bent | 15 | **15 `fail`** (0.001–0.11) |
+| Phone screen: far, angled with glare, dim room | 15 | **15 `fail`** (0.00–0.46) |
+| Phone screen filling the view | 10 photos + a 16-frame burst | 9 photos `null`, burst `null`; **1 missed** (P(real) 0.898, sharp and bright - looks real on every signal) |
+| Genuine photos: normal, dim, far, moving, course samples | 24 | **all pass** (0.86–0.97) |
+| Genuine burst front frames | 37 | **all pass** (0.935–0.993) |
+
+Closest genuine margins: a moving photo at P(real) 0.896 (suspect cut 0.85);
+a dim photo with moiré 27.9 (cut 30) and sharpness 74. These would be
+flagged for review, not rejected, if a real student's conditions were a bit
+worse. Caveat: one person, one webcam, one phone, one printer.
+
+**Other checks:** unit tests 40 passed; challenge detection unchanged (same
+40/46 on the recorded bursts); public suite **92/92**; single-image
+liveness ~62 ms locally; `load_test.py mixed 100` 2.7 s warm (4.3 s first
+run); `burst 40` 8.6–9.6 s warm, but **16.9 s on the first run after a
+restart** (25/40 over 15 s) - cold start with more models; a start-up
+warm-up would fix it (TODO, later/optional).
+
+**Backend:** no change needed (`false` = determined spoof → reject, `null` →
+flagged are already in the contract). FYI to send: single-photo attacks now
+come back `false`/`null` instead of passing. Still open with the professor
+(NOTES-ON-PASSIVE question 3): whether tests expect `false` for every attack;
+our close-up `null` has a score under 0.60 and isn't `true`.
+
+---
+
+## 2026-10-30 — Face matching switched from dlib to ArcFace (MobileFaceNet)
+
+**Branch `module3-arcface`. Not merged yet: needs the re-enrolment step agreed
+with the backend first (see "Before merging" below).**
+
+**Why:** the stress test (100 concurrent users) may have a 10 s limit per
+request, and a photo check-in calls us 3 times in a row. Measured through the
+backend (`stress_checkins.py`, 100 students logging in and checking in with a
+photo at once), dlib gave a check-in median of 7.6 s, p95 9.9 s, max 11.7 s;
+49 of 94 students over 10 s for login + check-in; 69 calls to us timing out.
+The dlib embedding was ~64% of each check-in's work (86 ms, computed twice).
+
+**What changed** (`app/main.py`, `requirements.txt`, root
+`requirements-test.txt`, `Dockerfile`, new `models/w600k_mbf.onnx`):
+- `extract_face_embedding`: 5 points from MediaPipe FaceMesh (eye centres,
+  nose tip, mouth corners) → similarity transform to insightface's 112×112
+  template → ArcFace MobileFaceNet (`w600k_mbf.onnx`, insightface buffalo_s,
+  release v0.7, 13.6 MB, SHA-256 `9cc6e4a7…b319eb4f`) via onnxruntime, one
+  CPU thread per worker, under `_model_lock` → 512-d unit vector. No second
+  face detector: the mesh gives the points.
+- `/liveness/check` (single image / burst's front frame) runs the face mesh
+  once for both the hash and the depth check (`_mesh_landmarks`).
+- Hash: still 64 lowercase hex characters, now 240 SimHash bits (60 hex) +
+  version tag `a1f0`. A hash without the tag (made by dlib) can't be
+  compared: `/face/verify` returns `match_passed: null` (flagged for review)
+  instead of a wrong `false`. A dlib hash ends in the tag by chance 1 in
+  65,536 times.
+- Verify decision: cosine similarity estimated from the Hamming distance,
+  match if ≥ **0.35**. `match_score` now maps cosine 0.35 → exactly 0.70, so
+  `match_passed = (match_score >= 0.70)` as the spec says and
+  `match_threshold: 0.70` is finally the real rule (before, the decision was
+  dlib's euclidean 0.6 and the reported 0.70 only roughly matched).
+- Removed: `face-recognition` (dlib), the `setuptools<81` pin,
+  `build-essential`/`cmake` in the Dockerfile (only dlib needed them), the
+  1.38-norm and euclidean-0.6 workarounds.
+
+**Licence:** insightface's pretrained models are for non-commercial research
+use. Fine for coursework; replace the model for any commercial use.
+
+**Feasibility check** (same images through both models; 45 front-facing
+frames of one student from several sessions, glasses on/off, plus
+obama ×3 and biden from `sample_images/`; 993 same-person and 183
+different-person pairs):
+
+| | Same person, lowest | Different people, highest |
+|---|---|---|
+| dlib, true cosine | 0.948 | 0.867 |
+| dlib, through the hash (the app's decision) | 0.919 (cut-off was 0.905) | 0.845 |
+| **ArcFace, true cosine** | **0.581** | **0.054** |
+| **ArcFace, through the hash** | **0.525** | **0.159** |
+
+dlib's worst genuine pair (obama2 vs obama3) was only 0.014 above its
+cut-off. ArcFace leaves ~0.17 on both sides of 0.35 (SimHash noise is about
+±0.09). Caveat: only 3 people in the set.
+
+**Results:**
+- Local smoke test: obama2 0.82, obama3 0.83, both partial-face samples
+  0.92–0.94 → match; biden 0.13 → no match; a dlib-style hash → `null`.
+- Unit tests 40 passed (2 skipped as before); public suite 92/92 except one
+  flaky `test_concurrent_logins` (backend-only, passed 3/3 on re-run);
+  `test_face_recognition.py` 15/15.
+- `load_test.py mixed 100`: **2.1–2.6 s** (dlib 3.9–4.9 s), none over 5 s.
+  `burst 40`: 12.2–13.8 s (dlib 10.2–14.7 s) - unchanged, bursts are
+  dominated by the per-frame face mesh, not the one embedding.
+- `stress_checkins.py 100 --fresh-conn` (through the backend):
+
+  | | Check-in median / p95 / max | Login + check-in over 10 s | Calls to us timing out |
+  |---|---|---|---|
+  | dlib | 7.6 / 9.9 / 11.7 s | 49 of 94 (+6 client timeouts) | 69 |
+  | ArcFace, first run after restart | 6.7 / 8.2 / 8.7 s | 34 of 100 | 0 |
+  | **ArcFace, warm** | **4.8 / 5.2 / 5.3 s** | **0 of 100** | **0** |
+
+  (All students sent the same photo, so the backend's replay check rejected
+  them and their stored hashes were still dlib's (`face_match_passed: null`);
+  only the timings are meaningful.)
+- Still there without `--fresh-conn`: 10 of 100 responses dropped at ~5 s
+  when the check-in reuses the login connection - the backend's uvicorn
+  keep-alive (default 5 s), not us. To report to the backend.
+
+**Before merging (coordination):** every stored face hash was made by dlib,
+so every student must re-enrol - and re-enrolling needs an instructor reset
+code since 2026-10-27. Agree with the backend: clear stored hashes once at the
+switch (everyone becomes a first enrolment), or temporarily
+`FACE_REENROLL_REQUIRES_CODE=false`. Until then the tag keeps stale hashes at
+`null` (flagged), never a wrong reject. Everyone rebuilds `face-recognition`;
+local venvs reinstall from `requirements-test.txt`.
+
+**To revert:** switch back to `module3-face-recognition` (or revert the
+merge) and rebuild; faces enrolled with ArcFace then need re-enrolling again.
+
+**Also: new `.dockerignore`.** Without it, `COPY . .` put the local `venv/`
+(~1.1 GB), `tests/` (including `tests/fixtures/`, webcam recordings of real
+faces) and the local tools/notes into the image. Now the image holds only
+`app/`, `models/`, `requirements.txt` and the Dockerfile/CHANGES. Local image
+5.5 → 3.9 GB; public tests 15/15 after the rebuild.
+
+---
+
+## 2026-10-29 — 3 workers; concurrency re-measured with the whole stack running
+
+`Dockerfile`: `WEB_CONCURRENCY` 2 → **3**.
+
+The 2026-10-24 (6) numbers were measured with only the face service running.
+Re-measured today with **all 10 containers up** (backend, Postgres, Redis,
+frontend, proxy, dashboard, Grafana, Prometheus, OTel collector), on Docker's
+VM: 12 CPUs, 3.5 GiB.
+
+**Where the time goes** (one 640 px photo, inside the container):
+
+| Step | Time |
+|---|---|
+| Decode base64 + JPEG | 3 ms |
+| MediaPipe face detection | 4 ms |
+| **dlib face embedding** | **86 ms** |
+| MediaPipe face mesh (standard or refined) | 13 ms |
+| **Whole single-image `/liveness/check`** | **146 ms** |
+| **Whole `/face/verify`** | **125 ms** |
+
+A single-photo check-in calls both, ~270 ms of one worker's time, ~170 ms of
+it the same dlib embedding computed twice.
+
+**Workers compared** (same image, run in place of the compose container;
+memory sampled every ~2 s, which itself slows the runs a little):
+
+| Workers | 100 mixed calls* | 40 bursts (no sampler) | Face service peak | Whole stack peak |
+|---|---|---|---|---|
+| 2 | 5.7–6.7 s, up to 30 of 67 image calls over 5 s | 13.7–16.5 s | 1.46 GiB | 1.99 GiB |
+| **3** | **4.4–4.5 s, none over 5 s** | 12.0–13.8 s | 1.77 GiB | 2.22 GiB |
+| 4 | 3.8–4.9 s, none over 5 s | 10.1–10.5 s | 1.97 GiB | 2.37 GiB |
+
+\* a third each of `/liveness/check`, `/face/verify`, `/risk/assess` ≈ 33
+single-photo check-ins. 0 errors in every run. At rest the whole stack uses
+~1.46 GiB.
+
+**Decision: 3 workers** - most of the gain, ~+0.3 GiB, and headroom on
+graders' machines whose Docker VM may be smaller than ours (Docker Desktop's
+memory is a per-machine setting). 4 is the next step if the deployment
+machine has ≥ 4 GB for Docker.
+
+**Verified after the change** (compose container, 3 workers): public tests
+15/15; warm: 100 mixed calls 3.9–4.9 s, 40 bursts 10.2–14.7 s (inside 15 s);
+1.14 GiB after the runs. **The first run after a restart is slower** (6.7 s
+for 100 mixed) while each worker warms up its models.
+
+**Corrections to the 2026-10-24 (6) estimates:** workers cost ~0.25–0.3 GiB
+each under load, not +400–650 MB; and 3.5 GiB is the whole Docker VM shared
+by all containers, not the face service's own limit. With the full stack
+running, 2 workers did ~11–12 image requests/s (not 13–14).
+
+**Capacity now (3 workers), check-ins arriving at the same moment, answered
+inside the backend's 5 s:**
+- single-photo check-ins (2 image calls each): ~35–40;
+- check-ins with a challenge verified beforehand, the app's normal flow (1
+  image call each, `/face/verify`): roughly twice that;
+- bursts: ~40–45 inside 15 s.
+
+Beyond that, as before: those calls time out, the check-ins are flagged (not
+rejected) and the backend pauses calls for 30 s. Nothing fails.
+
+**What 100 simultaneous single-photo check-ins inside 5 s would take**
+(estimates, not measured): ~27 s of work per 100, so ~6 fully parallel
+workers - but scaling is sublinear (2 → 4 workers ≈ 1.45×, CPU shared with
+MediaPipe's threads and the rest of the stack). Options, combinable:
+
+| Option | Gain | Cost |
+|---|---|---|
+| Reuse the embedding between `/liveness/check` and `/face/verify` (shared Redis cache "photo → face hash") | ~1.45× | Moderate code; shared state between endpoints |
+| More workers | sublinear | ~0.25–0.3 GiB each; beyond 4–5 needs a bigger Docker VM |
+| Faster embedding model (e.g. MobileFaceNet/ArcFace ONNX, ~5–15 ms vs 86 ms) | ~2.5–3× | New dependency; different embeddings → every student re-enrols; thresholds re-tuned |
+| Several containers behind a load balancer | ~linear per container | More infrastructure; only with more hardware |
+
+E.g. reuse + ~6 workers + 5–6 GB for Docker, or faster model + reuse + 3–4
+workers. Not planned: the backend asks us to load-test 50–100 parallel
+requests (done, 100 calls now fit in 5 s), and its fallback covers the rest.
+
+**Optional small improvement:** warm each worker up at start (one dummy
+inference) so the first requests after a restart aren't slow.
+
+---
+
 ## 2026-10-24 (6) — Load test in the Docker container (the real deployment)
 
 Built and run with `docker compose up -d --build face-recognition` (includes

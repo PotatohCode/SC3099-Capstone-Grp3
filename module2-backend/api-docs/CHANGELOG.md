@@ -14,6 +14,29 @@ below.
 
 ---
 
+## 2026-10-27 — `backend/face-reset-and-manual-checkin`: face reset codes, manual check-ins
+
+**Rebuild needed:** `docker compose up -d --build backend` (one migration,
+`b9d4e1f7a2c6`, runs on start: two columns on `checkins`).
+
+| Area | Before | Now | Why |
+|---|---|---|---|
+| Replacing an enrolled face | `POST /users/me/face/enroll` overwrote it with no check | Needs a one-time `reset_code` from an instructor of one of the student's courses (or an admin): `POST /users/{student_id}/face/reset-code`. 15 min, single use, bound to the student, 5 wrong tries burn it. The first enrolment is unchanged | Anyone who knew a student's password could enrol **their own** face, and the face match would then pass for them on every check-in. Instructors (not TAs) because they manage enrolment and know their students (team decision 2026-10-27) |
+| A student in class who couldn't check in | No way to record it: no check-in = nothing to review or appeal | `POST /checkins/manual` (instructor or assigned TA, reason required): creates an approved check-in, or approves a flagged/appealed/rejected one in place (evidence kept). `POST /checkins/{id}/manual/undo` restores exactly what was there. Up to 7 days after the session | Phone dead, camera broken, GPS refused, blocked by the Singapore check. The student came to staff in person, which is a stronger check than the app's |
+| Check-in responses | — | New `entry_method`: `app` / `manual` / `override`; new `risk_factors` `manual_checkin` / `manual_override` (weight 0) | Lets dashboards label and filter staff-entered attendance |
+| Audit | — | `face_reset_code_issued`, `face_reset_code_rejected`, `face_reenrolled`, `checkin_manual`, `checkin_manual_override`, `checkin_manual_undone`; violation `face_reset_code_guessing` | Every staff action records who did it and why |
+
+Switch `FACE_REENROLL_REQUIRES_CODE` (default `true`; `false` lets a
+student replace their face freely, as before). Manual check-ins aren't
+counted in the Prometheus check-in counters, so the success rate still
+describes real check-ins. The CSV export is unchanged (it shows the
+status, `approved`).
+
+**Action needed:** M1 (code field on the settings page) and M4 (generate-code
+screen, manual check-in form with undo, labels): see the checklist.
+
+---
+
 ## 2026-10-26 — `backend/face-mismatch-review`: a wrong face is flagged on every session
 
 **Rebuild needed:** `docker compose up -d --build backend`.
@@ -220,6 +243,12 @@ testing showed ~100 simultaneous users broke the backend.
 Tasks from the [checklist](CHANGES-2026-10-01.md) that the other modules
 have finished, newest first. Moved here so the checklist only shows what's
 left.
+
+### Module 1 — Frontend: PR #10 (`e0279eb`, merged 2026-10-27)
+
+| Was | Task | Done how |
+|---|---|---|
+| Should | Show times in Singapore time (they were 8 h early) | `lib/utils/datetime.ts` `parseServerDate` reads a backend timestamp without an offset as UTC, and every time is shown in `Asia/Singapore` whatever the device's timezone (History list, detail, month filter, session windows) |
 
 ### Module 4 — Dashboard: PR #8 (`5612fbb`, merged 2026-10-25)
 

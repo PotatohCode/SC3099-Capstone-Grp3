@@ -42,9 +42,9 @@ to get an "Explore with sample data" button on the sign-in page (works without a
 |---|:-:|:-:|:-:|---|
 | Today | ✓ | ✓ | ✓ | Needs-review count (top-left), today's sessions with live check-in counts, 7-day trends |
 | Review queue | ✓ | ✓ | ✓ | Flagged and appealed check-ins, appeals then highest risk first, reasons in plain words, approve / reject with a note |
-| Sessions | view | ✓ | ✓ | Create (location from the course, or its own, with a map); activate / close / cancel; live attendance, outcome and risk charts, every check-in; per-session export |
+| Sessions | view + manual check-in | ✓ | ✓ | Create (location from the course, or its own, with a map); activate / close / cancel; live attendance, outcome and risk charts, every check-in (📱 app / ✍️ manual / ✅ override); manual check-in + undo; per-session export |
 | Courses | | ✓ | ✓ | Attendance per session and per student; students under 75% |
-| Students | | ✓ | ✓ | One student's attendance across your courses and recent check-ins |
+| Students | | ✓ | ✓ | One student's attendance across your courses and recent check-ins; face reset code |
 | Exports | session | ✓ | ✓ | CSV (opens in Excel), JSON or PDF, with a course column and optional absent students |
 | Accounts | | student/TA | any role | Create one account or import a CSV; enrol students/TAs in a course; remove from a course |
 | Audit log | | | ✓ | Filter the append-only log, security-events view, CSV/JSON export |
@@ -111,6 +111,18 @@ docker compose exec dashboard python tests/smoke_test_pages.py
 Signs in as admin, instructor and TA (seeded accounts), opens every page each role can see,
 picks the seeded course/student/session, opens a session and prepares its export, and checks
 preview mode. Prints `OK`/`FAIL` per page.
+
+## Manual check-in and face reset codes
+
+- **Manual check-in** (session → ✍️ Manual check-in; instructor, assigned TA, admin): for a student who
+  is in class but couldn't check in. A reason is required. No check-in yet → a new approved one
+  (✍️ Manual); a flagged / appealed / rejected one → approved over it (✅ Override, original risk data
+  kept). Possible until 7 days after the session. **Undo** removes a manual check-in, or puts an
+  override back exactly as it was. All recorded in the audit log.
+- **Face reset code** (Students → pick a student; instructor of the student's course, or admin; not
+  TAs): after checking the student's card, generate a one-time code the student types in the app to
+  register a new face. Shown once; a new code replaces the old one. Not needed if the student has no
+  face registered yet.
 
 ## Session location
 

@@ -181,6 +181,129 @@ def _confirm_status(session: dict, new_status: str, message: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Manual check-in (staff check in a student who is in class but couldn't)
+# ---------------------------------------------------------------------------
+
+MANUAL_ERRORS = {
+    "ALREADY_CHECKED_IN": "This student is already checked in (approved).",
+    "SESSION_NOT_ACTIVE": "Check-in for this session hasn't opened yet, or the session was cancelled.",
+    "MANUAL_CHECKIN_WINDOW_CLOSED": "Manual check-ins are only possible until 7 days after the session.",
+    "NOT_ENROLLED": "This student isn't enrolled in the session's course.",
+    "MANUAL_UNDO_NOT_ALLOWED": "Only manual check-ins and staff overrides can be undone.",
+}
+
+
+def _manual_error(err: api.ApiError) -> None:
+    if isinstance(err, api.SessionExpired) or err.code not in MANUAL_ERRORS:
+        ui.show_error(err)
+    else:
+        st.warning(MANUAL_ERRORS[err.code], icon="⚠️")
+
+
+@st.dialog("Undo staff check-in")
+def _confirm_undo(row: dict) -> None:
+    manual = row.get("entry_method") == "manual"
+    st.write(f"Undo the {'manual check-in' if manual else 'override'} for **{ui.md(row.get('student_name'))}**?")
+    st.caption("The check-in is removed and the student is absent again (they can still check in themselves "
+               "while check-in is open)." if manual else
+               "The check-in goes back to exactly what it was before (for example flagged), "
+               "with its original reviewer and notes.")
+    left, right = st.columns(2)
+    if left.button("Undo", type="primary", use_container_width=True):
+        try:
+            result = api.post(f"/api/v1/checkins/{row['id']}/manual/undo")
+        except api.ApiError as err:
+            _manual_error(err)
+        else:
+            status = (result or {}).get("status")
+            ui.flash("Manual check-in removed." if status == "deleted" else f"Override undone: back to {status}.", "↩️")
+            st.rerun()
+    if right.button("Cancel", use_container_width=True):
+        st.rerun()
+
+
+def _manual_checkin(session: dict) -> None:
+    st.caption("For a student who is in class but couldn't check in (phone dead, camera broken, GPS refused). "
+               "If they already tried and were flagged or rejected, this approves that check-in instead. "
+               "Possible until 7 days after the session; everything is recorded in the audit log.")
+    checkins = ui.safe(api.get, f"/api/v1/checkins/session/{session['id']}", default=[]) or []
+    if session.get("status") == "cancelled":
+        st.info("This session was cancelled, so no new manual check-ins can be added. "
+                "Earlier staff check-ins can still be undone below.", icon="ℹ️")
+    else:
+        _manual_form(session, checkins)
+    _staff_checkins(checkins)
+
+
+def _course_roster(session: dict) -> list[dict] | None:
+    """The course's students, or None if the list couldn't be loaded. Only the
+    course's current instructor (or an admin / assigned TA) may read it, so an
+    instructor who still owns this session after the course was handed over gets 403."""
+    try:
+        return (api.get(f"/api/v1/enrollments/course/{session['course_id']}", role="student") or {}).get("students", [])
+    except api.ApiError as err:
+        if err.status == 403 and not isinstance(err, api.SessionExpired):
+            st.warning("Can't load this course's student list: only its current instructor (or an admin) can. "
+                       "Ask them to do the manual check-in.", icon="🔒")
+        else:
+            ui.show_error(err)
+        return None
+
+
+def _manual_form(session: dict, checkins: list[dict]) -> None:
+    roster = _course_roster(session)
+    if roster is None:  # failed to load: never claim everyone is checked in
+        return
+    by_student = {c["student_id"]: c for c in checkins}
+    # Already-approved students can't be checked in again.
+    options = [s for s in roster if (by_student.get(s["student_id"]) or {}).get("status") != "approved"]
+
+    def label(s: dict) -> str:
+        current = by_student.get(s["student_id"])
+        state = f" · currently {current['status']}" if current else " · not checked in"
+        return f"{s['student_name']} · {s['student_email']}{state}"
+
+    if not roster:
+        st.info("No students are enrolled in this course yet.", icon="ℹ️")
+    elif not options:
+        st.success("Every enrolled student is already checked in.", icon="✅")
+    else:
+        by_id = {s["student_id"]: s for s in options}
+        with st.form(f"manual-{session['id']}", clear_on_submit=True):
+            student_id = st.selectbox("Student", list(by_id), index=None, placeholder="Choose a student…",
+                                      format_func=lambda sid: label(by_id[sid]))
+            reason = st.text_input("Reason (required, saved in the audit log)", max_chars=500,
+                                   placeholder="e.g. Phone died, seen in class")
+            submitted = st.form_submit_button("Check in", type="primary")
+        if submitted:
+            if not student_id or not reason.strip():
+                st.warning("Choose a student and enter a reason.")
+            else:
+                try:
+                    result = api.request("POST", "/api/v1/checkins/manual", raw=True, json={
+                        "session_id": session["id"], "student_id": student_id, "reason": reason.strip()})
+                except api.ApiError as err:
+                    _manual_error(err)
+                else:
+                    name = by_id[student_id]["student_name"]
+                    ui.flash(f"{name} checked in." if result.status_code == 201
+                             else f"{name}'s earlier check-in is now approved (override).", "✍️")
+                    st.rerun()
+
+
+def _staff_checkins(checkins: list[dict]) -> None:
+    staff_rows = [c for c in checkins if c.get("entry_method") in ("manual", "override")]
+    if staff_rows:
+        st.markdown("**Staff check-ins** · undo one if it was a mistake")
+        for row in sorted(staff_rows, key=lambda c: c.get("checked_in_at") or "", reverse=True):
+            name_col, how_col, button_col = st.columns([3, 1.2, 1])
+            name_col.markdown(f"{ui.md(row.get('student_name'))} · {ui.fmt_time(row.get('checked_in_at'), '%d %b %H:%M')}")
+            how_col.markdown(ui.entry_label(row.get("entry_method")))
+            if button_col.button("Undo", key=f"undo-{row['id']}", use_container_width=True):
+                _confirm_undo(row)
+
+
+# ---------------------------------------------------------------------------
 # One session
 # ---------------------------------------------------------------------------
 
@@ -265,6 +388,7 @@ def _session_detail(session: dict) -> None:
             frame = pd.DataFrame([{
                 "Student": c.get("student_name"), "Email": c.get("student_email"),
                 "Checked in": c.get("checked_in_at"), "Status": ui.status_label(c.get("status")),
+                "How": ui.entry_label(c.get("entry_method")),
                 "Risk": ui.risk_label(c.get("risk_level"), c.get("risk_score")),
                 "Distance (m)": c.get("distance_from_venue_meters"),
                 "Why": ui.reasons(c.get("risk_factors")),
@@ -279,6 +403,12 @@ def _session_detail(session: dict) -> None:
             st.page_link(st.session_state.pages["review"], label=f"Review {stats['flagged_count']} flagged check-in(s) →")
 
     ui.live(live_part)
+
+    # Shown for cancelled sessions too: no new manual check-ins there, but staff
+    # can still undo earlier ones within the backend's 7-day window.
+    if auth.can("manual_checkin"):
+        with st.expander("✍️ Manual check-in"):
+            _manual_checkin(session)
 
     with st.expander("Location"):
         _session_location(session)
