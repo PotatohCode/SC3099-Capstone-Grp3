@@ -14,6 +14,8 @@ st.markdown("""
 <style>
   .eyebrow { color: #0f766e; font-size: .75rem; font-weight: 800; letter-spacing: .13em; margin-bottom: -.5rem; }
   [data-testid="stMetric"] { background: var(--secondary-background-color); }
+  /* The pick-a-spot map can report a wrong frame height on first draw (blank gap below it). */
+  iframe[title="streamlit_folium.st_folium"] { height: 330px !important; }
   [data-testid="stSidebar"] [data-testid="stCaptionContainer"] { opacity: .8; }
 </style>
 """, unsafe_allow_html=True)

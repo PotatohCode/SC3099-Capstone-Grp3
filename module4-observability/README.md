@@ -112,6 +112,16 @@ Signs in as admin, instructor and TA (seeded accounts), opens every page each ro
 picks the seeded course/student/session, opens a session and prepares its export, and checks
 preview mode. Prints `OK`/`FAIL` per page.
 
+## Check-in window
+
+Students can check in only when a session is **active** *and* the time is inside its **check-in
+window** (`checkin_opens_at`–`checkin_closes_at`). The dashboard shows both on every session
+("🟢 Open now · closes 18:30", "⏳ Opens 17:15", "⛔ Window ended"). **Activate check-in** offers to
+open the window immediately when it hasn't opened yet (or to keep it open 30 more minutes when it
+has ended), and active sessions get **Open check-in now** / **Reopen check-in** when needed. New
+sessions default to starting in about 5 minutes, so check-in is open as soon as they're activated.
+When creating a session, **Saved venue** fills in a venue already used on a course or session.
+
 ## Manual check-in and face reset codes
 
 - **Manual check-in** (session → ✍️ Manual check-in; instructor, assigned TA, admin): for a student who

@@ -64,6 +64,7 @@ def _todays_sessions() -> None:
             enrolled = session.get("total_enrolled") or 0
             checked = session.get("checked_in_count") or 0
             st.markdown(f"{ui.status_label(session.get('status'))} &nbsp; **{checked}** / {enrolled} checked in")
+            st.caption(f"Check-in: {ui.checkin_state(session)}")
             if enrolled:
                 st.progress(min(checked / enrolled, 1.0))
             if st.button("Open session", key=f"open-{session['id']}", use_container_width=True):
