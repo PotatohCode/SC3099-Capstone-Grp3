@@ -94,9 +94,6 @@ def _saved_venue_picker(key: str) -> None:
                  placeholder=f"Pick one of {len(by_label)} saved venue(s), or type coordinates below")
 
 
-NTU_CENTRE = (1.3483, 103.6831)  # where the pick-a-spot map starts when there's no pin yet
-
-
 def _apply_map_click(key: str) -> None:
     """Moves the pin to the last spot clicked on the map, if it's a new click."""
     clicked = st.session_state.pop(f"loc-map-click-{key}", None)
@@ -111,18 +108,12 @@ def _apply_map_click(key: str) -> None:
 def _pick_on_map(key: str, lat: float | None, lon: float | None, radius: float, venue: str) -> None:
     """Map with the pin and check-in circle. Drag to look around, scroll to zoom,
     click once to move the pin there (Leaflet tells a click from a drag)."""
-    import folium
     from streamlit_folium import st_folium
 
     has_pin = lat is not None and lon is not None
-    centre = (lat, lon) if has_pin else NTU_CENTRE
-    fmap = folium.Map(location=centre, zoom_start=17 if has_pin else 16, control_scale=True)
-    if has_pin:
-        folium.Circle(centre, radius=float(radius), color="#0f766e", weight=2, fill=True, fill_opacity=0.15,
-                      tooltip=f"Check-in radius: {radius:.0f} m").add_to(fmap)
-        folium.Marker(centre, tooltip=venue or "Venue", icon=folium.Icon(color="red", icon="map-marker")).add_to(fmap)
+    fmap = ui.venue_map(lat, lon, radius, venue)
     st.caption("🖱️ **Click the map to move the pin there.** Drag to look around, scroll to zoom.")
-    result = st_folium(fmap, key=f"loc-map-{key}", height=320, use_container_width=True,
+    result = st_folium(fmap, key=f"loc-map-{key}", height=ui.MAP_HEIGHT, use_container_width=True,
                        returned_objects=["last_clicked"])
     clicked = (result or {}).get("last_clicked")
     if clicked and clicked != st.session_state.get(f"loc-map-used-{key}"):
@@ -131,8 +122,7 @@ def _pick_on_map(key: str, lat: float | None, lon: float | None, radius: float, 
         st.session_state[f"loc-map-click-{key}"] = clicked
         st.rerun()
     if has_pin:
-        st.caption(f"📍 {lat:.5f}, {lon:.5f} · students must be within **{radius:.0f} m** of the pin "
-                   f"([open in Google Maps](https://www.google.com/maps?q={lat},{lon})).")
+        ui.location_caption(lat, lon, radius)
 
 
 def _current_location(key: str) -> None:
@@ -193,7 +183,7 @@ def _location_section(course: dict) -> dict | None:
                                    if m == "course" else "A different location for this session"))
         if choice == "course":
             lat, lon, radius = saved
-            ui.location_map(lat, lon, radius, course.get("venue_name") or "")
+            ui.location_map(lat, lon, radius, course.get("venue_name") or "", key=f"course-map-{key}")
             # Send no coordinates: the backend uses the course's, and follows any later fix to them.
             return {"venue_name": course.get("venue_name")}
     else:
@@ -510,16 +500,17 @@ def _session_location(session: dict) -> None:
             radius = course.get("geofence_radius_meters") or 100
         st.caption("This session's own location.")
         ui.location_map(session["venue_latitude"], session["venue_longitude"], float(radius),
-                        session.get("venue_name") or "")
+                        session.get("venue_name") or "", key=f"session-map-{session['id']}")
         return
     course = ui.safe(api.get, f"/api/v1/courses/{session['course_id']}") or {}
     saved = course_location(course)
     if saved:
         st.caption(f"Uses the course's location ({ui.md(course.get('venue_name') or 'classroom')}).")
-        ui.location_map(*saved, course.get("venue_name") or "")
+        ui.location_map(*saved, course.get("venue_name") or "", key=f"session-map-{session['id']}")
     else:
         st.warning("Neither this session nor its course has a location, so students' locations "
                    "aren't checked against a classroom.", icon="📍")
+
 
 def _session_detail(session: dict) -> None:
     st.subheader(ui.md(session["name"]), anchor=False)

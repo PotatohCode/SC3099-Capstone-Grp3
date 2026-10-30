@@ -300,30 +300,37 @@ def in_singapore(lat: float, lon: float) -> bool:
     return SG_LAT[0] <= lat <= SG_LAT[1] and SG_LON[0] <= lon <= SG_LON[1]
 
 
-def location_map(lat: float, lon: float, radius_m: float, label: str = "", height: int = 260) -> None:
-    """Venue pin plus the check-in radius circle, to check a location before use."""
-    import pydeck as pdk
+MAP_HEIGHT = 320
+NTU_CENTRE = (1.3483, 103.6831)  # where a map starts when there's no pin yet
 
-    point = [{"lat": lat, "lon": lon, "radius": radius_m, "label": label or "Venue"}]
-    zoom = 17 if radius_m <= 100 else 16 if radius_m <= 300 else 15 if radius_m <= 700 else 14
-    st.pydeck_chart(pdk.Deck(
-        map_style=None,
-        initial_view_state=pdk.ViewState(latitude=lat, longitude=lon, zoom=zoom),
-        # Radii are in metres (deck.gl's default unit), so the check-in circle grows
-        # and shrinks with the map. (Don't pass radius_units="...": pydeck sends plain
-        # strings as code, "@@=meters", which breaks the setting.)
-        layers=[
-            pdk.Layer("ScatterplotLayer", point, get_position="[lon, lat]", get_radius="radius",
-                      get_fill_color=[15, 118, 110, 45], get_line_color=[15, 118, 110, 220],
-                      stroked=True, line_width_min_pixels=2),
-            # The pin: 1 m, but clamped to 5–6 px so it stays the same size on screen.
-            pdk.Layer("ScatterplotLayer", point, get_position="[lon, lat]", get_radius=1,
-                      radius_min_pixels=5, radius_max_pixels=6, get_fill_color=[185, 28, 28, 255]),
-        ],
-        tooltip={"text": "{label}\nCheck-in radius: {radius} m"},
-    ), height=height, use_container_width=True)
+
+def venue_map(lat: float | None, lon: float | None, radius_m: float, label: str = ""):
+    """The one map style used everywhere: OpenStreetMap, red pin, teal check-in circle."""
+    import folium
+
+    has_pin = lat is not None and lon is not None
+    centre = (lat, lon) if has_pin else NTU_CENTRE
+    zoom = (17 if radius_m <= 100 else 16 if radius_m <= 300 else 15 if radius_m <= 700 else 14) if has_pin else 16
+    fmap = folium.Map(location=centre, zoom_start=zoom, control_scale=True)
+    if has_pin:
+        folium.Circle(centre, radius=float(radius_m), color="#0f766e", weight=2, fill=True, fill_opacity=0.15,
+                      tooltip=f"Check-in radius: {radius_m:.0f} m").add_to(fmap)
+        folium.Marker(centre, tooltip=label or "Venue", icon=folium.Icon(color="red", icon="map-marker")).add_to(fmap)
+    return fmap
+
+
+def location_caption(lat: float, lon: float, radius_m: float) -> None:
     st.caption(f"📍 {lat:.5f}, {lon:.5f} · students must be within **{radius_m:.0f} m** of the pin "
                f"([open in Google Maps](https://www.google.com/maps?q={lat},{lon})).")
+
+
+def location_map(lat: float, lon: float, radius_m: float, label: str = "", *, key: str) -> None:
+    """View-only venue map: drag and zoom to look around; clicks don't change anything."""
+    from streamlit_folium import st_folium
+
+    st_folium(venue_map(lat, lon, radius_m, label), key=key, height=MAP_HEIGHT, use_container_width=True,
+              returned_objects=[])  # nothing returned, so moving the map doesn't reload the page
+    location_caption(lat, lon, radius_m)
 
 
 # ---------------------------------------------------------------------------
