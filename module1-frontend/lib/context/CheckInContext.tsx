@@ -10,7 +10,7 @@
  * the wizard and is cleared on submit/reset - it is never written to any storage layer.
  */
 
-import { createContext, useCallback, useMemo, useReducer, useRef, type ReactNode } from 'react'
+import { createContext, useCallback, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react'
 import type { CapturedMedia } from '@/lib/checkin/payload'
 import {
   initialWizardState,
@@ -21,7 +21,7 @@ import {
 } from '@/lib/checkin/wizard-state'
 import type { CheckInResponse, LocationData, SessionSummary } from '@/lib/types'
 import { useAuth } from '@/lib/hooks/useAuth'
-import { clearProgress, saveProgress } from '@/lib/checkin/progress'
+import { CHECKIN_RESTART_EVENT, forgetLegacyProgress } from '@/lib/checkin/restart'
 import { clearAttempts } from '@/lib/liveness/verify'
 
 export type { CheckInStep }
@@ -34,6 +34,8 @@ interface CheckInContextValue {
   result: CheckInResponse | null
   photoMode: boolean
   alreadyCheckedIn: AlreadyCheckedIn
+  restartCount: number
+  setSubmitting: (submitting: boolean) => void
   selectSession: (session: SessionSummary) => void
   markAlreadyCheckedIn: (session: SessionSummary, queued: boolean) => void
   setLocation: (location: LocationData) => void
@@ -57,17 +59,12 @@ export function CheckInProvider({ children }: { children: ReactNode }) {
   const userId = user?.id ?? null
   const stateRef = useRef(state)
   stateRef.current = state
+  const submittingRef = useRef(false)
+  const [restartCount, setRestartCount] = useState(0)
 
-  const selectSession = useCallback(
-    (session: SessionSummary) => {
-      saveProgress(userId, session.id)
-      dispatch({ type: 'SELECT_SESSION', session })
-    },
-    [userId]
-  )
+  const selectSession = useCallback((session: SessionSummary) => dispatch({ type: 'SELECT_SESSION', session }), [])
   const markAlreadyCheckedIn = useCallback(
     (session: SessionSummary, queued: boolean) => {
-      clearProgress(userId)
       if (userId) clearAttempts(userId, session.id)
       dispatch({ type: 'ALREADY_CHECKED_IN', session, queued })
     },
@@ -76,15 +73,11 @@ export function CheckInProvider({ children }: { children: ReactNode }) {
   const setLocation = useCallback((location: LocationData) => dispatch({ type: 'SET_LOCATION', location }), [])
   const setMedia = useCallback((media: CapturedMedia) => dispatch({ type: 'SET_MEDIA', media }), [])
   const goToStep = useCallback((step: CheckInStep) => dispatch({ type: 'GO_TO', step }), [])
-  const previousStep = useCallback(() => {
-    if (stateRef.current.step === 'location') clearProgress(userId)
-    dispatch({ type: 'BACK' })
-  }, [userId])
+  const previousStep = useCallback(() => dispatch({ type: 'BACK' }), [])
   const continueFromLocation = useCallback(() => dispatch({ type: 'CONTINUE' }), [])
   const retakeLocation = useCallback(() => dispatch({ type: 'RETAKE_LOCATION' }), [])
   const finishSession = useCallback(() => {
     const sessionId = stateRef.current.session?.id
-    clearProgress(userId)
     if (userId && sessionId) clearAttempts(userId, sessionId)
   }, [userId])
   const submitSucceeded = useCallback(
@@ -102,10 +95,21 @@ export function CheckInProvider({ children }: { children: ReactNode }) {
     (challengeInvalid: boolean) => dispatch({ type: 'SUBMIT_FAILED', challengeInvalid }),
     []
   )
-  const reset = useCallback(() => {
-    clearProgress(userId)
-    dispatch({ type: 'RESET' })
-  }, [userId])
+  const reset = useCallback(() => dispatch({ type: 'RESET' }), [])
+  const setSubmitting = useCallback((submitting: boolean) => {
+    submittingRef.current = submitting
+  }, [])
+
+  useEffect(() => {
+    forgetLegacyProgress()
+    function restart() {
+      if (submittingRef.current) return
+      setRestartCount((n) => n + 1)
+      dispatch({ type: 'RESET' })
+    }
+    window.addEventListener(CHECKIN_RESTART_EVENT, restart)
+    return () => window.removeEventListener(CHECKIN_RESTART_EVENT, restart)
+  }, [])
 
   const value = useMemo<CheckInContextValue>(
     () => ({
@@ -116,6 +120,8 @@ export function CheckInProvider({ children }: { children: ReactNode }) {
       result: state.result,
       photoMode: shouldUsePhotoMode(state),
       alreadyCheckedIn: state.alreadyCheckedIn,
+      restartCount,
+      setSubmitting,
       selectSession,
       markAlreadyCheckedIn,
       setLocation,
@@ -129,7 +135,7 @@ export function CheckInProvider({ children }: { children: ReactNode }) {
       submitFailed,
       reset,
     }),
-    [state, selectSession, markAlreadyCheckedIn, setLocation, setMedia, goToStep, continueFromLocation, retakeLocation, previousStep, submitSucceeded, submitQueued, submitFailed, reset]
+    [state, restartCount, setSubmitting, selectSession, markAlreadyCheckedIn, setLocation, setMedia, goToStep, continueFromLocation, retakeLocation, previousStep, submitSucceeded, submitQueued, submitFailed, reset]
   )
 
   return <CheckInContext.Provider value={value}>{children}</CheckInContext.Provider>

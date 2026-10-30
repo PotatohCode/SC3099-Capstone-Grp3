@@ -28,7 +28,7 @@ export default function SettingsPage() {
         </p>
         <p className="mt-1 text-sm text-gray-600">
           {enrolled
-            ? 'Your face is used to confirm it is you when you check in. Update it if your appearance has changed.'
+            ? 'Your face is used to confirm it is you when you check in. To update it, you need a one-time reset code from your instructor.'
             : 'Register your face before you can check in. It is used to confirm it is you at each check-in.'}
         </p>
         {open ? (

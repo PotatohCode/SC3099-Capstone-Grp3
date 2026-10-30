@@ -1,6 +1,6 @@
 'use client'
 
-/** Update Face Identity flow: password re-check, camera consent, a 5-second look at the camera, then one captured frame is sent for enrollment. */
+/** Face identity flow: password re-check, an instructor reset code with a 5-minute window when replacing a face, camera consent, a 5-second look, then one frame is enrolled. */
 
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import Link from 'next/link'
@@ -8,10 +8,21 @@ import { useAuth } from '@/lib/hooks/useAuth'
 import { useCameraStream } from '@/lib/hooks/useCameraStream'
 import { createFrameGrabber, PHOTO_JPEG } from '@/lib/utils/frame-capture'
 import { abortableSleep } from '@/lib/liveness/capture-runner'
-import { enrollFace } from '@/lib/services/face.service'
-import { FACE_CAPTURE_MS, enrollErrorMessage } from '@/lib/face/enrollment'
+import { checkResetCode, enrollFace } from '@/lib/services/face.service'
+import { parseApiError } from '@/lib/utils/api-error'
+import {
+  FACE_CAPTURE_MS,
+  FACE_RESET_WINDOW_MS,
+  RESET_WINDOW_EXPIRED_MESSAGE,
+  enrollErrorMessage,
+  formatTimeLeft,
+  normalizeResetCode,
+  resetCodeCheckErrorMessage,
+} from '@/lib/face/enrollment'
 
-type Step = 'password' | 'consent' | 'countdown' | 'uploading' | 'done' | 'error'
+type Step = 'password' | 'code' | 'consent' | 'countdown' | 'uploading' | 'done' | 'error'
+
+const TIMED_STEPS: Step[] = ['consent', 'countdown', 'error']
 
 const SECONDS = Math.round(FACE_CAPTURE_MS / 1000)
 const PRIMARY =
@@ -20,7 +31,7 @@ const SECONDARY =
   'min-h-[44px] rounded-md border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100'
 
 export function FaceEnrollmentFlow({ onClose }: { onClose: () => void }) {
-  const { reauthenticate, saveConsent, refreshUser } = useAuth()
+  const { user, reauthenticate, saveConsent, refreshUser } = useAuth()
   const { videoRef, status, startStream, stopStream } = useCameraStream()
   const [step, setStep] = useState<Step>('password')
   const [password, setPassword] = useState('')
@@ -28,7 +39,14 @@ export function FaceEnrollmentFlow({ onClose }: { onClose: () => void }) {
   const [message, setMessage] = useState<string | null>(null)
   const [secondsLeft, setSecondsLeft] = useState(SECONDS)
   const [refreshed, setRefreshed] = useState(true)
+  const [needsCode, setNeedsCode] = useState(user?.face_enrolled === true)
+  const [code, setCode] = useState('')
+  const [deadline, setDeadline] = useState<number | null>(null)
+  const [now, setNow] = useState(() => Date.now())
   const abortRef = useRef<AbortController | null>(null)
+  const deadlineRef = useRef<number | null>(null)
+  const codeInputRef = useRef<HTMLInputElement | null>(null)
+  const checkingRef = useRef(false)
 
   const cameraStoppedRef = useRef(false)
 
@@ -39,6 +57,20 @@ export function FaceEnrollmentFlow({ onClose }: { onClose: () => void }) {
     cameraStoppedRef.current = true
     abortRef.current?.abort()
   }, [status])
+
+  useEffect(() => {
+    if (step === 'code') codeInputRef.current?.focus()
+  }, [step])
+
+  useEffect(() => {
+    if (deadline === null || !TIMED_STEPS.includes(step)) return
+    const timer = setInterval(() => {
+      const current = Date.now()
+      setNow(current)
+      if (current >= deadline) expireRef.current()
+    }, 1000)
+    return () => clearInterval(timer)
+  }, [deadline, step])
 
   useEffect(() => {
     function handleVisibility() {
@@ -58,10 +90,65 @@ export function FaceEnrollmentFlow({ onClose }: { onClose: () => void }) {
     try {
       await reauthenticate(password)
       setPassword('')
-      setStep('consent')
+      setStep(needsCode ? 'code' : 'consent')
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Password check failed. Please try again.')
     } finally {
+      setBusy(false)
+    }
+  }
+
+  function setWindow(end: number | null) {
+    deadlineRef.current = end
+    setDeadline(end)
+    if (end !== null) setNow(Date.now())
+  }
+
+  function windowOpen(): boolean {
+    if (!needsCode) return true
+    return deadlineRef.current !== null && Date.now() < deadlineRef.current
+  }
+
+  function askForCode(text: string | null, keepCode = false) {
+    abortRef.current?.abort()
+    stopStream()
+    setWindow(null)
+    if (!keepCode) setCode('')
+    setBusy(false)
+    setMessage(text)
+    setStep('code')
+  }
+
+  function expireWindow() {
+    askForCode(RESET_WINDOW_EXPIRED_MESSAGE)
+  }
+  const expireRef = useRef(expireWindow)
+  expireRef.current = expireWindow
+
+  async function submitCode(event: FormEvent) {
+    event.preventDefault()
+    const normalized = normalizeResetCode(code)
+    if (!normalized || checkingRef.current) return
+    checkingRef.current = true
+    setBusy(true)
+    setMessage(null)
+    try {
+      const result = await checkResetCode(normalized).catch((error: unknown) => {
+        if (parseApiError(error).status === 404) return { required: true, valid: true }
+        throw error
+      })
+      if (!result.required) {
+        setNeedsCode(false)
+        setWindow(null)
+      } else {
+        setWindow(Date.now() + FACE_RESET_WINDOW_MS)
+      }
+      setStep('consent')
+    } catch (error) {
+      setMessage(resetCodeCheckErrorMessage(error))
+      codeInputRef.current?.focus()
+    } finally {
+      checkingRef.current = false
       setBusy(false)
     }
   }
@@ -78,6 +165,10 @@ export function FaceEnrollmentFlow({ onClose }: { onClose: () => void }) {
     setMessage(null)
     cameraStoppedRef.current = false
     const cameraStatus = await startStream()
+    if (!windowOpen()) {
+      stopStream()
+      return
+    }
     if (cameraStatus === 'denied') {
       await saveConsent('camera', false)
       setBusy(false)
@@ -92,6 +183,10 @@ export function FaceEnrollmentFlow({ onClose }: { onClose: () => void }) {
     }
     const saved = await saveConsent('camera', true)
     setBusy(false)
+    if (!windowOpen()) {
+      stopStream()
+      return
+    }
     if (!saved) {
       fail("Couldn't save your camera consent. Check your connection and try again.")
       return
@@ -137,13 +232,21 @@ export function FaceEnrollmentFlow({ onClose }: { onClose: () => void }) {
       fail("Couldn't capture a photo. Please try again.")
       return
     }
+    if (!windowOpen()) return
     setStep('uploading')
     try {
-      await enrollFace(image)
+      await enrollFace(image, needsCode ? normalizeResetCode(code) : undefined)
     } catch (error) {
+      const errorCode = parseApiError(error).code
+      if (errorCode === 'FACE_RESET_CODE_REQUIRED') setNeedsCode(true)
+      if (errorCode === 'FACE_RESET_CODE_REQUIRED' || errorCode === 'FACE_RESET_CODE_INVALID') {
+        askForCode(enrollErrorMessage(error), errorCode === 'FACE_RESET_CODE_INVALID')
+        return
+      }
       fail(enrollErrorMessage(error))
       return
     }
+    setWindow(null)
     try {
       await refreshUser()
       setRefreshed(true)
@@ -154,6 +257,7 @@ export function FaceEnrollmentFlow({ onClose }: { onClose: () => void }) {
   }
 
   function cancel() {
+    setWindow(null)
     abortRef.current?.abort()
     stopStream()
     onClose()
@@ -165,6 +269,7 @@ export function FaceEnrollmentFlow({ onClose }: { onClose: () => void }) {
   }
 
   const showVideo = step === 'consent' || step === 'countdown'
+  const showTimer = needsCode && deadline !== null && TIMED_STEPS.includes(step)
 
   return (
     <div className="mt-4 space-y-4">
@@ -194,6 +299,51 @@ export function FaceEnrollmentFlow({ onClose }: { onClose: () => void }) {
             </button>
           </div>
         </form>
+      )}
+
+      {step === 'code' && (
+        <form onSubmit={submitCode} className="space-y-3" noValidate>
+          <p className="text-sm text-gray-600">
+            Replacing your face needs a one-time reset code. Ask an instructor of one of your courses: they&apos;ll
+            check your student card, then give you the code. After you enter it, you have 5 minutes to take your
+            new photo.
+          </p>
+          <div>
+            <label htmlFor="face-reset-code" className="block text-sm font-medium text-gray-700">
+              Reset code from your instructor
+            </label>
+            <input
+              id="face-reset-code"
+              ref={codeInputRef}
+              type="text"
+              inputMode="text"
+              autoComplete="off"
+              autoCapitalize="characters"
+              autoCorrect="off"
+              spellCheck={false}
+              maxLength={32}
+              placeholder="XXXX-XXXX"
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              readOnly={busy}
+              className="mt-1 block min-h-[44px] w-full rounded-md border border-gray-300 px-3 py-2 font-mono uppercase tracking-widest text-gray-900 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600"
+            />
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button type="submit" disabled={busy || !normalizeResetCode(code)} className={PRIMARY}>
+              {busy ? 'Checking...' : 'Continue'}
+            </button>
+            <button type="button" onClick={cancel} className={SECONDARY}>
+              Cancel
+            </button>
+          </div>
+        </form>
+      )}
+
+      {showTimer && deadline !== null && (
+        <p role="timer" className="text-sm font-medium text-amber-800" data-testid="face-reset-timer">
+          Time left to finish: {formatTimeLeft(deadline - now)}
+        </p>
       )}
 
       {step === 'consent' && (

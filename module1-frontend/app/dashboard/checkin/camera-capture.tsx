@@ -346,9 +346,10 @@ export function CameraCapture({ sessionId, photoMode, onComplete, onReselectSess
       <div className="space-y-4 rounded-lg border border-gray-200 bg-white p-5">
         <h2 className="text-lg font-semibold text-gray-900">Camera access for the face check</h2>
         <p className="text-sm text-gray-600">
-          We need to use your camera for a quick liveness check to confirm you&apos;re
-          physically present. Your photo is used only for this check-in and is never
-          stored as an image - only a hash is kept.
+          {photoMode
+            ? "We need to use your camera to take one photo of your face to confirm it's you."
+            : "We need to use your camera for a quick liveness check to confirm you're physically present."}{' '}
+          Your photo is used only for this check-in and is never stored as an image - only a hash is kept.
         </p>
         <button
           type="button"

@@ -87,7 +87,7 @@ export function wizardReducer(state: WizardState, action: WizardAction): WizardS
   }
 }
 
-/** True once two CHALLENGE_INVALID results have occurred since the last success, when the wizard switches to a single photo. */
+/** True when the session doesn't require a liveness check, or after two CHALLENGE_INVALID results since the last success: take one photo instead of the challenge. */
 export function shouldUsePhotoMode(state: WizardState): boolean {
-  return state.challengeInvalidStreak >= 2
+  return state.session?.require_liveness_check === false || state.challengeInvalidStreak >= 2
 }

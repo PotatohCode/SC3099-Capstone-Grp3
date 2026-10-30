@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, cleanup } from '@testing-library/react'
 import { CameraCapture } from '@/app/dashboard/checkin/camera-capture'
 import type { CapturedMedia } from '@/lib/checkin/payload'
 import { installCamera, installPermissions } from '@/test/browser-mocks'
@@ -279,6 +279,20 @@ describe('CameraCapture', () => {
     expect(camera.getUserMedia).toHaveBeenCalledTimes(1)
     expect(saveConsent).toHaveBeenCalledWith('camera', true)
     expect(camera.getUserMedia.mock.invocationCallOrder[0]).toBeLessThan(saveConsent.mock.invocationCallOrder[0])
+  })
+
+  it('describes a single photo, not a liveness check, on the consent screen in photo mode', async () => {
+    cameraConsent = false
+    installCamera()
+    installPermissions('prompt')
+    renderCapture(true)
+    await flush()
+    expect(screen.getByText(/take one photo of your face to confirm it's you/)).toBeTruthy()
+    expect(screen.queryByText(/liveness check/)).toBeNull()
+    cleanup()
+    renderCapture(false)
+    await flush()
+    expect(screen.getByText(/quick liveness check to confirm you're physically present/)).toBeTruthy()
   })
 
   it('records a browser denial as consent false and shows how to unblock', async () => {

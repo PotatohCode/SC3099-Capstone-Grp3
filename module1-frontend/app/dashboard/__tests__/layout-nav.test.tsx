@@ -132,4 +132,44 @@ describe('dashboard nav on small screens', () => {
     expect(inline.className.split(' ')).not.toContain('hidden')
     expect(within(inline).getAllByRole('link').map((l) => l.textContent)).toEqual(['Home'])
   })
+
+  it('Check In (menu and inline) asks the wizard to restart only when already on the check-in page', () => {
+    const restarts = jest.fn()
+    window.addEventListener('saiv:checkin-restart', restarts)
+    mockPath = '/dashboard/checkin'
+    renderLayout()
+    fireEvent.click(screen.getByRole('button', { name: /Menu/ }))
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Mobile' })).getByRole('link', { name: 'Check In' }))
+    expect(restarts).toHaveBeenCalledTimes(1)
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Primary' })).getByRole('link', { name: 'Check In' }))
+    expect(restarts).toHaveBeenCalledTimes(2)
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Primary' })).getByRole('link', { name: 'History' }))
+    expect(restarts).toHaveBeenCalledTimes(2)
+    window.removeEventListener('saiv:checkin-restart', restarts)
+  })
+
+  it('Check In from another page does not send a restart request', () => {
+    const restarts = jest.fn()
+    window.addEventListener('saiv:checkin-restart', restarts)
+    mockPath = '/dashboard/history'
+    renderLayout()
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Primary' })).getByRole('link', { name: 'Check In' }))
+    expect(restarts).not.toHaveBeenCalled()
+    window.removeEventListener('saiv:checkin-restart', restarts)
+  })
+
+  it('a Ctrl/Cmd/Shift-click on Check In (new tab or window) does not restart the current wizard', () => {
+    const restarts = jest.fn()
+    window.addEventListener('saiv:checkin-restart', restarts)
+    mockPath = '/dashboard/checkin'
+    renderLayout()
+    const link = within(screen.getByRole('navigation', { name: 'Primary' })).getByRole('link', { name: 'Check In' })
+    fireEvent.click(link, { ctrlKey: true })
+    fireEvent.click(link, { metaKey: true })
+    fireEvent.click(link, { shiftKey: true })
+    expect(restarts).not.toHaveBeenCalled()
+    fireEvent.click(link)
+    expect(restarts).toHaveBeenCalledTimes(1)
+    window.removeEventListener('saiv:checkin-restart', restarts)
+  })
 })
