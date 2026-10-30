@@ -5,7 +5,7 @@ Read [API-CONVENTIONS.md](API-CONVENTIONS.md) for general context, but note:
 call *us*; for Module 3, **Module 2 calls you.** This is the contract your
 service implements so our calls succeed. **Your tasks:** the Module 3 table
 in [CHANGES-2026-10-01.md](CHANGES-2026-10-01.md). **Why things changed:**
-[CHANGELOG.md](CHANGELOG.md). Last updated 2026-10-26.
+[CHANGELOG.md](CHANGELOG.md). Last updated 2026-10-30.
 
 ---
 
@@ -67,6 +67,11 @@ within 5 s is treated as failed.
 - `enrollment_successful: false` in a 2xx → we return **`400
   NO_FACE_DETECTED`**. **Your current 201 + `false` behaviour is what we
   rely on. Keep it.** The course's public tests accept it.
+- Except for your anti-spoofing refusal: `enrollment_successful: false`
+  with `details.reason: "spoof_detected"` (a `spoof` or `suspect` verdict)
+  → **`400 FACE_NOT_ACCEPTED`**, with a generic message that doesn't say
+  why. That's the only `details` field we read; keep the value
+  `spoof_detected` as is.
 - A 4xx/5xx/timeout → we return **`503 FACE_SERVICE_UNAVAILABLE`** to the
   student. If you ever switch "no face" to a 400, tell us first: students
   would see "service unavailable" instead of "no face detected".
@@ -191,7 +196,8 @@ unverified even when `challenge_passed` is `true`.
   `null` for "no face detected" is exactly right.
 - **Only send `false` when you've determined the image is a spoof**
   (printed photo, screen replay, flat face mesh). Don't default to `false`
-  for uncertain cases.
+  for uncertain cases. Your anti-spoofing tiers fit this: `spoof` →
+  `false` (single image) or `null` (burst); `suspect` → `null`.
 
 ### 4. `POST /risk/assess`
 
@@ -244,7 +250,12 @@ similar but not identical embeddings. SHA-256 changes completely for a
 
 On our side it's an opaque `VARCHAR(64)`: we store what you return and pass
 it back on `/face/verify`. **You own the hashing and comparison.** Keep it at
-most 64 characters and stable across photos of the same face. **Never return
+most 64 characters and stable across photos of the same face. Your current
+format (ArcFace, 240 SimHash bits + the version tag `a1f0`) fits. For a hash
+from an older model (no tag) you return `match_passed: null`, which is right:
+it's flagged on face-required sessions and never wrongly rejected. If the
+model changes again, bump the tag the same way and tell us, because every
+student then has to re-enrol. **Never return
 raw images or embeddings:** only the hash is stored, and the hidden privacy
 audit inspects the database for raw biometric data.
 

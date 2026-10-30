@@ -3,7 +3,7 @@
 Read [API-CONVENTIONS.md](API-CONVENTIONS.md) first (auth, error format,
 pagination). **Your tasks:** the Module 4 table in
 [CHANGES-2026-10-01.md](CHANGES-2026-10-01.md). **Why things changed:**
-[CHANGELOG.md](CHANGELOG.md). Last updated 2026-10-27.
+[CHANGELOG.md](CHANGELOG.md). Last updated 2026-10-29.
 
 This covers the `/stats/*` analytics, `/export/*` data export, `/audit/*`
 compliance log, and `/metrics` for Prometheus/Grafana. Everything here needs
@@ -35,6 +35,15 @@ attached to their course as enrollment rows, but `total_students`,
 rates, the session export summary and `GET /sessions/*`'s `total_enrolled`
 only count users with the `student` role. For a roster without TAs, call
 `GET /enrollments/course/{id}?role=student` (each row also has `role`).
+
+**Finding a TA's courses.** There's no "my courses" call for TAs
+(`GET /enrollments/my-enrollments` is students only, and `GET /courses/`
+isn't filtered by role). Asking for each course's roster works (`200` only for
+the TA's own courses), but every call counts toward the per-user limit of
+**1000 requests an hour** (`429 RATE_LIMITED` after that; see
+[conventions](API-CONVENTIONS.md)), so it only
+suits a small course list. Treat a `429` or `5xx` as "unknown", not "not
+my course", and don't cache it.
 
 ### `GET /stats/overview` — instructor/ta/admin
 Query: `course_id` (optional), `days` (1–365, default 7; controls the trend

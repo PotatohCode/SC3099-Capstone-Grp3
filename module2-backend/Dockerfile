@@ -24,4 +24,11 @@ EXPOSE 8000
 # enough. It's a no-op when already at head. Postgres is ready first
 # (backend depends_on postgres: service_healthy). Inline rather than an
 # entrypoint script so Windows CRLF checkouts can't break it.
-CMD ["sh", "-c", "alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+#
+# --timeout-keep-alive: uvicorn's default closes an idle connection after
+# 5 s, so a client reusing it right then (e.g. login, then a check-in on the
+# same connection) can lose that request ("server disconnected"; measured
+# ~1 in 150 at the 5 s mark, more under load). Keep it longer than the
+# clients' and the frontend proxy's idle reuse (Caddy keeps upstream
+# connections up to 2 min), so the client side always closes first.
+CMD ["sh", "-c", "alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --timeout-keep-alive 130"]
