@@ -294,6 +294,12 @@ def update_session(
         if updates.get(field):
             updates[field] = sanitize_text(updates[field])
 
+    # Columns are naive UTC; a "...Z" or "+08:00" value would otherwise be
+    # compared with them in _validate_schedule and crash (500).
+    for field in ("scheduled_start", "scheduled_end", "checkin_opens_at", "checkin_closes_at"):
+        if updates.get(field) is not None:
+            updates[field] = _as_naive_utc(updates[field])
+
     new_status = updates.get("status")
     for field, value in updates.items():
         setattr(session_obj, field, value)

@@ -45,6 +45,19 @@ class FaceEnrollRequest(BaseModel):
     reset_code: Optional[str] = Field(default=None, max_length=32)
 
 
+class FaceResetCodeCheckRequest(BaseModel):
+    """POST /users/me/face/reset-code/check: the same code that will be sent
+    to /me/face/enroll, checked before the camera opens."""
+
+    reset_code: Optional[str] = Field(default=None, max_length=32)
+
+
+class FaceResetCodeCheckResponse(BaseModel):
+    # required False: no code is needed (first enrolment, or codes are off).
+    required: bool
+    valid: bool
+
+
 class FaceResetCodeResponse(BaseModel):
     """POST /users/{student_id}/face/reset-code (201). Shown once."""
     student_id: str
