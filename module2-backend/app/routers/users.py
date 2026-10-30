@@ -204,6 +204,16 @@ def enroll_face(
             ErrorCode.FACE_SERVICE_UNAVAILABLE,
         )
     if not result.get("enrollment_successful", False):
+        # Module 3's anti-spoofing refused it (printed photo / screen). Its
+        # own code so the app can say something better than "no face", but
+        # a generic message: students aren't told what the check looks for.
+        details = result.get("details")
+        if isinstance(details, dict) and details.get("reason") == "spoof_detected":
+            raise APIError(
+                status.HTTP_400_BAD_REQUEST,
+                "We couldn't verify your face. Use your camera directly, in good light, and try again",
+                ErrorCode.FACE_NOT_ACCEPTED,
+            )
         raise APIError(status.HTTP_400_BAD_REQUEST, "No face detected in image", ErrorCode.NO_FACE_DETECTED)
 
     details = None
