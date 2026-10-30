@@ -7,7 +7,7 @@ pagination, rate limits). **Your tasks:** the Module 1 table in
 
 This covers every endpoint your UI is likely to call, across all four roles
 (student/instructor/ta/admin), since one frontend serves all of them. Each
-entry notes who can call it. Last updated 2026-10-27.
+entry notes who can call it. Last updated 2026-10-30.
 
 ---
 
@@ -92,6 +92,7 @@ with no face, or a face-service error, doesn't use it up.
 |---|---|
 | `400 CAMERA_CONSENT_REQUIRED` | `camera_consent` is false; call `PUT /users/me` first |
 | `400 NO_FACE_DETECTED` | No usable face in the image |
+| `400 FACE_NOT_ACCEPTED` | A face was found, but the face service didn't accept it as a live face (e.g. a printed photo or a screen held up to the camera). Show the `detail` as is ("We couldn't verify your face. Use your camera directly, in good light, and try again") and let them retry. Don't tell the student a photo or screen was detected. A reset code isn't used up |
 | `403 FACE_RESET_CODE_REQUIRED` | A face is already enrolled and no `reset_code` was sent. Show a code field: "ask your instructor for a reset code" |
 | `403 FACE_RESET_CODE_INVALID` | Wrong, expired, already used or replaced code. 5 wrong tries burn the code; the instructor then generates a new one |
 | `413 IMAGE_TOO_LARGE` | Image over 10,000,000 base64 characters |
@@ -450,6 +451,10 @@ without verifying it first (checked at check-in, no retry).
   never rejected for that alone. Can't confirm the steps → at most
   `flagged` (`liveness_unverified`). Judged a spoof (here or in any verify
   attempt for this session) → `rejected` (`liveness_failed`).
+- **A single photo is checked for spoofing too:** a printed photo or a screen
+  held up to the camera is `rejected` (`liveness_failed`); a doubtful one
+  (e.g. a screen very close to the camera) is `flagged` on liveness-required
+  sessions. A genuine face in normal or dim light passes.
 - `challenge_type` (lowercase letters and `_`) is only a label stored with
   the check-in when you send frames **without** a challenge.
 - **Send a fresh photo or burst every time.** If **any** image (the photo or

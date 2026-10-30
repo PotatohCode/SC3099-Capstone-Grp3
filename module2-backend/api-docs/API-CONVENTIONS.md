@@ -10,7 +10,7 @@ Read this first, then whichever of these applies to you:
 > (team checklist). **What changed and why:** [CHANGELOG.md](CHANGELOG.md).
 
 These docs describe the backend **as it runs now** (last updated
-2026-10-23); the course's public test suite passes in full (92/92). Where
+2026-10-30); the course's public test suite passes in full (92/92). Where
 the written course spec and the implementation differ, this is what's
 actually running; the changelog gives the reasons.
 
@@ -83,7 +83,7 @@ Build error handling on **`code`**, not the `detail` text. Codes you'll see:
 | Not found | `*_NOT_FOUND` (course, session, user, student, device, enrollment, checkin) |
 | Check-ins | `ALREADY_CHECKED_IN`, `SESSION_NOT_ACTIVE`, `SESSION_WINDOW_CLOSED`, `OUTSIDE_SINGAPORE`, `CONSENT_REQUIRED` (only if enabled), `ALREADY_APPEALED`, `APPEAL_NOT_ALLOWED`, `APPEAL_WINDOW_EXPIRED`, `REVIEW_NOT_ALLOWED`, `CHALLENGE_INVALID` (400), `LIVENESS_ATTEMPTS_EXHAUSTED` (409), `CHALLENGE_UNAVAILABLE` (503), `MANUAL_CHECKIN_WINDOW_CLOSED` (400), `MANUAL_UNDO_NOT_ALLOWED` (400) |
 | Sessions/courses | `INVALID_SCHEDULE`, `COURSE_CODE_TAKEN`, `SESSION_NOT_DELETABLE`, `ALREADY_ENROLLED` |
-| Devices/face | `DEVICE_FINGERPRINT_TAKEN`, `CAMERA_CONSENT_REQUIRED`, `NO_FACE_DETECTED`, `FACE_SERVICE_UNAVAILABLE` (503), `FACE_RESET_CODE_REQUIRED` (403), `FACE_RESET_CODE_INVALID` (403), `FACE_NOT_ENROLLED` (400), `FACE_RESET_CODE_UNAVAILABLE` (503) |
+| Devices/face | `DEVICE_FINGERPRINT_TAKEN`, `CAMERA_CONSENT_REQUIRED`, `NO_FACE_DETECTED`, `FACE_NOT_ACCEPTED` (400), `FACE_SERVICE_UNAVAILABLE` (503), `FACE_RESET_CODE_REQUIRED` (403), `FACE_RESET_CODE_INVALID` (403), `FACE_NOT_ENROLLED` (400), `FACE_RESET_CODE_UNAVAILABLE` (503) |
 | Limits | `RATE_LIMITED` (429), `IMAGE_TOO_LARGE` (413), `TOO_MANY_FRAMES` (413), `REQUEST_TOO_LARGE` (413) |
 | Bad input | `INVALID_INPUT` (400): a NUL character, or a number too large for the database (e.g. a huge `offset`) |
 | Server | `SERVICE_UNAVAILABLE` (503 + `Retry-After`): database unreachable, so retry. Also `FACE_SERVICE_UNAVAILABLE` (503) on face enrolment |
@@ -135,6 +135,10 @@ and registration have per-IP limits.
   with `Retry-After`, and recovers on its own when the database is back.
 - **Unexpected errors**: `500 INTERNAL_ERROR`; the connection stays usable
   for your next request.
+- **Keep-alive**: an idle connection stays open for 130 s, so a client or
+  proxy that reuses connections (the usual default, e.g. `httpx`, `requests`,
+  Caddy) closes its side first and never sends on a connection the server has
+  just closed.
 
 ## Things that are true everywhere
 
