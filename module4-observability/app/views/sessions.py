@@ -88,9 +88,50 @@ def _saved_venue_picker(key: str) -> None:
             st.session_state[f"loc-lon-{key}"] = venue["lon"]
             st.session_state[f"loc-r-{key}"] = venue["radius"]
             st.session_state[f"loc-name-{key}"] = venue["name"]
+            st.session_state.pop(f"loc-geo-accuracy-{key}", None)
 
     st.selectbox("Saved venue", list(by_label), index=None, key=f"loc-saved-{key}", on_change=fill,
                  placeholder=f"Pick one of {len(by_label)} saved venue(s), or type coordinates below")
+
+
+def _current_location(key: str) -> None:
+    """'Use my current location': asks the browser where the instructor is and fills
+    the latitude/longitude boxes. Browsers only share it on localhost or HTTPS, and a
+    laptop's position (from Wi-Fi) can be tens of metres off, so the accuracy is shown
+    and the map lets the instructor check it before creating the session."""
+    pending, accuracy_key = f"loc-geo-pending-{key}", f"loc-geo-accuracy-{key}"
+    if not st.session_state.get(pending):
+        if st.button("📍 Use my current location", key=f"loc-geo-btn-{key}"):
+            st.session_state[pending] = st.session_state.get(f"loc-geo-round-{key}", 0) + 1
+            st.session_state[f"loc-geo-round-{key}"] = st.session_state[pending]
+            st.rerun()
+    else:
+        from streamlit_js_eval import get_geolocation
+
+        # The component asks the browser; it answers on a later rerun. It never answers
+        # if location is blocked, hence the hint and the Cancel button.
+        result = get_geolocation(component_key=f"geo-{key}-{st.session_state[pending]}")
+        coords = (result or {}).get("coords") if isinstance(result, dict) else None
+        if coords and coords.get("latitude") is not None:
+            st.session_state[f"loc-lat-{key}"] = round(float(coords["latitude"]), 6)
+            st.session_state[f"loc-lon-{key}"] = round(float(coords["longitude"]), 6)
+            st.session_state[f"loc-saved-{key}"] = None
+            st.session_state[accuracy_key] = coords.get("accuracy")
+            st.session_state[pending] = None
+            st.rerun()
+        st.info("Waiting for your browser's location… If your browser asks, click **Allow**. If you blocked "
+                "location before, allow it from the icon in the address bar and try again.", icon="📍")
+        if st.button("Cancel", key=f"loc-geo-cancel-{key}"):
+            st.session_state[pending] = None
+            st.rerun()
+    accuracy = st.session_state.get(accuracy_key)
+    if accuracy is not None:
+        message = f"Location from your browser, accurate to about **±{accuracy:.0f} m**."
+        if accuracy > 50:
+            st.warning(message + " That's not very precise (laptops locate by Wi-Fi). Check the pin on the map, "
+                       "or pick a saved venue.", icon="⚠️")
+        else:
+            st.caption("📍 " + message)
 
 
 def _location_section(course: dict) -> dict | None:
@@ -124,11 +165,16 @@ def _location_section(course: dict) -> dict | None:
     st.session_state.setdefault(f"loc-lon-{key}", saved[1] if saved else None)
     st.session_state.setdefault(f"loc-r-{key}", int(saved[2]) if saved else 100)
     st.session_state.setdefault(f"loc-name-{key}", "")
+    # Location first: it may reset the saved-venue picker, which must happen before
+    # that widget is drawn.
+    _current_location(key)
     _saved_venue_picker(key)
 
     def typed() -> None:
-        # Editing a box by hand means it's no longer the picked saved venue.
+        # Editing a box by hand means it's no longer the picked saved venue
+        # (or the browser's location).
         st.session_state[f"loc-saved-{key}"] = None
+        st.session_state.pop(f"loc-geo-accuracy-{key}", None)
 
     a, b, c, d = st.columns([1, 1, 0.8, 1.2])
     lat = a.number_input("Latitude", -90.0, 90.0, format="%.6f", placeholder="1.3483", key=f"loc-lat-{key}",
