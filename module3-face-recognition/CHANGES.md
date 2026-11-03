@@ -186,6 +186,81 @@ worker.
 
 ---
 
+## 2026-11-03 — Fixes from the 2026-11-02 full-stack audit
+
+**Branch `module3-face-recognition`** (on `main` `688998a`). The audit
+(`SAIV-audit-2026-11-02.md`, repo root, not committed) checked all modules
+against rubrics from the project PDFs. Three code changes here; every other
+Module 3 finding is answered in the table below.
+
+### For the backend (Module 2)
+
+| Change | What you need to do |
+|---|---|
+| **Borderline face match → `match_passed: null`** (score 0.55–0.70, just under the threshold) | Nothing: on face-required sessions you already send `null` to review instead of rejecting. Note: on sessions *without* a face requirement you ignore `null`, so a borderline score is no longer flagged there. Optional: flag `null` there too |
+| **422 no longer echoes the request** (no `input` field) | Nothing: you never send malformed requests (you made the same fix for passwords) |
+| **CORS removed** from the face service | Nothing: you call us server to server, which CORS doesn't affect |
+
+### Every Module 3 finding and what happened to it
+
+| Audit item | Finding | Done / why not | Status |
+|---|---|---|---|
+| **M3-05** Threshold ~0.70; uncertain matches flagged for review | Binary result: 0.6922 (1 bit past the cut) gave `false`, so a face-required check-in was rejected outright | **Fixed.** Score ≥ 0.70 → `true`; **0.55–0.70 → `null`** (backend: review); < 0.55 → `false`. 0.55 sits between every different-person score seen (≤ 0.44) and every same-person one (≥ ~0.78) | ✅ Fixed |
+| **M3-11** No raw images (response side); out-of-rubric "422 echoes the base64 image" | FastAPI's default 422 body has an `input` field with the submitted values - the whole face image | **Fixed.** Own 422 handler: same `{"detail": [...]}` with `type`/`loc`/`msg`, without `input` | ✅ Fixed |
+| **X-07** Network security (our part: "CORS * with credentials") | Starter code allowed every origin with credentials | **Fixed.** CORS middleware removed: only the backend and tests call us, server to server; no browser does (audit X-03: 0 browser requests to 8001). **Port 8001 without auth:** not changed - the public tests call it directly, without a key; binding it to `127.0.0.1:8001:8001` in compose would keep them working on the same machine (team decision, shared file). The rest of X-07 (default `SECRET_KEY`, published Postgres/Redis ports) is compose/backend | ✅ CORS fixed; port 8001 and the rest open |
+| **M3-09 / X-05b** Random challenge to prevent replay | A still photo with no challenge was approved on a liveness-required session; "M3 returns `liveness_passed` true even when steps fail" | **Backend fixed it** (`LIVENESS_CHALLENGE_ENFORCEMENT=flag`, `599dfa6`): only `challenge_passed: true` approves there. No change here: `liveness_passed` is the anti-spoof verdict and `challenge_passed` the steps, as agreed in API-FOR-FACE-RECOGNITION.md §3 | ✅ Fixed (backend) |
+| **M3-10** Detect printed photos and screens | Synthetic attacks: screens 3/3, recaptures 4/4 caught; **2/4 synthetic prints** rated real and enrolled | **Not changed, on purpose.** The "print" is a filter on a good photo (blur, faded colour, contrast, warm tint, noise) - the same as a genuine webcam photo in dim light. Rebuilt here: 3/4 caught (by the close-up check), but prints and genuine overlap on every cue (sharpness 48–78 vs genuine from 71; moiré 26–47 vs genuine up to 52; colour saturation 70–80 vs genuine from 49), so catching all 4 would reject real students. Real printed photos were caught 15/15 (2026-10-30 (2)); MiniFASNet relies on what a filter can't fake (paper edges, fingers, lighting). The audit notes real prints "would settle it" - so we recorded more (2026-11-03): **real physical attacks 64/65 caught** (52 `spoof` → rejected, 12 `suspect` → flagged): prints 25/25, phones far/angled/dim 15/15, phone screen filling the view 5/5, phone close-ups 19/20; a phone photo held up during a challenge burst caught on all 16 frames | ⚠️ Won't fix (synthetic only); real attacks ✅ |
+| **M3-08** Face mesh / 3D depth to tell flat photos | Depth "good" on flat images; z is inferred from 2D | **Can't be fixed for one image:** MediaPipe *predicts* z from what faces look like, so a flat photo of a face gets the same depth; measuring depth needs a depth camera. Flat images are caught by MiniFASNet instead. Possible later: real 3D from movement in head-turn bursts (a flat photo moves as one plane, a face doesn't) - not built, needs recorded flat-attack bursts to validate | ⚠️ Limitation (documented) |
+| **M3-13** Risk fuses face, liveness, location, device, timing | No timing input at M3 | **Not ours:** neither the spec nor the starter's `/risk/assess` has a timing field; the backend records timing (`unusual_time`) | ➖ Backend's |
+| **M3-14** Risk bands (JUDGED 2/5) | M3 PDF says 0.3/0.6/0.8; we use 0.3/0.5/0.7 | **Kept:** API-SPEC's bands, used by every module (backend, dashboard) - the PDF slide is older. Team decision if it should change | ➖ Spec conflict |
+| **M4-20** OTel collector receives traces (owner M2 + M3) | No service starts a tracer | **Not done yet:** packages are in requirements.txt, compose sets the endpoint; ~10 lines at start-up. Low value today (traces only reach the collector's log, no viewer) and the backend needs it too for connected traces | ⏳ Open (optional) |
+| **M3-12** Template not invertible (PASS, caveat) | SimHash planes seeded with a public constant (`RandomState(42)`): templates linkable across deployments, not revocable | **Not changed.** A secret seed would invalidate every stored hash (everyone re-enrols) and needs someone to keep the secret - team decision | ⏳ Open (optional) |
+| Out of rubric: multi-face image enrols (JUDGED 0/1) | The most confident face is enrolled | **Not changed yet.** Refusing needs a new `details.reason` and a backend message, otherwise students see "No face detected" | ⏳ Open (optional) |
+| Out of rubric: `/risk/assess` LOW for face_match 0 (JUDGED 0/1) | Only one signal bad → low weighted score | **Kept:** the spec's weighted formula (public risk tests rely on it); the backend rejects a wrong face separately | ➖ By spec |
+| **X-05c** Latency < 2 s at 100 concurrent | Check-in p95 4.7–4.9 s | **Not changed:** the Briefing's 2 s target is for 10 users - at 10 concurrent, check-in with a photo was p95 0.75 s (audit M2-26). 100 concurrent had 0 errors (X-05a) | ➖ Target misapplied |
+| **X-10** Deepfake detection (UNVERIFIED) | No deepfake samples tested | Nothing deepfake-specific; a deepfake video would also have to perform the random challenge live | ➖ Untested |
+
+### What changed (Module 3)
+
+All in `app/main.py`:
+- **Borderline band:** new `_UNCERTAIN_SCORE_FROM = 0.55` next to
+  `_MATCH_SCORE_THRESHOLD`; `verify_face` decides `true` / `null` / `false`
+  (docstring updated). Metrics: a borderline result counts as
+  `face_verify_total{result="uncertain"}` (was `not_compared`); the Grafana
+  panels query only the other values, so nothing breaks - Module 4 can add it.
+- **422 handler:** `validation_error_without_input` (`@app.exception_handler(RequestValidationError)`).
+- **CORS:** `CORSMiddleware` and its import removed; a comment explains why.
+  Browser preflight (`OPTIONS`) now gets 405; `/docs` still works (same
+  origin).
+- **Comment cleanup (no code change):** the starter's TODO blocks and the
+  long "Implemented: ..." explanations are gone or cut to a line or two
+  (1,833 → 1,185 lines); the reasoning and measurements stay here in
+  CHANGES.md. Checked by comparing the file's parsed code (Python AST,
+  ignoring comments and docstrings) before and after: identical.
+
+**Genuine faces flagged at night (2026-11-03, no change):** right after
+the camera starts (or straight after a dark scene), a webcam can produce a
+washed-out or very dark first photo; 6 of ~95 genuine images came out
+`suspect` this way (flagged / enrolment refused and retried - never
+`spoof`). Lowering the thresholds would free them but lose phone close-ups
+(P(real) 0.52–0.75, sharpness 101–117), so they stay. Suggested to Module 1
+instead: wait ~1 s after the camera opens before capturing.
+
+### Validation
+
+- `/face/verify`, same photo against its own hash with N bits flipped:
+  92 → `true` (0.7039, the audit's value), 93 → `null` (0.6922), 98 → `null`
+  (0.568), 99 → `false` (0.543). Course samples unaffected (same person 1.0,
+  obama vs biden ~0.13 → `false`).
+- 422 for a missing field and for broken JSON: no `input`, no image data.
+- Request with a foreign `Origin` header: normal 200, no
+  `Access-Control-*` headers.
+- Unit tests 42 passed, 2 skipped (2 new: band, 422); public face tests
+  **15/15** (service run locally). Not yet re-checked: a check-in through
+  the backend in Docker (rebuild `face-recognition` first).
+
+---
+
 ## 2026-10-30 (3) — Anti-spoofing at enrolment (`/face/enroll`)
 
 **Branch `module3-passive-liveness`** (with (2) and the ArcFace switch).
