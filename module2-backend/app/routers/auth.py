@@ -1,3 +1,4 @@
+import hashlib
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -11,10 +12,12 @@ from app.core.deps import get_db
 from app.core.errors import APIError, ErrorCode
 from app.core.metrics import login_failed_total
 from app.core.security import (
+    DUMMY_PASSWORD_HASH,
     create_access_token,
     create_refresh_token,
     decode_token,
     get_password_hash,
+    new_session_id,
     verify_password,
 )
 from app.db.models.user import User
@@ -98,15 +101,22 @@ def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)
                 ErrorCode.ACCOUNT_LOCKED, headers={"Retry-After": str(retry_after)},
             )
 
-    if user is None or not verify_password(payload.password, user.hashed_password):
+    # Unknown email: still run bcrypt (against a dummy hash) so timing is the same.
+    password_ok = verify_password(payload.password, user.hashed_password if user else DUMMY_PASSWORD_HASH)
+    if user is None or not password_ok:
         login_failed_total.inc()
         if ip:
             record_hit(login_key, 3600)
         if user is not None:
             account_lockout.record_failed_password(db, user, ip, ua)
+        # Known account: user_id identifies it. Unknown: a short hash, so attempts
+        # on one address can still be grouped without storing what was typed.
+        details = None if user else {
+            "email_sha256": hashlib.sha256(payload.email.strip().lower().encode()).hexdigest()[:16],
+        }
         log_event(
             db, "login_failed", user_id=user.id if user else None, ip_address=ip, user_agent=ua,
-            success=False, details={"email": payload.email},
+            success=False, details=details,
         )
         db.commit()
         raise APIError(status.HTTP_401_UNAUTHORIZED, "Incorrect email or password", ErrorCode.INVALID_CREDENTIALS)
@@ -129,9 +139,10 @@ def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)
     db.commit()
     db.refresh(user)
 
+    sid = new_session_id()
     return LoginResponse(
-        access_token=create_access_token(user.id, user.email, user.role),
-        refresh_token=create_refresh_token(user.id, user.email, user.role),
+        access_token=create_access_token(user.id, user.email, user.role, sid),
+        refresh_token=create_refresh_token(user.id, user.email, user.role, sid),
         user=UserResponse.model_validate(user),
     )
 
@@ -149,15 +160,17 @@ def refresh(payload: RefreshRequest, db: Session = Depends(get_db)):
         raise invalid
 
     user = db.get(User, token_payload.get("sub"))
-    if user is None or not user.is_active:
+    if user is None or not user.is_active or token_revocation.predates_password_change(token_payload, user):
         raise invalid
 
     if settings.REFRESH_TOKEN_ROTATION:
         token_revocation.revoke(token_payload)
 
+    # Same login session; a token from before `sid` existed starts a new one.
+    sid = token_payload.get("sid") or new_session_id()
     return RefreshResponse(
-        access_token=create_access_token(user.id, user.email, user.role),
-        refresh_token=create_refresh_token(user.id, user.email, user.role),
+        access_token=create_access_token(user.id, user.email, user.role, sid),
+        refresh_token=create_refresh_token(user.id, user.email, user.role, sid),
     )
 
 

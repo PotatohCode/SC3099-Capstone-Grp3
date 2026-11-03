@@ -7,8 +7,9 @@ from the written docs"): every non-422 error body gets a machine-readable
 
     { "detail": "Human-readable message", "code": "ERROR_CODE" }
 
-422 validation errors are untouched — FastAPI's default
-`{"detail": [...]}` field-error list stays as-is, no `code` added.
+422 validation errors keep FastAPI's default `{"detail": [...]}`
+field-error list, no `code` added; main.py only drops each error's echoed
+`input` and `url`.
 
 Usage: raise `APIError(status_code, detail, code)` from routers/deps
 instead of a plain `HTTPException`. A plain `HTTPException` still works
@@ -34,6 +35,8 @@ class ErrorCode:
     COURSE_CODE_TAKEN = "COURSE_CODE_TAKEN"
     INVALID_SCHEDULE = "INVALID_SCHEDULE"
     SESSION_NOT_DELETABLE = "SESSION_NOT_DELETABLE"
+    # PATCH /sessions/{id}: a status change the spec doesn't allow (e.g. closed -> active)
+    INVALID_STATUS_TRANSITION = "INVALID_STATUS_TRANSITION"
     DEVICE_FINGERPRINT_TAKEN = "DEVICE_FINGERPRINT_TAKEN"
     SESSION_WINDOW_CLOSED = "SESSION_WINDOW_CLOSED"
     ALREADY_APPEALED = "ALREADY_APPEALED"
@@ -73,6 +76,8 @@ class ErrorCode:
     ENROLLMENT_NOT_FOUND = "ENROLLMENT_NOT_FOUND"
     DEVICE_NOT_FOUND = "DEVICE_NOT_FOUND"
     CHECKIN_NOT_FOUND = "CHECKIN_NOT_FOUND"
+    # 405
+    METHOD_NOT_ALLOWED = "METHOD_NOT_ALLOWED"
     # 409
     LIVENESS_ATTEMPTS_EXHAUSTED = "LIVENESS_ATTEMPTS_EXHAUSTED"
     # 413
@@ -100,6 +105,7 @@ DEFAULT_CODE_BY_STATUS: dict[int, str] = {
     401: ErrorCode.INVALID_TOKEN,
     403: ErrorCode.INSUFFICIENT_PERMISSIONS,
     404: ErrorCode.NOT_FOUND,
+    405: ErrorCode.METHOD_NOT_ALLOWED,
     413: ErrorCode.REQUEST_TOO_LARGE,
     429: ErrorCode.RATE_LIMITED,
     500: ErrorCode.INTERNAL_ERROR,

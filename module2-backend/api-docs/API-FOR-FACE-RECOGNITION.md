@@ -5,7 +5,7 @@ Read [API-CONVENTIONS.md](API-CONVENTIONS.md) for general context, but note:
 call *us*; for Module 3, **Module 2 calls you.** This is the contract your
 service implements so our calls succeed. **Your tasks:** the Module 3 table
 in [CHANGES-2026-10-01.md](CHANGES-2026-10-01.md). **Why things changed:**
-[CHANGELOG.md](CHANGELOG.md). Last updated 2026-10-30.
+[CHANGELOG.md](CHANGELOG.md). Last updated 2026-11-03.
 
 ---
 
@@ -113,7 +113,12 @@ within 5 s is treated as failed.
 
 Two request shapes. **Keep supporting the first**: the course's public
 tests call you directly with a single image and `"challenge_type":
-"passive"`, and most check-ins still send one photo.
+"passive"`, and check-ins on sessions without a liveness requirement (and
+the website's fallback when challenges are down) still send one photo.
+Since 2026-11-03 (`LIVENESS_CHALLENGE_ENFORCEMENT=flag`), on
+liveness-required sessions a single photo only feeds the spoof check: a
+`liveness_passed: true` from shape (a) no longer approves on its own, only
+`challenge_passed: true` from shape (b) does. `false` (spoof) still rejects.
 
 **(a) Single image:**
 ```json

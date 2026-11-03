@@ -33,6 +33,21 @@ def _now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+# API-SPECIFICATION.md PATCH /sessions "Status Transitions": scheduled -> active,
+# active -> closed, any -> cancelled. Keeping the current status is a no-op.
+# PATCH /admin/sessions/{id}/status stays unrestricted (test setup).
+_ALLOWED_TRANSITIONS = {("scheduled", "active"), ("active", "closed")}
+
+
+def _check_transition(current: str, new: str) -> None:
+    if new == current or new == "cancelled" or (current, new) in _ALLOWED_TRANSITIONS:
+        return
+    raise APIError(
+        status.HTTP_400_BAD_REQUEST, f"A {current} session can't be changed to {new}",
+        ErrorCode.INVALID_STATUS_TRANSITION,
+    )
+
+
 def _to_response(
     db: Session,
     session_obj: ClassSession,
@@ -301,6 +316,8 @@ def update_session(
             updates[field] = _as_naive_utc(updates[field])
 
     new_status = updates.get("status")
+    if new_status is not None:
+        _check_transition(session_obj.status, new_status)
     for field, value in updates.items():
         setattr(session_obj, field, value)
     # Stamp actual_start/actual_end on the transitions they correspond to

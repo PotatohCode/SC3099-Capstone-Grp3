@@ -38,10 +38,16 @@ Authorization: Bearer <access_token>
   automatic renewal. Always store the new refresh token returned.
 - **Logout**: `POST /api/v1/auth/logout` with the refresh token in the body
   and/or the access token in the header. Revoked tokens get `401`
-  everywhere from then on. It always returns `204`.
+  everywhere from then on. It always returns `204`. It signs out only that
+  device.
+- **Password change** (`POST /users/me/password`) signs out every **other**
+  device of that user: their access and refresh tokens get `401`. The device
+  that changed it stays signed in, and so does any login made in the same
+  second or later.
 - Token claims: `sub` (user id), `email`, `role`, `type` (`access` or
-  `refresh`), `iat`, `exp`, `jti` (unique id, used for revocation). Don't
-  rely on claims beyond what `/users/me` returns.
+  `refresh`), `iat`, `exp`, `jti` (unique id, used for revocation), `sid`
+  (one per login, kept by `/auth/refresh`). Don't rely on claims beyond what
+  `/users/me` returns.
 - **401** = missing, invalid, expired or revoked token, **or a token that
   belongs to a disabled/deleted account** (refreshing it also gets `401`).
   **403** = valid token but wrong role or ownership, or a business rule
@@ -68,11 +74,15 @@ Every error response **except 422** looks like:
 ```
 
 **422** (validation failures, e.g. missing field, password under 8
-characters, malformed email) keeps FastAPI's default shape:
+characters, malformed email) keeps FastAPI's default shape, minus the
+submitted value (`input`) and the docs link (`url`), so a password is never
+echoed back:
 
 ```json
-{ "detail": [ { "type": "...", "loc": [...], "msg": "...", ... } ] }
+{ "detail": [ { "type": "...", "loc": [...], "msg": "...", "ctx": {...} } ] }
 ```
+
+`ctx` appears only for some errors (e.g. `min_length`).
 
 Build error handling on **`code`**, not the `detail` text. Codes you'll see:
 
@@ -82,10 +92,10 @@ Build error handling on **`code`**, not the `detail` text. Codes you'll see:
 | Permissions | `INSUFFICIENT_PERMISSIONS`, `NOT_ENROLLED` |
 | Not found | `*_NOT_FOUND` (course, session, user, student, device, enrollment, checkin) |
 | Check-ins | `ALREADY_CHECKED_IN`, `SESSION_NOT_ACTIVE`, `SESSION_WINDOW_CLOSED` (`detail` says "opens at …" or "closed at …" in SGT), `OUTSIDE_SINGAPORE`, `CONSENT_REQUIRED` (only if enabled), `ALREADY_APPEALED`, `APPEAL_NOT_ALLOWED`, `APPEAL_WINDOW_EXPIRED`, `REVIEW_NOT_ALLOWED`, `CHALLENGE_INVALID` (400), `LIVENESS_ATTEMPTS_EXHAUSTED` (409), `CHALLENGE_UNAVAILABLE` (503), `MANUAL_CHECKIN_WINDOW_CLOSED` (400), `MANUAL_UNDO_NOT_ALLOWED` (400) |
-| Sessions/courses | `INVALID_SCHEDULE`, `COURSE_CODE_TAKEN`, `SESSION_NOT_DELETABLE`, `ALREADY_ENROLLED` |
+| Sessions/courses | `INVALID_SCHEDULE`, `INVALID_STATUS_TRANSITION` (400), `COURSE_CODE_TAKEN`, `SESSION_NOT_DELETABLE`, `ALREADY_ENROLLED` |
 | Devices/face | `DEVICE_FINGERPRINT_TAKEN`, `CAMERA_CONSENT_REQUIRED`, `NO_FACE_DETECTED`, `FACE_NOT_ACCEPTED` (400), `FACE_SERVICE_UNAVAILABLE` (503), `FACE_RESET_CODE_REQUIRED` (403), `FACE_RESET_CODE_INVALID` (403), `FACE_NOT_ENROLLED` (400), `FACE_RESET_CODE_UNAVAILABLE` (503) |
 | Limits | `RATE_LIMITED` (429), `IMAGE_TOO_LARGE` (413), `TOO_MANY_FRAMES` (413), `REQUEST_TOO_LARGE` (413) |
-| Bad input | `INVALID_INPUT` (400): a NUL character, or a number too large for the database (e.g. a huge `offset`) |
+| Bad input | `INVALID_INPUT` (400): a NUL character, or a number too large for the database (e.g. a huge `offset`). `METHOD_NOT_ALLOWED` (405): wrong HTTP method for the path |
 | Server | `SERVICE_UNAVAILABLE` (503 + `Retry-After`): database unreachable, so retry. Also `FACE_SERVICE_UNAVAILABLE` (503) on face enrolment |
 | Server | `INTERNAL_ERROR` (500; details are logged server-side, never returned) |
 
@@ -125,7 +135,8 @@ and registration have per-IP limits.
 
 - **`X-Request-ID`**: every response, including errors, has one. Send your
   own (letters, digits, `. _ -`, up to 64 chars) to trace a request, or quote
-  the returned one when reporting a bug.
+  the returned one when reporting a bug. Every server-side error log line
+  carries it, so it finds the matching log entry.
 - **Upload limits**: images over 10,000,000 base64 characters →
   `413 IMAGE_TOO_LARGE`. Any body over 15 MB → `413 REQUEST_TOO_LARGE`.
 - **Health**: `GET /health` → `200 {"status":"healthy","database":"ok","redis":"ok", ...}`;

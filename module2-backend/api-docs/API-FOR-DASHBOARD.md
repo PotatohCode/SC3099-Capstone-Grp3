@@ -3,7 +3,7 @@
 Read [API-CONVENTIONS.md](API-CONVENTIONS.md) first (auth, error format,
 pagination). **Your tasks:** the Module 4 table in
 [CHANGES-2026-10-01.md](CHANGES-2026-10-01.md). **Why things changed:**
-[CHANGELOG.md](CHANGELOG.md). Last updated 2026-10-30.
+[CHANGELOG.md](CHANGELOG.md). Last updated 2026-11-03.
 
 This covers the `/stats/*` analytics, `/export/*` data export, `/audit/*`
 compliance log, and `/metrics` for Prometheus/Grafana. Everything here needs
@@ -21,7 +21,21 @@ including the venue rule: leave a session's coordinates out and it uses the
 course's venue. **Activating a session doesn't open its check-in window**:
 students can check in only once `checkin_opens_at` has passed. To open
 check-in early, send `{"status": "active", "checkin_opens_at": "<now, UTC>"}`
-in one `PATCH /sessions/{id}` (same §4).
+in one `PATCH /sessions/{id}`; to reopen an ended window, send a later
+`checkin_closes_at` (it may go past `scheduled_end`). Both in the same §4.
+Status moves only `scheduled` → `active` → `closed`, or to `cancelled`; a
+`closed` or `cancelled` session can't be reactivated
+(`400 INVALID_STATUS_TRANSITION`). Your current buttons only use the
+allowed moves.
+
+**In the review queue:** a check-in from a device the student hasn't
+registered is `flagged` with `device_unbound` ("Device not bound to this
+student"; device binding is on since 2026-11-02), and `impossible_travel`
+is now always flagged too. Since 2026-11-03, a single-photo check-in on a
+liveness-required session (no passed challenge) is flagged with
+`liveness_unverified`. A check-in's `risk_level` describes its score,
+so a `LOW` check-in can still be `flagged` (or `rejected`) by such a signal:
+label bands as the score, and use `status` for the outcome.
 
 ---
 
@@ -233,7 +247,9 @@ Useful `details` fields:
 | `security_violation` | **`violation_type`**: `account_lockout`, `outside_singapore`, `geo_out_of_bounds`, `liveness_failed`, `face_match_failed` (a wrong face on any session: rejected if the session requires a face match, flagged otherwise), `replay_suspected`, `impossible_travel`, `gps_spoof_suspected`, `rapid_succession`, `challenge_reuse` (a liveness challenge used twice or by another student; `details.reason` = `reused` / `other_student`), `liveness_spoof` (a liveness attempt judged a spoof), `challenge_frames_mismatch` (a check-in named a verified challenge but sent different frames), `face_reset_code_guessing` (5 wrong face reset codes; the code was burned) |
 | `checkin_rejected_geo` | `reason` (`ip`/`gps`/`gps_and_ip`), `gps_in_singapore`, `ip_country` (no coordinates) |
 | `account_locked` | `failed_attempts`, `lockout_minutes` (wrong passwords at login and on the change-password page count together) |
-| `login_failed` | `email` (wrong email or password), or `reason`: `account_locked` / `account_disabled` (right password, deactivated account) |
+| `login_failed` | Wrong password on an existing account: no `details` (`user_id` / `user_email` say who). Unknown email: `email_sha256` (first 16 hex of the SHA-256 of the lower-cased email, so repeated tries on one address group together; the email itself isn't stored). Or `reason`: `account_locked` / `account_disabled` (right password, deactivated account). Rows before 2026-11-02 may have `email` |
+| `checkin_attempted` | `session_id`, `device_fingerprint_hash` (SHA-256, the same value as the check-in's `device_fingerprint_hash`, so they can be matched). Rows before 2026-11-02 may have the raw `device_fingerprint` |
+| `password_changed` | `other_sessions_revoked: true` (every other device was signed out) |
 | `password_change_failed` | `reason`: `password_incorrect` / `account_locked` (never the password) |
 | `liveness_challenge_verified` | `outcome` (`passed`/`failed`/`spoof`/`unverified`), `attempt` (1–3), `sequence`, `steps_passed`, `liveness_score`. `resource_id` = the session |
 | `retention_sweep_run` | `users_anonymized`, `checkins_anonymized`, `trigger: "scheduled"` (hourly, no user) |

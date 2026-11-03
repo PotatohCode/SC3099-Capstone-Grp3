@@ -14,6 +14,33 @@ below.
 
 ---
 
+## 2026-11-02 — `backend/audit-fixes`: fixes from the 2026-11-02 audit
+
+**Rebuild needed:** `docker compose up -d --build backend` (one migration,
+`a4c7e2b9d153`, runs on start: two columns on `users`).
+
+Each finding was reproduced against the running stack before fixing it.
+Nothing here needs work from another module.
+
+| Area | Before | Now | Why |
+|---|---|---|---|
+| Session status (`PATCH /sessions/{id}`) | Any status could be set, so a `closed` or `cancelled` session could be made `active` again | `scheduled` → `active` → `closed`, or any → `cancelled`; anything else → `400 INVALID_STATUS_TRANSITION`. `PATCH /admin/sessions/{id}/status` is unchanged | A finished session shouldn't reopen. The dashboard's buttons only use the allowed moves |
+| Impossible travel | Logged as a security violation, but the check-in could still be approved if its score was low | Always `flagged` at least | A check-in we record as a security violation shouldn't be auto-approved |
+| Still photo on a liveness-required session (added 2026-11-03) | A single photo that passed the face service's photo check could be approved without the head-turn/blink challenge | `LIVENESS_CHALLENGE_ENFORCEMENT=flag`: on sessions with `require_liveness_check` (the default), only a passed challenge counts as live. A single photo → `flagged` (`liveness_unverified`). Sessions without the requirement are unchanged | A printed or replayed picture could check a student in. The website runs the challenge on every such session, so genuine students are still approved. The course's public tests accept `flagged` for every check-in |
+| Unregistered device | `device_unbound` existed but was off; a check-in from any device could be approved | On by default (`DEVICE_BINDING_ENFORCEMENT=flag`): a device not registered to this student → `flagged`, on courses with `require_device_binding` (the default) | The briefing says unknown devices must be flagged. The website registers its device at login, so real students aren't affected |
+| Password change | Other devices stayed signed in until their tokens expired (refresh: 7 days) | Every **other** device is signed out (`401` on its access and refresh tokens); the device that changed it stays signed in. Logout is unchanged (that device only). Tokens carry a new `sid` claim, one per login | Changing your password now locks out someone who learnt it |
+| 422 responses | Echoed the submitted value (`input`), so a rejected password could come back in the response | `input` and `url` removed; `type`, `loc`, `msg` (and `ctx`) stay | Passwords shouldn't appear in responses or proxy logs |
+| Error logs | Some handled-error log lines had no request ID | Every one carries `request_id` (the `X-Request-ID` header) | To trace a failed request end to end |
+| Login timing | An unknown email answered in ~8 ms, a known one in ~100 ms | Same password check for both, so the same time | The difference revealed which emails have accounts |
+| 405 | Generic code `ERROR` | `METHOD_NOT_ALLOWED` | Consistent with every other error |
+| Audit details | `login_failed` stored the typed email; `checkin_attempted` stored the raw device ID | `login_failed`: nothing for a known account (the row's user says who), `email_sha256` (short hash) for an unknown one. `checkin_attempted`: `device_fingerprint_hash`, the same hash as the check-in's. Older rows keep their old fields | Data minimisation. Rows can still be grouped and matched |
+
+Kept as is on purpose (details in the [dashboard](API-FOR-DASHBOARD.md) and
+[frontend](API-FOR-FRONTEND.md) docs): refresh tokens can be reused, and the risk bands stay
+0.3 / 0.5 / 0.7. A check-in's `status` can be stricter than its
+`risk_level` band, because review-only and critical signals decide on
+their own.
+
 ## 2026-10-30 — `backend/window-and-reset-check`: "opens at" message, reset-code check, session PATCH fix
 
 **Rebuild needed:** `docker compose up -d --build backend` (no migration).
@@ -268,6 +295,21 @@ Tasks from the [checklist](CHANGES-2026-10-01.md) that the other modules
 have finished, newest first. Moved here so the checklist only shows what's
 left.
 
+### Module 4 — Dashboard: PR #18 (`d67b593`, `93d5926`, merged 2026-10-31)
+
+| Was | Task | Done how |
+|---|---|---|
+| **Should** | "Activate check-in" before the window opens | The session page, sessions table and Today cards show the window ("Open now · closes 18:30", "Opens 17:15", "Window ended"). On a scheduled session whose window hasn't opened, **Activate and open check-in now** sends `{"status": "active", "checkin_opens_at": <now>}`; "Activate, open at 17:15" only changes the status. Active sessions get **Open check-in now**, and after the window has ended **Keep check-in open 30 more min** (`checkin_closes_at` = now + 30 min). New sessions default to starting in about 5 minutes |
+| — | Also | Create form: **Saved venue** picker built from venues on courses and sessions, **Use my current location** (browser location, warns above 50 m accuracy), click the map to move the pin; one map (folium) everywhere; start times shown for sessions created in the portal. New dependencies in `module4-observability/requirements.txt` and the root `requirements-test.txt`: `streamlit-js-eval`, `folium`, `streamlit-folium` |
+
+### Module 1 — Frontend: PR #17 (`a4cf70b`, merged 2026-10-30)
+
+| Was | Task | Done how |
+|---|---|---|
+| **Should** | Face reset code on the settings page | Replacing an enrolled face asks for the instructor's code after the password step and checks it with `POST /users/me/face/reset-code/check` before the camera opens. A wrong code keeps the student on the code field; 429, 503 and network errors have their own messages. A valid code starts a 5-minute window on the device for the photo, then the same code goes with `POST /users/me/face/enroll`; an expired code or `FACE_RESET_CODE_REQUIRED` goes back to the code step. First enrolment is unchanged |
+| **Should** | Message for a refused enrolment photo | `400 FACE_NOT_ACCEPTED` shows the backend's `detail` (the fallback for codes without their own message) and offers a retake; the reset code and timer are kept |
+| — | Also | Sessions with `require_liveness_check: false` use one photo with no challenge; liveness-required sessions keep the challenge. Leaving a check-in part-way and coming back starts again at the session list (no resume); the 3-try limit per session is kept |
+
 ### Module 3 — Face recognition: PRs #13 + #14 (`3734492`, `9327132`, merged 2026-10-30)
 
 | Was | Task | Done how |
@@ -359,8 +401,8 @@ The defaults are what's running. Invalid values stop the backend at startup.
 | Setting | Default | Meaning |
 |---|---|---|
 | `CONSENT_ENFORCEMENT` | `flag` (was `off` until 2026-10-23) | `off` / `flag` / `reject`. Keep it off `reject` (graded fixtures check in without consent) |
-| `DEVICE_BINDING_ENFORCEMENT` | `off` | `off` / `flag` |
-| `LIVENESS_CHALLENGE_ENFORCEMENT` | `off` | `off` / `flag` |
+| `DEVICE_BINDING_ENFORCEMENT` | `flag` (since 2026-11-02) | `off` / `flag`. A device not registered to the student → review |
+| `LIVENESS_CHALLENGE_ENFORCEMENT` | `flag` (since 2026-11-03) | `off` / `flag`. On liveness-required sessions, only a passed challenge counts as live; a single photo → review |
 | `FACE_MISMATCH_ENFORCEMENT` | `flag` (since 2026-10-26) | `off` / `flag`. A wrong face on a session that doesn't require a face match: `flag` = review, `off` = only affects the score. Face-required sessions always reject |
 | `FACE_REENROLL_REQUIRES_CODE` | `true` (since 2026-10-27) | Replacing an enrolled face needs an instructor's one-time reset code. Stays on after the face-model change of 2026-10-30; old faces are cleared instead (checklist) |
 | `LIVENESS_CHALLENGE_ACTIONS` | `["blink","turn_left","turn_right"]` | Actions a challenge is drawn from; Module 3 must detect every one |

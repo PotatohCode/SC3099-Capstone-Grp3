@@ -28,6 +28,12 @@ def get_password_hash(password: str) -> str:
     return pwd_context.hash(password)
 
 
+# Login checks an unknown email's password against this, so it costs the same
+# bcrypt time as a real account and response timing doesn't reveal which
+# emails are registered.
+DUMMY_PASSWORD_HASH = get_password_hash(uuid.uuid4().hex)
+
+
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """False for a wrong password. passlib raises PasswordSizeError for
     anything over 4096 characters; no stored password can be that long, so
@@ -38,8 +44,14 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
         return False
 
 
+def new_session_id() -> str:
+    """One per login; every token from that login (incl. refreshes) carries it."""
+    return uuid.uuid4().hex
+
+
 def _create_token(
-    subject: str, email: str, role: str, token_type: Literal["access", "refresh"], expires_delta: timedelta
+    subject: str, email: str, role: str, sid: str, token_type: Literal["access", "refresh"],
+    expires_delta: timedelta,
 ) -> str:
     now = datetime.now(timezone.utc)
     payload = {
@@ -52,19 +64,22 @@ def _create_token(
         # Unique id so a specific token can be revoked (logout); see
         # services/token_revocation.py.
         "jti": uuid.uuid4().hex,
+        # Login session, so a password change can keep the caller's session
+        # and end the others (token_revocation.predates_password_change).
+        "sid": sid,
     }
     return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
 
 
-def create_access_token(user_id: str, email: str, role: str) -> str:
+def create_access_token(user_id: str, email: str, role: str, sid: str) -> str:
     return _create_token(
-        user_id, email, role, "access", timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+        user_id, email, role, sid, "access", timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     )
 
 
-def create_refresh_token(user_id: str, email: str, role: str) -> str:
+def create_refresh_token(user_id: str, email: str, role: str, sid: str) -> str:
     return _create_token(
-        user_id, email, role, "refresh", timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+        user_id, email, role, sid, "refresh", timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
     )
 
 

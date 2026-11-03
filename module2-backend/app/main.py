@@ -17,6 +17,8 @@ import uuid
 
 import anyio.to_thread
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy import text
@@ -58,8 +60,12 @@ class BodySizeLimitMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+def _request_id(request: Request):
+    return getattr(request.state, "request_id", None)
+
+
 def _internal_error(request: Request) -> JSONResponse:
-    request_id = getattr(request.state, "request_id", None)
+    request_id = _request_id(request)
     return JSONResponse(
         status_code=500, content={"detail": "Internal server error", "code": ErrorCode.INTERNAL_ERROR},
         headers={"X-Request-ID": request_id} if request_id else None,
@@ -81,8 +87,7 @@ class UnhandledErrorMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
         except Exception:
             logger.exception(
-                "Unhandled exception on %s %s [request_id=%s]",
-                request.method, request.url.path, getattr(request.state, "request_id", None),
+                "Unhandled exception on %s %s [request_id=%s]", request.method, request.url.path, _request_id(request),
             )
             return _internal_error(request)
 
@@ -158,6 +163,15 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException) 
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail, "code": code}, headers=exc.headers)
 
 
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """FastAPI's default 422 (field list with loc/msg/type, no `code`), minus
+    each error's `input` and `url`: `input` echoes the submitted value, and
+    for a missing field the whole body - passwords included."""
+    errors = [{k: v for k, v in err.items() if k not in ("input", "url")} for err in exc.errors()]
+    return JSONResponse(status_code=422, content={"detail": jsonable_encoder(errors)})
+
+
 def _invalid_input(detail: str) -> JSONResponse:
     return JSONResponse(status_code=400, content={"detail": detail, "code": ErrorCode.INVALID_INPUT})
 
@@ -170,7 +184,9 @@ async def value_error_handler(request: Request, exc: ValueError) -> JSONResponse
     Any other ValueError is unexpected: logged, generic 500."""
     if "NUL (0x00)" in str(exc):
         return _invalid_input("Input contains a NUL character")
-    logger.exception("Unhandled ValueError on %s %s", request.method, request.url.path)
+    logger.exception(
+        "Unhandled ValueError on %s %s [request_id=%s]", request.method, request.url.path, _request_id(request),
+    )
     return _internal_error(request)
 
 
@@ -179,7 +195,10 @@ async def data_error_handler(request: Request, exc: DataError) -> JSONResponse:
     """The database rejected a value: a number out of range (e.g.
     offset=10^20 overflows bigint), a malformed value, and so on. That's
     the client's input, not a server fault: 400, without the SQL details."""
-    logger.warning("Database rejected input on %s %s: %s", request.method, request.url.path, exc.orig)
+    logger.warning(
+        "Database rejected input on %s %s [request_id=%s]: %s",
+        request.method, request.url.path, _request_id(request), exc.orig,
+    )
     return _invalid_input("A value is out of range or not valid")
 
 
@@ -205,7 +224,9 @@ async def integrity_error_handler(request: Request, exc: IntegrityError) -> JSON
     if constraint in _UNIQUE_VIOLATIONS:
         detail, code = _UNIQUE_VIOLATIONS[constraint]
         return JSONResponse(status_code=400, content={"detail": detail, "code": code})
-    logger.exception("Unhandled IntegrityError on %s %s", request.method, request.url.path)
+    logger.exception(
+        "Unhandled IntegrityError on %s %s [request_id=%s]", request.method, request.url.path, _request_id(request),
+    )
     return _internal_error(request)
 
 
@@ -214,7 +235,10 @@ async def operational_error_handler(request: Request, exc: OperationalError) -> 
     """Database unreachable (or a transient failure like a deadlock). Not a
     bug in the request or the server: 503 so clients know to retry, rather
     than a 500. The pool's pre-ping reconnects once Postgres is back."""
-    logger.error("Database unavailable on %s %s: %s", request.method, request.url.path, exc.orig)
+    logger.error(
+        "Database unavailable on %s %s [request_id=%s]: %s",
+        request.method, request.url.path, _request_id(request), exc.orig,
+    )
     return JSONResponse(
         status_code=503,
         content={"detail": "Service temporarily unavailable, please retry", "code": ErrorCode.SERVICE_UNAVAILABLE},
@@ -228,8 +252,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
     section) - log the real error server-side, return the generic message.
     Backstop only: UnhandledErrorMiddleware normally answers first."""
     logger.exception(
-        "Unhandled exception on %s %s [request_id=%s]",
-        request.method, request.url.path, getattr(request.state, "request_id", None),
+        "Unhandled exception on %s %s [request_id=%s]", request.method, request.url.path, _request_id(request),
     )
     return _internal_error(request)
 

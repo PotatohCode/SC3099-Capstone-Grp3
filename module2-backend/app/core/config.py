@@ -114,12 +114,13 @@ class Settings(BaseSettings):
     CONSENT_ENFORCEMENT: Literal["off", "flag", "reject"] = "flag"
     # DEVICE_BINDING_ENFORCEMENT - Briefing: "check-ins from unknown devices
     # flagged". Applies when the course has require_device_binding (default
-    # true). Needs the frontend's per-install random fingerprint first;
-    # today students on the same phone model share one fingerprint.
-    #   off  - not checked (current behaviour; unknown devices only add risk)
+    # true). The website registers its per-install random ID at login (and
+    # re-registers a new one if the ID is taken), so real students aren't
+    # flagged; a check-in from any other fingerprint goes to review.
+    #   off  - not checked (unknown devices only add risk)
     #   flag - device not registered to this student -> device_unbound,
     #          at most "flagged"
-    DEVICE_BINDING_ENFORCEMENT: Literal["off", "flag"] = "off"
+    DEVICE_BINDING_ENFORCEMENT: Literal["off", "flag"] = "flag"
     # FACE_MISMATCH_ENFORCEMENT - a wrong face (Module 3 match_passed=false)
     # on a session that does NOT require a face match. On face-required
     # sessions a mismatch always rejects, whatever this is set to.
@@ -183,10 +184,12 @@ class Settings(BaseSettings):
     #          (single-image passive liveness can still approve it)
     #   flag - without a passed challenge, liveness counts as unverified,
     #          so the check-in is at most "flagged"
-    # Off by default: needs Module 1 (prompts + burst capture) and Module 3
-    # (challenge_passed) first; with it on today, every check-in from the
-    # website would go to review.
-    LIVENESS_CHALLENGE_ENFORCEMENT: Literal["off", "flag"] = "off"
+    # "flag" since 2026-11-03: the website runs the challenge on every
+    # liveness-required session, so a still photo on its own (a printed or
+    # replayed picture) can no longer be approved. A script can't perform a
+    # challenge, so its photo check-ins on such sessions are flagged; the
+    # course's public tests accept "flagged" for every check-in.
+    LIVENESS_CHALLENGE_ENFORCEMENT: Literal["off", "flag"] = "flag"
 
     # --- Face re-enrolment codes (POST /users/{id}/face/reset-code) ----------
     # Once a face is enrolled, replacing it needs a one-time code from an
