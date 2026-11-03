@@ -547,7 +547,8 @@ def create_checkin(
     log_event(
         db, "checkin_attempted", user_id=current_user.id, resource_type="session", resource_id=session_obj.id,
         ip_address=get_client_ip(request), user_agent=request.headers.get("user-agent"),
-        details={"session_id": session_obj.id, "device_fingerprint": payload.device_fingerprint},
+        # Same hash as checkins.device_fingerprint_hash, so the two can be matched.
+        details={"session_id": session_obj.id, "device_fingerprint_hash": device_fingerprint_hash},
     )
 
     checkin = CheckIn(

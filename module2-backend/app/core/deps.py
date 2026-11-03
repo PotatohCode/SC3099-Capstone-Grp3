@@ -7,7 +7,7 @@ via require_role(). Never rely on the frontend to have hidden a button.
 """
 from typing import AsyncGenerator, Optional
 
-from fastapi import Depends, status
+from fastapi import Depends, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError
 from sqlalchemy.orm import Session
@@ -44,6 +44,7 @@ async def get_db() -> AsyncGenerator[Session, None]:
 
 
 def get_current_user(
+    request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
     db: Session = Depends(get_db),
 ) -> User:
@@ -69,8 +70,11 @@ def get_current_user(
         raise unauthorized
 
     user = db.get(User, user_id)
-    if user is None or not user.is_active:
+    if user is None or not user.is_active or token_revocation.predates_password_change(payload, user):
         raise unauthorized
+    # The caller's claims, for endpoints that act on its own session
+    # (POST /users/me/password keeps it alive).
+    request.state.token_claims = payload
 
     # API-wide rate limit (1000/hour per user, Task 2.6) - enforced here
     # since nearly every protected route already depends on get_current_user,
@@ -100,7 +104,7 @@ def get_optional_user(
     if payload.get("type") != "access" or token_revocation.is_revoked(payload):
         return None
     user = db.get(User, payload.get("sub"))
-    if user is None or not user.is_active:
+    if user is None or not user.is_active or token_revocation.predates_password_change(payload, user):
         return None
     return user
 

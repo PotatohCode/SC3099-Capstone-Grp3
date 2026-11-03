@@ -224,6 +224,8 @@ def assess(
                 "impossible_travel", "high", weight=_IMPOSSIBLE_TRAVEL_WEIGHT,
                 details={"implied_speed_kmh": round(implied_kmh, 1)},
             ))
+            # A security violation (audited as one) must not be auto-approved.
+            needs_review = True
 
     if liveness_passed is False:
         signals.append(RiskSignal("liveness_failed", "critical", weight=_LIVENESS_FAILED_WEIGHT))

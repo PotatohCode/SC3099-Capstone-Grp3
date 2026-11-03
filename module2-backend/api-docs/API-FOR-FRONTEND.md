@@ -7,7 +7,7 @@ pagination, rate limits). **Your tasks:** the Module 1 table in
 
 This covers every endpoint your UI is likely to call, across all four roles
 (student/instructor/ta/admin), since one frontend serves all of them. Each
-entry notes who can call it. Last updated 2026-10-30.
+entry notes who can call it. Last updated 2026-11-03.
 
 ---
 
@@ -43,7 +43,8 @@ A `429` from login in practice always means `ACCOUNT_LOCKED`.
 ```
 **200** → `{ "access_token", "refresh_token", "token_type": "bearer" }` (no
 `user`). **Store the new refresh token.** **401 INVALID_REFRESH_TOKEN** if
-expired, revoked, or an access token was sent.
+expired, revoked, an access token was sent, or the password was changed on
+another device since this login.
 
 ### `POST /api/v1/auth/logout` — anyone
 ```json
@@ -51,7 +52,7 @@ expired, revoked, or an access token was sent.
 ```
 Revokes the tokens you send; they get `401` everywhere from then on. Always
 **204**, even if they're already invalid. Call it before clearing local
-tokens on sign-out.
+tokens on sign-out. Other devices stay signed in.
 
 ---
 
@@ -147,9 +148,11 @@ password from swapping in their own face.
 ```json
 { "current_password": "<current password>", "new_password": "<new password>" }
 ```
-→ **204** (no body). The new password works at the next login. Tokens
-already issued stay valid until they expire, so there's no need to log the
-user out.
+→ **204** (no body). The new password works at the next login. **This
+device stays signed in** (keep using its tokens, nothing to do), but every
+**other** device of this user is signed out: its access and refresh tokens
+get `401`, so your usual 401 → refresh → login flow sends it to the login
+page. That's how a student locks out someone who learnt their password.
 
 | Response | Meaning |
 |---|---|
@@ -291,6 +294,11 @@ assigned TAs aren't included.
 Partial update: any field from create except `course_id`, plus
 `status`. **200** → `SessionResponse`. `status: "active"` stamps `actual_start`;
 `"closed"` stamps `actual_end`. Use these for "start/end session" controls.
+Allowed status changes: `scheduled` → `active`, `active` → `closed`, and
+any → `cancelled`; re-sending the current status is allowed. Anything else,
+e.g. reopening a `closed` or `cancelled` session, → `400
+INVALID_STATUS_TRANSITION`. (The admin-only `PATCH /admin/sessions/{id}/status`
+isn't restricted.)
 Activating **doesn't move the check-in window**: students can check in only
 when the session is `active` **and** `checkin_opens_at <= now <= checkin_closes_at`.
 To open check-in early, send both in one call:
@@ -359,6 +367,11 @@ a random, unrecoverable password (there's no password-reset flow). **200** →
 fingerprint (updated in place). **400 DEVICE_FINGERPRINT_TAKEN** if another
 user owns it.
 
+**Register before checking in.** Device binding is on: a check-in whose
+`device_fingerprint` isn't registered to this student goes to review
+(`device_unbound`), on courses with `require_device_binding` (the default).
+Registering at login, as the website does, covers it.
+
 **Use a random per-install fingerprint** (e.g. `crypto.randomUUID()` in
 `localStorage`). A fingerprint built from browser traits is shared by
 everyone with the same phone model. They then can't register devices, and
@@ -414,7 +427,7 @@ Get a random liveness challenge for the next check-in.
 - `409 LIVENESS_ATTEMPTS_EXHAUSTED`: no attempts left. Don't retry; submit
   the check-in without a challenge. It goes to review.
 - `503 CHALLENGE_UNAVAILABLE`: challenges are down. Check in with a single
-  photo instead.
+  photo instead; it goes to review, since approval needs a passed challenge.
 
 **Capture:** show each step in order and record ~5 frames per second, about
 8 per step (≈16 frames for 2 steps), as small JPEGs (≈640 px wide), base64
@@ -488,7 +501,10 @@ without verifying it first (checked at check-in, no retry).
 - **A single photo is checked for spoofing too:** a printed photo or a screen
   held up to the camera is `rejected` (`liveness_failed`); a doubtful one
   (e.g. a screen very close to the camera) is `flagged` on liveness-required
-  sessions. A genuine face in normal or dim light passes.
+  sessions. A genuine face in normal or dim light passes. On a
+  liveness-required session that pass isn't enough for approval: without a
+  passed challenge the check-in is `flagged` (`liveness_unverified`). On a
+  session with `require_liveness_check: false`, one photo can be approved.
 - `challenge_type` (lowercase letters and `_`) is only a label stored with
   the check-in when you send frames **without** a challenge.
 - **Send a fresh photo or burst every time.** If **any** image (the photo or
@@ -550,8 +566,9 @@ without verifying it first (checked at check-in, no retry).
   (`HIGH`), and on liveness-required sessions (the default) it's always
   `flagged` for review. A missing liveness result counts as full risk, so
   such check-ins score high (~0.68 from an unregistered device).
-  Auto-approval needs a photo, and on face-required sessions an enrolled
-  face. (On a session with `require_liveness_check: false`, a no-photo
+  Auto-approval needs a photo, on face-required sessions an enrolled
+  face, and on liveness-required sessions (the default) a **passed
+  challenge**: a single photo alone is at most `flagged` there. (On a session with `require_liveness_check: false`, a no-photo
   check-in from an admin-trusted device can score under the threshold and be
   approved.)
 
@@ -567,10 +584,10 @@ plus the weights below, capped at 1.0.
 | `geo_accuracy_low` | low | 0.05 | Accuracy worse than 100 m |
 | `gps_spoof_suspected` | medium | 0 | Accuracy < 1 m → at most flagged |
 | `device_unknown` | medium / low | 0.10 / 0.05 | Unregistered / registered but not trusted |
-| `impossible_travel` | high | 0.30 | > 250 km/h from the previous check-in |
+| `impossible_travel` | high | 0.30 | > 250 km/h from the previous check-in → at least flagged |
 | `liveness_failed` | **critical** | 0.25 | The face service judged it a spoof → **rejected** |
 | `liveness_challenge_failed` | high | 0 | Challenge steps not detected (and no later attempt passed) → at most flagged |
-| `liveness_unverified` | high | 0 | Liveness required but no result → at most flagged |
+| `liveness_unverified` | high | 0 | Liveness required but no result, or only a single photo without a passed challenge (`LIVENESS_CHALLENGE_ENFORCEMENT=flag`, the default) → at most flagged |
 | `face_match_failed` | **critical** | 0.25 | Face-required session, wrong face → **rejected** |
 | `face_match_failed` | high | 0 | Any other session, wrong face → at most flagged (`FACE_MISMATCH_ENFORCEMENT=flag`, the default) |
 | `face_match_unverified` | high | 0 | Face required but no comparison → at most flagged |
@@ -578,12 +595,15 @@ plus the weights below, capped at 1.0.
 | `rapid_succession` | high | 0 | Device used by another student < 10 min ago → at most flagged |
 | `unusual_time` | low | 0 | > 15 min after start; informational |
 | `consent_missing` | medium | 0 | Camera or location consent not `true` on the account → at most flagged (on by default) |
-| `device_unbound` | medium | 0 | Only with `DEVICE_BINDING_ENFORCEMENT=flag` |
+| `device_unbound` | medium | 0 | Device not registered to this student, on a course that requires device binding (the default) → at least flagged (`DEVICE_BINDING_ENFORCEMENT=flag`, the default) |
 | `manual_checkin` | — | 0 | Created by staff (`entry_method: manual`); no GPS, face or liveness data |
 | `manual_override` | — | 0 | Approved by staff over the earlier outcome; the factors before it are the original evidence |
 
 **Critical = rejects on its own.** `risk_level` bands: `LOW` < 0.3 ≤
-`MEDIUM` < 0.5 ≤ `HIGH` < 0.7 ≤ `CRITICAL` (always rejected).
+`MEDIUM` < 0.5 ≤ `HIGH` < 0.7 ≤ `CRITICAL` (always rejected). The band
+describes the score only, so the `status` can be stricter: a review-only
+signal flags a `LOW` check-in, and a critical signal rejects at any band.
+Show `status` as the outcome.
 
 ### `GET /api/v1/checkins/my-checkins` — student only
 Query: `course_id` (optional), `limit` (default 50, max 100). Plain array: `{ id, session_id, session_name, course_code, status, checked_in_at, risk_score, risk_level }`.

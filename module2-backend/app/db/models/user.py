@@ -38,6 +38,13 @@ class User(Base):
     locked_until = Column(DateTime, nullable=True)
     scheduled_deletion_at = Column(DateTime, nullable=True)
 
+    # Set by a password change (naive UTC, whole seconds): tokens issued
+    # before it are rejected, except those of the session that made the
+    # change (kept_session_id = its `sid` claim). See
+    # services/token_revocation.py::predates_password_change.
+    tokens_valid_after = Column(DateTime, nullable=True)
+    kept_session_id = Column(String(32), nullable=True)
+
     # Relationships
     enrollments = relationship("Enrollment", back_populates="student", foreign_keys="Enrollment.student_id")
     devices = relationship("Device", back_populates="user")

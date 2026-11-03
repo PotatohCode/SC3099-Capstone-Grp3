@@ -23,7 +23,7 @@ from app.schemas.user import (
     UserResponse,
     UserUpdateRequest,
 )
-from app.services import account_lockout, face_client, face_reset_code
+from app.services import account_lockout, face_client, face_reset_code, token_revocation
 from app.services.audit import log_event, log_security_violation
 from app.services.authz import teaches_student
 from app.services.client_ip import get_client_ip
@@ -135,9 +135,13 @@ def change_password(
 
     current_user.hashed_password = get_password_hash(payload.new_password)
     current_user.failed_login_attempts = 0
+    # Sign out every other device (a stolen token stops working); the
+    # caller's own session stays signed in.
+    token_revocation.end_other_sessions(current_user, request.state.token_claims)
     log_event(
         db, "password_changed", user_id=current_user.id, resource_type="user",
         resource_id=current_user.id, ip_address=ip, user_agent=ua,
+        details={"other_sessions_revoked": True},
     )
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
