@@ -268,6 +268,21 @@ Tasks from the [checklist](CHANGES-2026-10-01.md) that the other modules
 have finished, newest first. Moved here so the checklist only shows what's
 left.
 
+### Module 4 — Dashboard: PR #18 (`d67b593`, `93d5926`, merged 2026-10-31)
+
+| Was | Task | Done how |
+|---|---|---|
+| **Should** | "Activate check-in" before the window opens | The session page, sessions table and Today cards show the window ("Open now · closes 18:30", "Opens 17:15", "Window ended"). On a scheduled session whose window hasn't opened, **Activate and open check-in now** sends `{"status": "active", "checkin_opens_at": <now>}`; "Activate, open at 17:15" only changes the status. Active sessions get **Open check-in now**, and after the window has ended **Keep check-in open 30 more min** (`checkin_closes_at` = now + 30 min). New sessions default to starting in about 5 minutes |
+| — | Also | Create form: **Saved venue** picker built from venues on courses and sessions, **Use my current location** (browser location, warns above 50 m accuracy), click the map to move the pin; one map (folium) everywhere; start times shown for sessions created in the portal. New dependencies in `module4-observability/requirements.txt` and the root `requirements-test.txt`: `streamlit-js-eval`, `folium`, `streamlit-folium` |
+
+### Module 1 — Frontend: PR #17 (`a4cf70b`, merged 2026-10-30)
+
+| Was | Task | Done how |
+|---|---|---|
+| **Should** | Face reset code on the settings page | Replacing an enrolled face asks for the instructor's code after the password step and checks it with `POST /users/me/face/reset-code/check` before the camera opens. A wrong code keeps the student on the code field; 429, 503 and network errors have their own messages. A valid code starts a 5-minute window on the device for the photo, then the same code goes with `POST /users/me/face/enroll`; an expired code or `FACE_RESET_CODE_REQUIRED` goes back to the code step. First enrolment is unchanged |
+| **Should** | Message for a refused enrolment photo | `400 FACE_NOT_ACCEPTED` shows the backend's `detail` (the fallback for codes without their own message) and offers a retake; the reset code and timer are kept |
+| — | Also | Sessions with `require_liveness_check: false` use one photo with no challenge; liveness-required sessions keep the challenge. Leaving a check-in part-way and coming back starts again at the session list (no resume); the 3-try limit per session is kept |
+
 ### Module 3 — Face recognition: PRs #13 + #14 (`3734492`, `9327132`, merged 2026-10-30)
 
 | Was | Task | Done how |

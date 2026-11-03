@@ -294,7 +294,11 @@ Partial update: any field from create except `course_id`, plus
 Activating **doesn't move the check-in window**: students can check in only
 when the session is `active` **and** `checkin_opens_at <= now <= checkin_closes_at`.
 To open check-in early, send both in one call:
-`{"status": "active", "checkin_opens_at": "<now, UTC>"}`. Times may be naive
+`{"status": "active", "checkin_opens_at": "<now, UTC>"}`. To reopen a window
+that has ended, send a later `checkin_closes_at`; it may go past
+`scheduled_end`. The only time rules are `scheduled_end` after
+`scheduled_start` and `checkin_closes_at` after `checkin_opens_at`
+(otherwise `400 INVALID_SCHEDULE`). Times may be naive
 UTC or carry an offset (`Z`, `+08:00`); they're stored as UTC.
 `null` for a required field is ignored; for an optional one it clears it.
 E.g. `venue_latitude`/`venue_longitude`/`geofence_radius_meters: null` → the

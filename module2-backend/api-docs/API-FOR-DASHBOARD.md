@@ -21,7 +21,8 @@ including the venue rule: leave a session's coordinates out and it uses the
 course's venue. **Activating a session doesn't open its check-in window**:
 students can check in only once `checkin_opens_at` has passed. To open
 check-in early, send `{"status": "active", "checkin_opens_at": "<now, UTC>"}`
-in one `PATCH /sessions/{id}` (same §4).
+in one `PATCH /sessions/{id}`; to reopen an ended window, send a later
+`checkin_closes_at` (it may go past `scheduled_end`). Both in the same §4.
 
 ---
 
