@@ -11,9 +11,7 @@ jest.mock('next/navigation', () => ({
   useRouter: () => ({ push: jest.fn(), replace: jest.fn() }),
   usePathname: () => mockPath,
 }))
-jest.mock('@/lib/hooks/useOfflineSync', () => ({
-  useOfflineSync: () => ({ isOnline: true, queueLength: 0, isSyncing: false, syncBlocked: false, syncNow: jest.fn() }),
-}))
+jest.mock('@/lib/hooks/useOnlineStatus', () => ({ useOnlineStatus: () => true }))
 
 import DashboardLayout from '@/app/dashboard/layout'
 

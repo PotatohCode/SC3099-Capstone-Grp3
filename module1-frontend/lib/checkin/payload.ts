@@ -70,14 +70,3 @@ export function buildCheckInPayload({ sessionId, location, fingerprint, media }:
   payload.liveness_challenge_response = primary
   return payload
 }
-
-/** Strips challenge fields and keeps a single image, since a queued check-in cannot reuse an expiring single-use challenge. */
-export function toOfflinePayload(payload: CheckInRequest): CheckInRequest {
-  const rest: CheckInRequest = { ...payload }
-  const frames = rest.liveness_challenge_frames
-  delete rest.challenge_id
-  delete rest.challenge_type
-  delete rest.liveness_challenge_frames
-  const image = rest.liveness_challenge_response ?? (frames && frames.length > 0 ? middleFrame(frames) : undefined)
-  return image ? { ...rest, liveness_challenge_response: image } : rest
-}

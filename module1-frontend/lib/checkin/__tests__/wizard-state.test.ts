@@ -31,9 +31,8 @@ describe('wizardReducer', () => {
     expect(s.location).toBe(location)
   })
 
-  it('clears media after a successful or queued submit', () => {
+  it('clears media after a successful submit', () => {
     expect(wizardReducer(atConfirm(), { type: 'SUBMIT_SUCCEEDED', result })).toMatchObject({ media: null, result })
-    expect(wizardReducer(atConfirm(), { type: 'SUBMIT_QUEUED' }).media).toBeNull()
   })
 
   it('clears media whenever the camera step is entered again', () => {
@@ -50,9 +49,8 @@ describe('wizardReducer', () => {
   })
 
   it('ALREADY_CHECKED_IN jumps straight to confirm with no location or media, and RESET clears it', () => {
-    const s = wizardReducer(atConfirm(), { type: 'ALREADY_CHECKED_IN', session, queued: false })
+    const s = wizardReducer(atConfirm(), { type: 'ALREADY_CHECKED_IN', session })
     expect(s).toMatchObject({ step: 'confirm', session, location: null, media: null, result: null, alreadyCheckedIn: 'submitted' })
-    expect(wizardReducer(atConfirm(), { type: 'ALREADY_CHECKED_IN', session, queued: true }).alreadyCheckedIn).toBe('queued')
     expect(wizardReducer(s, { type: 'RESET' })).toEqual(initialWizardState)
     expect(wizardReducer(s, { type: 'SELECT_SESSION', session }).alreadyCheckedIn).toBeNull()
   })

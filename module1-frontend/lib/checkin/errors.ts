@@ -2,7 +2,7 @@
 import { PayloadTooLargeError } from '@/lib/checkin/payload'
 import { parseApiError } from '@/lib/utils/api-error'
 
-export type CheckInErrorAction = 'retry-capture' | 'retry-location' | 'reselect-session' | 'view-history' | 'queue-offline'
+export type CheckInErrorAction = 'retry-capture' | 'retry-location' | 'reselect-session' | 'view-history'
 
 export interface CheckInErrorView {
   title?: string
@@ -15,17 +15,21 @@ export interface CheckInErrorView {
 
 export const CHALLENGE_EXPIRED_MESSAGE = "That check took too long. Let's try again."
 
+export const OFFLINE_MESSAGE = "You're offline. Check-ins are sent live, so connect to the internet and try again."
+
+export const SERVER_UNREACHABLE_MESSAGE = 'Unable to connect to server.'
+
+/** True when the backend gave no usable answer: no response at all, or a proxy gateway error (502/504). */
+export function isServerUnreachable(error: unknown): boolean {
+  const e = parseApiError(error)
+  return e.isNetwork || e.status === 502 || e.status === 504
+}
+
 export const ALREADY_CHECKED_IN_VIEW: CheckInErrorView = {
   title: 'Already checked in',
   message: "You've already checked in to this session. You can view it, or appeal it, in your history.",
   action: 'view-history',
   alternateAction: 'reselect-session',
-}
-
-export const QUEUED_CHECKIN_VIEW: CheckInErrorView = {
-  title: 'Check-in waiting to sync',
-  message: "Your check-in for this session is saved on this device and will be sent automatically when you're back online.",
-  action: 'reselect-session',
 }
 
 const SESSION_ERRORS: Record<string, string> = {
@@ -39,7 +43,7 @@ function waitMessage(prefix: string, seconds: number | null): string {
   return seconds ? `${prefix} Please wait ${seconds} seconds and try again.` : `${prefix} Please wait a minute and try again.`
 }
 
-/** Classifies an error from POST /checkins/; isOnline decides whether a missing response means queue offline. */
+/** Classifies an error from POST /checkins/; isOnline picks the connection message when no response arrived. */
 export function classifyCheckInError(error: unknown, isOnline: boolean): CheckInErrorView {
   if (error instanceof PayloadTooLargeError) {
     return { message: 'Photo too large, please retake.', action: 'retry-capture' }
@@ -48,7 +52,7 @@ export function classifyCheckInError(error: unknown, isOnline: boolean): CheckIn
   if (e.isNetwork) {
     return isOnline
       ? { message: "We couldn't reach the server. Check your connection and try again.", action: 'retry-capture' }
-      : { message: "You're offline. Your check-in will be sent when you're back online.", action: 'queue-offline' }
+      : { message: OFFLINE_MESSAGE, action: 'retry-capture' }
   }
   if (e.code === 'OUTSIDE_SINGAPORE') {
     return {
@@ -84,10 +88,13 @@ export type ChallengeErrorResult =
   | { fallbackToPhoto: true; attemptsExhausted?: boolean }
   | { fallbackToPhoto: false; view: CheckInErrorView }
 
-/** Classifies an error from POST /checkins/challenge; 503 or no response fall back to a single photo, and no liveness attempts left ends the check. */
+/** Classifies an error from POST /checkins/challenge; 503 falls back to a single photo, an unreachable server sends the student back, and no attempts left ends the check. */
 export function classifyChallengeError(error: unknown): ChallengeErrorResult {
   const e = parseApiError(error)
-  if (e.isNetwork || e.status === 503) return { fallbackToPhoto: true }
+  if (isServerUnreachable(error)) {
+    return { fallbackToPhoto: false, view: { message: SERVER_UNREACHABLE_MESSAGE, action: 'reselect-session' } }
+  }
+  if (e.status === 503) return { fallbackToPhoto: true }
   if (e.code === 'LIVENESS_ATTEMPTS_EXHAUSTED') return { fallbackToPhoto: true, attemptsExhausted: true }
   if (e.code && SESSION_ERRORS[e.code]) {
     return { fallbackToPhoto: false, view: { message: SESSION_ERRORS[e.code], action: 'reselect-session' } }

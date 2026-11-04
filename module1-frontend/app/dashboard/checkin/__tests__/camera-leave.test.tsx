@@ -41,7 +41,7 @@ async function delayedBackend(replies: { challenge: StubReply; verify?: StubRepl
 
 function renderCapture(photoMode = false) {
   const onComplete = jest.fn<void, [CapturedMedia]>()
-  const view = render(<CameraCapture sessionId="s1" photoMode={photoMode} onComplete={onComplete} onReselectSession={jest.fn()} />)
+  const view = render(<CameraCapture sessionId="s1" photoMode={photoMode} onComplete={onComplete} onReselectSession={jest.fn()} onServerUnreachable={jest.fn()} />)
   return { onComplete, unmount: view.unmount }
 }
 

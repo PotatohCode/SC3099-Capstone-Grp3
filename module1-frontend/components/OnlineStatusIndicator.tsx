@@ -1,47 +1,14 @@
 'use client'
 
-/**
- * Task 1.8: "online/offline status indicator"
- */
-
-import { useOfflineSync } from '@/lib/hooks/useOfflineSync'
+/** Header badge showing whether the device is online; check-ins need a connection. */
+import { useOnlineStatus } from '@/lib/hooks/useOnlineStatus'
 
 export function OnlineStatusIndicator() {
-  const { isOnline, queueLength, isSyncing, syncBlocked, syncNow } = useOfflineSync()
-
-  if (isOnline && queueLength === 0) {
-    return (
-      <div className="flex items-center gap-1.5 text-xs text-green-600" aria-live="polite">
-        <span className="h-2 w-2 rounded-full bg-green-500" />
-        Online
-      </div>
-    )
-  }
-
+  const isOnline = useOnlineStatus()
   return (
-    <div className="flex flex-wrap items-center gap-2 text-xs" aria-live="polite">
-      <span className={`flex items-center gap-1.5 ${isOnline ? 'text-green-600' : 'text-red-600'}`}>
-        <span className={`h-2 w-2 rounded-full ${isOnline ? 'bg-green-500' : 'bg-red-500'}`} />
-        {isOnline ? 'Online' : 'Offline'}
-      </span>
-      {queueLength > 0 && (
-        <span className="rounded-full bg-amber-100 px-2 py-0.5 font-medium text-amber-700">
-          {queueLength} check-in{queueLength === 1 ? '' : 's'} pending sync
-        </span>
-      )}
-      {queueLength > 0 && syncBlocked && (
-        <span className="text-gray-600">Sync paused until your face is registered</span>
-      )}
-      {isOnline && queueLength > 0 && !syncBlocked && (
-        <button
-          type="button"
-          onClick={() => syncNow()}
-          disabled={isSyncing}
-          className="min-h-[28px] rounded-md bg-blue-600 px-2 py-1 font-medium text-white disabled:opacity-50"
-        >
-          {isSyncing ? 'Syncing...' : 'Sync now'}
-        </button>
-      )}
+    <div className={`flex items-center gap-1.5 text-xs ${isOnline ? 'text-green-600' : 'text-red-600'}`} aria-live="polite">
+      <span className={`h-2 w-2 rounded-full ${isOnline ? 'bg-green-500' : 'bg-red-500'}`} />
+      {isOnline ? 'Online' : 'Offline'}
     </div>
   )
 }

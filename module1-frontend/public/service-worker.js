@@ -15,13 +15,15 @@
 
 importScripts('/offline.js')
 
-const CACHE_VERSION = 'v1'
+const CACHE_VERSION = 'v2'
 const STATIC_CACHE = `saiv-static-${CACHE_VERSION}`
 const READS_CACHE = `saiv-reads-${CACHE_VERSION}`
-const CURRENT_CACHES = [STATIC_CACHE, READS_CACHE]
+const PAGES_CACHE = `saiv-pages-${CACHE_VERSION}`
+const CURRENT_CACHES = [STATIC_CACHE, READS_CACHE, PAGES_CACHE]
+
+const APP_SHELL_PAGES = ['/', '/auth/login', '/dashboard', '/dashboard/checkin', '/dashboard/history', '/dashboard/settings']
 
 const PRECACHE_URLS = [
-  '/',
   '/manifest.json',
   '/icons/icon-192.png',
   '/icons/icon-512.png',
@@ -32,9 +34,49 @@ self.addEventListener('install', (event) => {
     caches
       .open(STATIC_CACHE)
       .then((cache) => cache.addAll(PRECACHE_URLS))
+      .then(() => caches.open(PAGES_CACHE))
+      .then((cache) => Promise.all(APP_SHELL_PAGES.map((page) => precachePage(cache, page))))
       .then(() => self.skipWaiting())
   )
 })
+
+const PAGE_ASSET_PATTERN = /\/_next\/static\/[^"'\s)\\]+/g
+
+/** Caches the scripts and styles a page's HTML references, so the page can start offline. */
+async function cachePageAssets(response) {
+  try {
+    const html = await response.text()
+    const urls = Array.from(new Set(html.match(PAGE_ASSET_PATTERN) || []))
+    const cache = await caches.open(STATIC_CACHE)
+    await Promise.all(urls.map((asset) => cache.match(asset).then((hit) => hit || cache.add(asset)).catch(() => undefined)))
+  } catch (err) {
+    return undefined
+  }
+}
+
+/** Precaches one app-shell page and its assets; a missing page never blocks install. */
+async function precachePage(cache, page) {
+  try {
+    await cache.add(page)
+    const response = await cache.match(page)
+    if (response) await cachePageAssets(response)
+  } catch (err) {
+    return undefined
+  }
+}
+
+/** Serves a page network-first and, when it loads, keeps its assets cached for offline starts. */
+async function handleNavigation(event) {
+  const response = await self.networkFirst(event.request, PAGES_CACHE)
+  if (response && response.ok) {
+    try {
+      event.waitUntil(cachePageAssets(response.clone()))
+    } catch (err) {
+      return response
+    }
+  }
+  return response
+}
 
 self.addEventListener('activate', (event) => {
   event.waitUntil(
@@ -79,6 +121,12 @@ self.addEventListener('fetch', (event) => {
 
   // Never intercept non-HTTP(S) requests (e.g. chrome-extension://).
   if (!url.protocol.startsWith('http')) return
+
+  // Pages: fresh online, cached offline.
+  if (request.method === 'GET' && request.mode === 'navigate' && url.origin === self.location.origin) {
+    event.respondWith(handleNavigation(event))
+    return
+  }
 
   if (isNetworkOnly(request, url)) {
     event.respondWith(self.networkOnly(request))

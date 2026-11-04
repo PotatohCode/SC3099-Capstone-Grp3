@@ -21,14 +21,16 @@ import {
 import { useRouter } from 'next/navigation'
 import * as authService from '@/lib/services/auth.service'
 import { registerCurrentDevice } from '@/lib/services/device.service'
-import { clearOfflineQueue } from '@/lib/services/offline.service'
-import { loginErrorMessage } from '@/lib/utils/api-error'
+import { clearCachedApiResponses, purgeLegacyOfflineQueue } from '@/lib/services/offline.service'
+import { loginErrorMessage, parseApiError } from '@/lib/utils/api-error'
 import { FACE_PROMPT_DISMISSED_KEY, reauthErrorMessage } from '@/lib/face/enrollment'
 import { recordConsent, type ConsentType } from '@/lib/utils/consent-tracker'
 import {
   clearTokens,
   getAccessToken,
+  getCachedUser,
   hasAccessToken,
+  setCachedUser,
   setTokens,
 } from '@/lib/utils/token-storage'
 import type { LoginRequest, User } from '@/lib/types'
@@ -68,7 +70,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const router = useRouter()
 
   const logout = useCallback(async () => {
-    await clearOfflineQueue().catch(() => undefined)
+    await clearCachedApiResponses().catch(() => undefined)
     await authService.logoutAndClear()
     setUser(null)
     if (typeof window !== 'undefined') {
@@ -82,27 +84,44 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // fetch the current user to rehydrate context state.
   useEffect(() => {
     let cancelled = false
+    purgeLegacyOfflineQueue().catch(() => undefined)
 
-    async function bootstrap() {
-      if (!hasAccessToken()) {
-        setIsLoading(false)
-        return
-      }
+    async function loadUser(): Promise<void> {
       try {
         const currentUser = await authService.getCurrentUser()
         if (!cancelled) setUser(currentUser)
-      } catch {
-        if (!cancelled) clearTokens()
-      } finally {
-        if (!cancelled) setIsLoading(false)
+      } catch (error) {
+        if (cancelled) return
+        if (!parseApiError(error).isNetwork) {
+          clearTokens()
+          setUser(null)
+          return
+        }
+        // Offline: keep tokens, retry when back.
+        setUser((current) => current ?? getCachedUser<User>())
+        window.addEventListener('online', retryWhenOnline, { once: true })
       }
+    }
+
+    function retryWhenOnline() {
+      if (!cancelled && hasAccessToken()) loadUser()
+    }
+
+    async function bootstrap() {
+      if (hasAccessToken()) await loadUser()
+      if (!cancelled) setIsLoading(false)
     }
 
     bootstrap()
     return () => {
       cancelled = true
+      window.removeEventListener('online', retryWhenOnline)
     }
   }, [])
+
+  useEffect(() => {
+    if (user && hasAccessToken()) setCachedUser(user)
+  }, [user])
 
   // http-client dispatches this when a silent refresh fails (Section 2.2: "Failure:
   // Redirect to /auth/login").
@@ -117,6 +136,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = useCallback(async (payload: LoginRequest) => {
     try {
       const response = await authService.login(payload)
+      await clearCachedApiResponses().catch(() => undefined)
       setTokens(response.access_token, response.refresh_token)
       window.sessionStorage.removeItem(FACE_PROMPT_DISMISSED_KEY)
       setUser(response.user)

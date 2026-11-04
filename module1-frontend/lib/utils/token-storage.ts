@@ -19,6 +19,7 @@
 
 const ACCESS_TOKEN_KEY = 'saiv_access_token'
 const REFRESH_TOKEN_KEY = 'saiv_refresh_token'
+const CACHED_USER_KEY = 'saiv_cached_user'
 
 function isBrowser(): boolean {
   return typeof window !== 'undefined'
@@ -53,6 +54,23 @@ export function clearTokens(): void {
   if (!isBrowser()) return
   window.sessionStorage.removeItem(ACCESS_TOKEN_KEY)
   window.sessionStorage.removeItem(REFRESH_TOKEN_KEY)
+  window.sessionStorage.removeItem(CACHED_USER_KEY)
+}
+
+/** Keeps the signed-in profile beside the tokens so an offline reload can still show who is signed in. */
+export function setCachedUser<T>(user: T): void {
+  if (!isBrowser()) return
+  window.sessionStorage.setItem(CACHED_USER_KEY, JSON.stringify(user))
+}
+
+/** Returns the profile saved by setCachedUser, or null when missing or unreadable. */
+export function getCachedUser<T>(): T | null {
+  if (!isBrowser()) return null
+  try {
+    return JSON.parse(window.sessionStorage.getItem(CACHED_USER_KEY) ?? 'null') as T | null
+  } catch {
+    return null
+  }
 }
 
 export function hasAccessToken(): boolean {

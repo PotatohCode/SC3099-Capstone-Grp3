@@ -3,7 +3,6 @@ import {
   LIMITS,
   middleFrame,
   PayloadTooLargeError,
-  toOfflinePayload,
   type CapturedMedia,
 } from '@/lib/checkin/payload'
 
@@ -86,28 +85,6 @@ describe('middleFrame', () => {
     expect(middleFrame(['a'])).toBe('a')
     expect(middleFrame(['a', 'b'])).toBe('b')
     expect(middleFrame(['a', 'b', 'c'])).toBe('b')
-  })
-})
-
-describe('toOfflinePayload', () => {
-  it('drops challenge fields and keeps exactly one image', () => {
-    const online = buildCheckInPayload({ ...base, media: burst })
-    const offline = toOfflinePayload(online)
-    expect(offline).not.toHaveProperty('challenge_id')
-    expect(offline).not.toHaveProperty('challenge_type')
-    expect(offline).not.toHaveProperty('liveness_challenge_frames')
-    expect(offline.liveness_challenge_response).toBe('frame8')
-    expect(offline.location_accuracy_meters).toBe(12.3456)
-  })
-
-  it('uses the middle frame when no single image was set', () => {
-    const offline = toOfflinePayload({ session_id: 's', latitude: 1, longitude: 2, device_fingerprint: 'd', liveness_challenge_frames: ['a', 'b', 'c'] })
-    expect(offline.liveness_challenge_response).toBe('b')
-  })
-
-  it('leaves a photo payload unchanged', () => {
-    const photo = buildCheckInPayload({ ...base, media: { kind: 'photo', photo: 'p' } })
-    expect(toOfflinePayload(photo)).toEqual(photo)
   })
 })
 

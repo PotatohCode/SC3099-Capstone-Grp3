@@ -2,12 +2,16 @@ import { act, renderHook } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { AuthProvider } from '@/lib/context/AuthContext'
 import { useAuth } from '@/lib/hooks/useAuth'
-import { getAccessToken, setTokens } from '@/lib/utils/token-storage'
+import { getAccessToken, getCachedUser, setTokens } from '@/lib/utils/token-storage'
 import { stubAdapter, type RecordedRequest } from '@/test/axios-stub'
 import { resetVerifyCalls, startAttempt } from '@/lib/liveness/verify'
 
-const clearOfflineQueue = jest.fn(async () => undefined)
-jest.mock('@/lib/services/offline.service', () => ({ clearOfflineQueue: () => clearOfflineQueue() }))
+const clearCachedApiResponses = jest.fn(async () => undefined)
+const purgeLegacyOfflineQueue = jest.fn(async () => undefined)
+jest.mock('@/lib/services/offline.service', () => ({
+  clearCachedApiResponses: () => clearCachedApiResponses(),
+  purgeLegacyOfflineQueue: () => purgeLegacyOfflineQueue(),
+}))
 
 const push = jest.fn()
 jest.mock('next/navigation', () => ({ useRouter: () => ({ push, replace: jest.fn() }) }))
@@ -22,7 +26,10 @@ async function settle() {
 }
 
 describe('AuthContext', () => {
-  beforeEach(() => push.mockClear())
+  beforeEach(() => {
+    push.mockClear()
+    clearCachedApiResponses.mockClear()
+  })
 
   it('shows the lockout message on 429 ACCOUNT_LOCKED', async () => {
     stubAdapter(() => ({ status: 429, data: { code: 'ACCOUNT_LOCKED' }, headers: { 'retry-after': '600' } }))
@@ -53,8 +60,54 @@ describe('AuthContext', () => {
     expect(calls[2]).toMatchObject({ url: '/auth/logout', authorization: 'Bearer a1', data: { refresh_token: 'r1' } })
     expect(getAccessToken()).toBeNull()
     expect(result.current.user).toBeNull()
-    expect(clearOfflineQueue).toHaveBeenCalled()
+    expect(clearCachedApiResponses).toHaveBeenCalledTimes(2)
+    expect(getCachedUser()).toBeNull()
     expect(push).toHaveBeenCalledWith('/auth/login')
+  })
+
+  it('removes the retired offline queue when the app starts', async () => {
+    purgeLegacyOfflineQueue.mockClear()
+    renderHook(() => useAuth(), { wrapper })
+    await settle()
+    expect(purgeLegacyOfflineQueue).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the student signed in when the app opens offline, then reloads the profile once back online', async () => {
+    setTokens('a1', 'r1')
+    let online = true
+    stubAdapter((req: RecordedRequest) => (req.url === '/users/me' ? (online ? { status: 200, data: student } : { network: true }) : { status: 404 }))
+    const first = renderHook(() => useAuth(), { wrapper })
+    await settle()
+    await settle()
+    expect(first.result.current.user?.id).toBe('u1')
+    first.unmount()
+
+    online = false
+    const { result } = renderHook(() => useAuth(), { wrapper })
+    await settle()
+    await settle()
+    expect(getAccessToken()).toBe('a1')
+    expect(result.current.isAuthenticated).toBe(true)
+    expect(result.current.user?.email).toBe('s@e.edu')
+
+    online = true
+    stubAdapter((req: RecordedRequest) => (req.url === '/users/me' ? { status: 200, data: { ...student, full_name: 'Updated' } } : { status: 404 }))
+    await act(async () => {
+      window.dispatchEvent(new Event('online'))
+      await Promise.resolve()
+    })
+    await settle()
+    expect(result.current.user?.full_name).toBe('Updated')
+  })
+
+  it('still signs the student out when the server rejects the saved session', async () => {
+    setTokens('a1', 'r1')
+    stubAdapter((req: RecordedRequest) => (req.url === '/users/me' ? { status: 403, data: { code: 'FORBIDDEN' } } : { status: 404 }))
+    const { result } = renderHook(() => useAuth(), { wrapper })
+    await settle()
+    await settle()
+    expect(getAccessToken()).toBeNull()
+    expect(result.current.isAuthenticated).toBe(false)
   })
 
   it('saveConsent sends the change and updates the user', async () => {

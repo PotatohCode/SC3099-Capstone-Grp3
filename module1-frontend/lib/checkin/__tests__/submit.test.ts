@@ -1,11 +1,12 @@
 import type { CapturedMedia } from '@/lib/checkin/payload'
 import { submitAttempt, type SubmitDeps } from '@/lib/checkin/submit'
+import { OFFLINE_MESSAGE } from '@/lib/checkin/errors'
 import type { CheckInRequest, CheckInResponse } from '@/lib/types'
 import { httpError, networkError } from '@/test/axios-stub'
 
 const burst: CapturedMedia = { kind: 'burst', challengeId: 'ch', sequence: ['blink'], frames: ['f0', 'f1'], fetchedAtMs: 1000, maxFrames: 30 }
 
-function deps(overrides: Partial<SubmitDeps> = {}): SubmitDeps & { submit: jest.Mock; queue: jest.Mock } {
+function deps(overrides: Partial<SubmitDeps> = {}): SubmitDeps & { submit: jest.Mock } {
   return {
     sessionId: 's1',
     location: { latitude: 1.35, longitude: 103.8, accuracy: 8.5 },
@@ -15,9 +16,8 @@ function deps(overrides: Partial<SubmitDeps> = {}): SubmitDeps & { submit: jest.
     browserOnline: () => true,
     now: () => 2000,
     submit: jest.fn(async () => ({ id: 'c1', status: 'flagged' }) as CheckInResponse),
-    queue: jest.fn(async () => undefined),
     ...overrides,
-  } as SubmitDeps & { submit: jest.Mock; queue: jest.Mock }
+  } as SubmitDeps & { submit: jest.Mock }
 }
 
 describe('submitAttempt', () => {
@@ -39,20 +39,17 @@ describe('submitAttempt', () => {
     expect(d.submit).not.toHaveBeenCalled()
   })
 
-  it('queues when offline instead of calling the API', async () => {
+  it('fails with the offline message and never calls the API when offline', async () => {
     const d = deps({ isOnline: false })
-    expect(await submitAttempt(d)).toEqual({ kind: 'queued' })
+    expect(await submitAttempt(d)).toEqual({ kind: 'failed', view: { message: OFFLINE_MESSAGE, action: 'retry-capture' } })
     expect(d.submit).not.toHaveBeenCalled()
-    expect(d.queue).toHaveBeenCalledTimes(1)
   })
 
-  it('queues after a network error only when the browser reports offline', async () => {
+  it('shows the offline message after a network error when the browser reports offline', async () => {
     const offline = deps({ submit: jest.fn(async () => Promise.reject(networkError())), browserOnline: () => false })
-    expect(await submitAttempt(offline)).toEqual({ kind: 'queued' })
-    const online = deps({ submit: jest.fn(async () => Promise.reject(networkError())) })
-    const outcome = await submitAttempt(online)
-    expect(outcome.kind).toBe('failed')
-    expect(online.queue).not.toHaveBeenCalled()
+    expect(await submitAttempt(offline)).toEqual({ kind: 'failed', view: { message: OFFLINE_MESSAGE, action: 'retry-capture' } })
+    const online = await submitAttempt(deps({ submit: jest.fn(async () => Promise.reject(networkError())) }))
+    expect(online.kind === 'failed' && online.view.message).toMatch(/couldn't reach the server/)
   })
 
   it('returns the Singapore view on 403 OUTSIDE_SINGAPORE', async () => {
@@ -66,18 +63,5 @@ describe('submitAttempt', () => {
     const outcome = await submitAttempt(d)
     expect(outcome.kind === 'failed' && outcome.view.message).toBe('Photo too large, please retake.')
     expect(d.submit).not.toHaveBeenCalled()
-  })
-
-  it('reports a failure instead of hanging when the offline queue cannot save', async () => {
-    const d = deps({ isOnline: false, queue: jest.fn(async () => Promise.reject(new Error('QuotaExceededError'))) })
-    await expect(submitAttempt(d)).resolves.toEqual({
-      kind: 'failed',
-      view: { message: "We couldn't save your check-in for later. Please try again.", action: 'retry-capture' },
-    })
-  })
-
-  it('still queues a burst whose challenge has gone stale when offline', async () => {
-    const d = deps({ isOnline: false, now: () => 1000 + 120_000 })
-    expect(await submitAttempt(d)).toEqual({ kind: 'queued' })
   })
 })
