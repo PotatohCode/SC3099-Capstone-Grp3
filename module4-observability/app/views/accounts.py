@@ -86,13 +86,16 @@ def _course_picker(key: str, label: str = "Enrol in course (optional)") -> dict 
 
 def _single() -> None:
     with st.form("create-account", clear_on_submit=True):
+        # Row by row, so each pair sits side by side (the password next to its confirmation).
         left, right = st.columns(2)
         email = left.text_input("Email", placeholder="student@e.ntu.edu.sg")
         name = right.text_input("Full name")
-        role = left.selectbox("Role", _allowed_roles(), format_func=lambda r: "TA" if r == "ta" else r.title())
-        course = _course_picker("single-course")
+        left, right = st.columns(2)
         password = left.text_input("Temporary password", type="password", help="At least 8 characters.")
         confirm = right.text_input("Confirm password", type="password")
+        left, _ = st.columns(2)
+        role = left.selectbox("Role", _allowed_roles(), format_func=lambda r: "TA" if r == "ta" else r.title())
+        course = _course_picker("single-course")  # full width: course names can be long
         submitted = st.form_submit_button("Create account", type="primary")
     if not submitted:
         return
