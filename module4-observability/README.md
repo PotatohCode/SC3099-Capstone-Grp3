@@ -42,14 +42,15 @@ to get an "Explore with sample data" button on the sign-in page (works without a
 |---|:-:|:-:|:-:|---|
 | Today | ✓ | ✓ | ✓ | Needs-review count (top-left), today's sessions (first 6, "Show all" for the rest) with live check-in counts, 7-day trends |
 | Review queue | ✓ | ✓ | ✓ | Flagged and appealed check-ins, appeals then highest risk first, reasons in plain words, approve / reject with a note |
-| Sessions | view + manual check-in | ✓ | ✓ | Create (location from the course, or its own, with a map); activate / close / cancel / delete (scheduled only); edit a scheduled or live session (name, type, times, check-in window, checks, location); cancelled hidden by default; live attendance, outcome and risk charts, every check-in (📱 app / ✍️ manual / ✅ override); manual check-in + undo; per-session export |
+| Sessions | view + manual check-in | ✓ | ✓ | Create (location from the course, or its own, with a map); activate / close / cancel / delete (scheduled only); edit a scheduled or live session (name, type, times, check-in window, checks, risk threshold, location); cancelled hidden by default; live attendance, outcome and risk charts, every check-in (📱 app / ✍️ manual / ✅ override); manual check-in + undo; per-session export |
 | Check-ins | ✓ | ✓ | ✓ | Search every check-in in your courses by course, status, dates, student and risk; open one for its full details (liveness, face match, accuracy, review, appeal) |
 | Courses | | ✓ | ✓ | Attendance per session and per student; students under 75% |
 | Students | | ✓ | ✓ | One student's attendance across your courses and recent check-ins; face reset code |
 | Exports | session | ✓ | ✓ | CSV (opens in Excel), JSON or PDF, with a course column and optional absent students |
 | Accounts | | student/TA | any role | Create one account or import a CSV; **Enrol students**: paste emails of existing accounts (bulk); remove from a course |
-| Users & courses | | | ✓ | Courses: create, edit (incl. default location, or a session's location), archive / restore. Users: details, change role, deactivate / reactivate, delete (anonymised after 30 days). Devices: list per account, trust / untrust, revoke |
-| Audit log | | | ✓ | Filter the append-only log, security-events view, CSV/JSON export |
+| Users & courses | | | ✓ | Courses: create, edit (incl. default location, or a session's location), archive / restore. Users: details, change role, deactivate / reactivate, delete (anonymised after 30 days). Devices: list per account, trust / untrust, revoke / restore, rename; risk threshold per course |
+| Audit log | | | ✓ | Filter the append-only log (event, outcome, dates, one user), security-events view, CSV/JSON export |
+| My account | ✓ | ✓ | ✓ | Your name and password (other devices are signed out after a password change) |
 | System health | | | ✓ | Key Prometheus numbers (flagged rate, failed sign-ins, lockouts, p95, 5xx) + link to Grafana; data clean-up: last run + run now |
 
 Live parts (Today, the open session, System health, new-items notice on the review queue)

@@ -245,6 +245,11 @@ def handle(method: str, path: str, params: dict | None = None, body: dict | None
         if method == "PATCH":
             session.update(body)
         return _session_view(db, session)
+    if method == "PUT" and path == "/users/me":
+        st.session_state.user = {**st.session_state.user, **{k: v for k, v in body.items() if k == "full_name"}}
+        return st.session_state.user
+    if method == "POST" and path == "/users/me/password":
+        return None
     if method == "GET" and path == "/checkins":
         items = [_enriched(db, c) for c in db["checkins"]]
         course_sessions = {s["id"] for s in db["sessions"] if s["course_id"] == params.get("course_id")}
