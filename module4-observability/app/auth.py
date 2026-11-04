@@ -52,6 +52,9 @@ def can(action: str) -> bool:
         "export_course": r in {"instructor", "admin"},
         "audit": r == "admin",
         "system": r == "admin",
+        "manage": r == "admin",                              # users, courses, devices (admin-only endpoints)
+        "delete_session": r in {"instructor", "admin"},      # backend: scheduled sessions only
+        "checkin_search": r in {"ta", "instructor", "admin"},
     }
     return rules.get(action, False)
 

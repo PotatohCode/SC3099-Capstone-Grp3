@@ -2,6 +2,11 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# Unicode fonts for PDF exports (accented letters, plus Chinese characters in names).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends fonts-dejavu-core fonts-wqy-microhei \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 

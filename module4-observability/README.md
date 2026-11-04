@@ -40,15 +40,17 @@ to get an "Explore with sample data" button on the sign-in page (works without a
 
 | Page | TA | Instructor | Admin | What it does |
 |---|:-:|:-:|:-:|---|
-| Today | ✓ | ✓ | ✓ | Needs-review count (top-left), today's sessions with live check-in counts, 7-day trends |
+| Today | ✓ | ✓ | ✓ | Needs-review count (top-left), today's sessions (first 6, "Show all" for the rest) with live check-in counts, 7-day trends |
 | Review queue | ✓ | ✓ | ✓ | Flagged and appealed check-ins, appeals then highest risk first, reasons in plain words, approve / reject with a note |
-| Sessions | view + manual check-in | ✓ | ✓ | Create (location from the course, or its own, with a map); activate / close / cancel; live attendance, outcome and risk charts, every check-in (📱 app / ✍️ manual / ✅ override); manual check-in + undo; per-session export |
+| Sessions | view + manual check-in | ✓ | ✓ | Create (location from the course, or its own, with a map); activate / close / cancel / delete (scheduled only); cancelled hidden by default; live attendance, outcome and risk charts, every check-in (📱 app / ✍️ manual / ✅ override); manual check-in + undo; per-session export |
+| Check-ins | ✓ | ✓ | ✓ | Search every check-in in your courses by course, status, dates, student and risk; open one for its full details (liveness, face match, accuracy, review, appeal) |
 | Courses | | ✓ | ✓ | Attendance per session and per student; students under 75% |
 | Students | | ✓ | ✓ | One student's attendance across your courses and recent check-ins; face reset code |
 | Exports | session | ✓ | ✓ | CSV (opens in Excel), JSON or PDF, with a course column and optional absent students |
-| Accounts | | student/TA | any role | Create one account or import a CSV; enrol students/TAs in a course; remove from a course |
+| Accounts | | student/TA | any role | Create one account or import a CSV; **Enrol students**: paste emails of existing accounts (bulk); remove from a course |
+| Users & courses | | | ✓ | Courses: create, edit (incl. default location, or a session's location), archive / restore. Users: details, change role, deactivate / reactivate, delete (anonymised after 30 days). Devices: list per account, trust / untrust, revoke |
 | Audit log | | | ✓ | Filter the append-only log, security-events view, CSV/JSON export |
-| System health | | | ✓ | Key Prometheus numbers (flagged rate, failed sign-ins, lockouts, p95, 5xx) + link to Grafana |
+| System health | | | ✓ | Key Prometheus numbers (flagged rate, failed sign-ins, lockouts, p95, 5xx) + link to Grafana; data clean-up: last run + run now |
 
 Live parts (Today, the open session, System health, new-items notice on the review queue)
 refresh every **30 s** without reloading the page; switch off with **Live updates** in the
@@ -120,7 +122,10 @@ window** (`checkin_opens_at`–`checkin_closes_at`). The dashboard shows both on
 open the window immediately when it hasn't opened yet (or to keep it open 30 more minutes when it
 has ended), and active sessions get **Open check-in now** / **Reopen check-in** when needed. New
 sessions default to starting in about 5 minutes, so check-in is open as soon as they're activated.
-When creating a session, **Saved venue** fills in a venue already used on a course or session.
+When creating a session, **Saved venue** fills in a venue already used on a course or session: give a
+location a **Venue name** and it's saved for next time (shown to everyone who can see that session; a
+course's default location is shown to all staff). **Use my current location** needs https or localhost,
+since browsers don't share location with `http://<IP>`; the button explains this instead of waiting.
 
 ## Manual check-in and face reset codes
 
@@ -147,6 +152,18 @@ Students are checked against the session's own location if it has one, otherwise
 - refuses coordinates outside Singapore (nobody could check in) and shows a map with the
   check-in radius before creating. Each session's **Location** section shows the same map.
 
+## Risk levels
+
+Risk (▂ Low · ▄ Medium · ▆ High · █ Critical) says how suspicious a check-in looked. It is **not** the
+outcome: the location, face and liveness checks also decide whether a check-in is approved, flagged or
+rejected, so risk uses its own light-to-dark scale instead of green/red, in the portal and in Grafana.
+
+## Exports
+
+CSV/JSON keep every character (UTF-8). PDFs use DejaVu Sans plus WenQuanYi Micro Hei for Chinese
+characters, installed in the Docker image. Tables' built-in "Download as CSV" button is hidden: it would
+skip the spreadsheet-formula guard and the backend's `data_exported` audit entry.
+
 ## Names
 
 The backend stores free text HTML-escaped (`R&amp;D`). `api.py` turns responses back into the
@@ -162,7 +179,7 @@ app/auth.py          sign-in/out, role permissions, course scope
 app/ui.py            shared layout, colours, charts, labels
 app/exports.py       CSV / JSON / PDF builders
 app/demo.py          sample data for preview mode
-app/views/*.py       one file per page
+app/views/*.py       one file per page (manage.py = Users & courses, checkins.py = Check-ins)
 .streamlit/config.toml   theme and server settings
 grafana/provisioning/    data source, dashboard provider, dashboard JSON
 prometheus.yml, alert_rules.yml, otel-collector-config.yml

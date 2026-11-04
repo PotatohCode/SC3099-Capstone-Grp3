@@ -9,6 +9,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import os
 from datetime import datetime
 
 from fpdf import FPDF
@@ -64,25 +65,53 @@ def to_json(report_rows: list[dict], meta: dict) -> bytes:
     return json.dumps({**meta, "records": report_rows}, indent=2, ensure_ascii=False).encode("utf-8")
 
 
+# Unicode fonts installed in the Docker image (see Dockerfile). Without them the
+# PDF falls back to the built-in Helvetica, which only covers Latin-1.
+FONT_FILES = {
+    "": "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "B": "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+}
+CJK_FONT = "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc"
+_unicode = False
+
+
 def _latin1(text) -> str:
+    if _unicode:
+        return str(text)
     # Built-in PDF fonts only cover Latin-1; replace anything else.
     return str(text).encode("latin-1", "replace").decode("latin-1")
 
 
+def _set_up_fonts(pdf: FPDF) -> str:
+    """Registers the Unicode fonts if they're installed; returns the font family."""
+    global _unicode
+    _unicode = all(os.path.exists(path) for path in FONT_FILES.values())
+    if not _unicode:
+        return "Helvetica"
+    for style, path in FONT_FILES.items():
+        pdf.add_font("DejaVu", style, path)
+    if os.path.exists(CJK_FONT):
+        pdf.add_font("CJK", "", CJK_FONT)
+        pdf.add_font("CJK", "B", CJK_FONT)
+        pdf.set_fallback_fonts(["CJK"])  # used for characters DejaVu doesn't have
+    return "DejaVu"
+
+
 def to_pdf(report_rows: list[dict], title: str, summary: dict[str, str]) -> bytes:
     pdf = FPDF(orientation="L", unit="mm", format="A4")
+    font = _set_up_fonts(pdf)
     pdf.set_auto_page_break(auto=True, margin=12)
     pdf.add_page()
-    pdf.set_font("Helvetica", "B", 15)
+    pdf.set_font(font, "B", 15)
     pdf.cell(0, 9, _latin1(title), new_x="LMARGIN", new_y="NEXT")
-    pdf.set_font("Helvetica", "", 9)
+    pdf.set_font(font, "", 9)
     generated = datetime.now(config.LOCAL_TZ).strftime("%d %b %Y %H:%M SGT")
     pdf.cell(0, 6, _latin1(f"Generated {generated} · SAIV attendance record"), new_x="LMARGIN", new_y="NEXT")
     pdf.ln(2)
     for label, value in summary.items():
-        pdf.set_font("Helvetica", "B", 9)
+        pdf.set_font(font, "B", 9)
         pdf.cell(38, 6, _latin1(label))
-        pdf.set_font("Helvetica", "", 9)
+        pdf.set_font(font, "", 9)
         pdf.cell(0, 6, _latin1(value), new_x="LMARGIN", new_y="NEXT")
     pdf.ln(3)
 
@@ -91,7 +120,7 @@ def to_pdf(report_rows: list[dict], title: str, summary: dict[str, str]) -> byte
     cols = list(widths)
 
     def table_header():
-        pdf.set_font("Helvetica", "B", 8)
+        pdf.set_font(font, "B", 8)
         pdf.set_fill_color(23, 48, 66)
         pdf.set_text_color(255, 255, 255)
         for col in cols:
@@ -100,12 +129,12 @@ def to_pdf(report_rows: list[dict], title: str, summary: dict[str, str]) -> byte
         pdf.set_text_color(0, 0, 0)
 
     table_header()
-    pdf.set_font("Helvetica", "", 8)
+    pdf.set_font(font, "", 8)
     for i, row in enumerate(report_rows):
         if pdf.will_page_break(6):
             pdf.add_page()
             table_header()
-            pdf.set_font("Helvetica", "", 8)
+            pdf.set_font(font, "", 8)
         pdf.set_fill_color(244, 246, 244) if i % 2 else pdf.set_fill_color(255, 255, 255)
         for col in cols:
             text = _latin1(row.get(col, ""))

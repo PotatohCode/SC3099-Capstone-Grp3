@@ -823,7 +823,7 @@
       "id": 15,
       "type": "bargauge",
       "title": "Risk score distribution (selected time range)",
-      "description": "Risk bands as used by the backend (SECURITY-REQUIREMENTS).",
+      "description": "How suspicious check-ins looked (risk score bands). A band is not the outcome: location, face and liveness checks also decide whether a check-in is approved, flagged or rejected.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -841,7 +841,7 @@
             "uid": "prometheus"
           },
           "expr": "sum(increase(risk_score_bucket{le=\"0.3\"}[$__range]))",
-          "legendFormat": "Low  (< 0.3) · auto-approved",
+          "legendFormat": "Low (< 0.3)",
           "refId": "A",
           "range": false,
           "instant": true
@@ -863,7 +863,7 @@
             "uid": "prometheus"
           },
           "expr": "sum(increase(risk_score_bucket{le=\"0.7\"}[$__range])) - sum(increase(risk_score_bucket{le=\"0.5\"}[$__range]))",
-          "legendFormat": "High (0.5–0.7) · review",
+          "legendFormat": "High (0.5–0.7)",
           "refId": "C",
           "range": false,
           "instant": true
@@ -874,7 +874,7 @@
             "uid": "prometheus"
           },
           "expr": "sum(increase(risk_score_bucket{le=\"+Inf\"}[$__range])) - sum(increase(risk_score_bucket{le=\"0.7\"}[$__range]))",
-          "legendFormat": "Critical (≥ 0.7) · rejected",
+          "legendFormat": "Critical (≥ 0.7)",
           "refId": "D",
           "range": false,
           "instant": true
@@ -895,14 +895,14 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Low  (< 0.3) · auto-approved"
+              "options": "Low (< 0.3)"
             },
             "properties": [
               {
                 "id": "color",
                 "value": {
                   "mode": "fixed",
-                  "fixedColor": "green"
+                  "fixedColor": "super-light-purple"
                 }
               }
             ]
@@ -917,7 +917,7 @@
                 "id": "color",
                 "value": {
                   "mode": "fixed",
-                  "fixedColor": "yellow"
+                  "fixedColor": "light-purple"
                 }
               }
             ]
@@ -925,14 +925,14 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "High (0.5–0.7) · review"
+              "options": "High (0.5–0.7)"
             },
             "properties": [
               {
                 "id": "color",
                 "value": {
                   "mode": "fixed",
-                  "fixedColor": "orange"
+                  "fixedColor": "purple"
                 }
               }
             ]
@@ -940,14 +940,14 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Critical (≥ 0.7) · rejected"
+              "options": "Critical (≥ 0.7)"
             },
             "properties": [
               {
                 "id": "color",
                 "value": {
                   "mode": "fixed",
-                  "fixedColor": "red"
+                  "fixedColor": "dark-purple"
                 }
               }
             ]

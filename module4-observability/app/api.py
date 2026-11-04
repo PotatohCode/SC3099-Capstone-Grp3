@@ -176,8 +176,12 @@ def post(path: str, body: dict | None = None) -> Any:
     return request("POST", path, json=body or {})
 
 
-def patch(path: str, body: dict) -> Any:
-    return request("PATCH", path, json=body)
+def patch(path: str, body: dict | None = None) -> Any:
+    return request("PATCH", path, json=body or {})
+
+
+def put(path: str, body: dict) -> Any:
+    return request("PUT", path, json=body)
 
 
 def delete(path: str) -> Any:
