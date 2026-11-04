@@ -37,7 +37,7 @@ interface CheckInContextValue {
   restartCount: number
   setSubmitting: (submitting: boolean) => void
   selectSession: (session: SessionSummary) => void
-  markAlreadyCheckedIn: (session: SessionSummary, queued: boolean) => void
+  markAlreadyCheckedIn: (session: SessionSummary) => void
   setLocation: (location: LocationData) => void
   setMedia: (media: CapturedMedia) => void
   goToStep: (step: CheckInStep) => void
@@ -45,7 +45,6 @@ interface CheckInContextValue {
   retakeLocation: () => void
   previousStep: () => void
   submitSucceeded: (result: CheckInResponse) => void
-  submitQueued: () => void
   submitFailed: (challengeInvalid: boolean) => void
   reset: () => void
 }
@@ -64,9 +63,9 @@ export function CheckInProvider({ children }: { children: ReactNode }) {
 
   const selectSession = useCallback((session: SessionSummary) => dispatch({ type: 'SELECT_SESSION', session }), [])
   const markAlreadyCheckedIn = useCallback(
-    (session: SessionSummary, queued: boolean) => {
+    (session: SessionSummary) => {
       if (userId) clearAttempts(userId, session.id)
-      dispatch({ type: 'ALREADY_CHECKED_IN', session, queued })
+      dispatch({ type: 'ALREADY_CHECKED_IN', session })
     },
     [userId]
   )
@@ -87,10 +86,6 @@ export function CheckInProvider({ children }: { children: ReactNode }) {
     },
     [finishSession]
   )
-  const submitQueued = useCallback(() => {
-    finishSession()
-    dispatch({ type: 'SUBMIT_QUEUED' })
-  }, [finishSession])
   const submitFailed = useCallback(
     (challengeInvalid: boolean) => dispatch({ type: 'SUBMIT_FAILED', challengeInvalid }),
     []
@@ -131,11 +126,10 @@ export function CheckInProvider({ children }: { children: ReactNode }) {
       retakeLocation,
       previousStep,
       submitSucceeded,
-      submitQueued,
       submitFailed,
       reset,
     }),
-    [state, restartCount, setSubmitting, selectSession, markAlreadyCheckedIn, setLocation, setMedia, goToStep, continueFromLocation, retakeLocation, previousStep, submitSucceeded, submitQueued, submitFailed, reset]
+    [state, restartCount, setSubmitting, selectSession, markAlreadyCheckedIn, setLocation, setMedia, goToStep, continueFromLocation, retakeLocation, previousStep, submitSucceeded, submitFailed, reset]
   )
 
   return <CheckInContext.Provider value={value}>{children}</CheckInContext.Provider>

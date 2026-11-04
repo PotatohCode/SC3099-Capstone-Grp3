@@ -33,8 +33,11 @@ async function flush(ms = 0) {
 function renderCapture(photoMode = false) {
   const onComplete = jest.fn<void, [CapturedMedia]>()
   const onReselectSession = jest.fn()
-  render(<CameraCapture sessionId="s1" photoMode={photoMode} onComplete={onComplete} onReselectSession={onReselectSession} />)
-  return { onComplete, onReselectSession }
+  const onServerUnreachable = jest.fn()
+  render(
+    <CameraCapture sessionId="s1" photoMode={photoMode} onComplete={onComplete} onReselectSession={onReselectSession} onServerUnreachable={onServerUnreachable} />
+  )
+  return { onComplete, onReselectSession, onServerUnreachable }
 }
 
 describe('CameraCapture', () => {
@@ -124,15 +127,16 @@ describe('CameraCapture', () => {
     expect(camera.track.stop).toHaveBeenCalled()
   })
 
-  it('falls back to a single photo when the challenge request gets no response', async () => {
+  it('sends the student back instead of taking a photo when the challenge request gets no response', async () => {
     installCamera()
     installPermissions('granted')
     stubAdapter(() => ({ network: true }))
-    const { onComplete } = renderCapture()
+    const { onComplete, onServerUnreachable } = renderCapture()
     await flush()
     fireEvent.click(screen.getByRole('button', { name: 'Start' }))
     await flush(3000)
-    expect(onComplete.mock.calls[0][0].kind).toBe('photo')
+    expect(onComplete).not.toHaveBeenCalled()
+    expect(onServerUnreachable).toHaveBeenCalledTimes(1)
   })
 
   it('skips the challenge in photo mode', async () => {
@@ -362,7 +366,7 @@ describe('CameraCapture', () => {
     installCamera()
     Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia } })
     installPermissions('prompt')
-    const { unmount } = render(<CameraCapture sessionId="s1" photoMode={false} onComplete={jest.fn()} onReselectSession={jest.fn()} />)
+    const { unmount } = render(<CameraCapture sessionId="s1" photoMode={false} onComplete={jest.fn()} onReselectSession={jest.fn()} onServerUnreachable={jest.fn()} />)
     await flush()
     fireEvent.click(screen.getByRole('button', { name: 'Allow camera access' }))
     await flush()
@@ -565,19 +569,18 @@ describe('CameraCapture attempts (one per Start, 3 per session)', () => {
     expect(onComplete.mock.calls[0][0]).toEqual({ kind: 'photo', photo: frames[Math.floor(frames.length / 2)], verification: 'review' })
   })
 
-  it('a third Start that loses the network at verify submits the burst for review without restarting freshness', async () => {
+  it('a third Start that loses the network at verify gives the try back and sends the student back', async () => {
     installCamera()
     installPermissions('granted')
     scripted([{ status: 200, data: { result: 'unverified', attempts_left: 3 } }, { status: 200, data: { result: 'unverified', attempts_left: 3 } }, { network: true }])
-    const { onComplete } = renderCapture()
+    const { onComplete, onServerUnreachable } = renderCapture()
     await flush()
     await startAndCapture()
     await startAndCapture()
-    const before = performance.now()
     await startAndCapture()
-    const media = onComplete.mock.calls[0][0]
-    expect(media).toMatchObject({ kind: 'burst', challengeId: 'ch-3', verification: 'review' })
-    expect(media.kind === 'burst' && media.fetchedAtMs).toBeLessThanOrEqual(before + 50)
+    expect(onComplete).not.toHaveBeenCalled()
+    expect(onServerUnreachable).toHaveBeenCalledTimes(1)
+    expect(attemptsUsed('u1', 's1')).toBe(2)
   })
 
   it('keeps a verify in flight when the tab is hidden and no Cancel is offered while verifying', async () => {
@@ -618,7 +621,7 @@ describe('CameraCapture attempts (one per Start, 3 per session)', () => {
     const { onComplete } = renderCapture()
     await flush()
     expect(screen.getByText('No face-check tries left')).toBeTruthy()
-    expect(screen.getByText(/You've used all 3 face-check tries for this session\. Your liveliness check was unsuccessful/)).toBeTruthy()
+    expect(screen.getByText(/You've used all 3 face-check tries for this session\. Your liveness check was unsuccessful/)).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Start' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Skip face check' })).toBeNull()
     expect(camera.getUserMedia).not.toHaveBeenCalled()

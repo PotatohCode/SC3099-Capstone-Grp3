@@ -7,7 +7,7 @@ export type Verification = 'passed' | 'review'
 
 export const MAX_ATTEMPTS = 3
 export const RETRY_MESSAGE = 'Unsuccessful capture, please retry.'
-export const REVIEW_MESSAGE = 'Your liveliness check was unsuccessful, please approach your instructor to mark your attendance.'
+export const REVIEW_MESSAGE = 'Your liveness check was unsuccessful, please approach your instructor to mark your attendance.'
 
 export type AttemptOutcome =
   | { kind: 'verified'; response: VerifyChallengeResponse }
@@ -59,7 +59,7 @@ export function undoAttempt(userId: string, sessionId: string): void {
   writeCount(key, Math.max(0, readCount(key) - 1))
 }
 
-/** Forgets the student's attempts for a session once its check-in has been submitted or queued. */
+/** Forgets the student's attempts for a session once its check-in has been submitted. */
 export function clearAttempts(userId: string, sessionId: string): void {
   const key = `${userId}:${sessionId}`
   memory.delete(key)

@@ -5,7 +5,6 @@ import type { CheckInRequest } from '@/lib/types'
 import { installCamera, installGeolocation, installPermissions } from '@/test/browser-mocks'
 import { stubAdapter, type RecordedRequest } from '@/test/axios-stub'
 import { attemptsUsed, resetVerifyCalls } from '@/lib/liveness/verify'
-import { clearOfflineQueue } from '@/lib/services/offline.service'
 
 jest.mock('@/lib/hooks/useAuth', () => ({
   useAuth: () => ({
@@ -13,18 +12,6 @@ jest.mock('@/lib/hooks/useAuth', () => ({
     saveConsent: jest.fn(async () => undefined),
   }),
 }))
-
-jest.mock('localforage', () => {
-  const store = new Map<string, unknown>()
-  const instance = {
-    setItem: async (k: string, v: unknown) => store.set(k, v),
-    getItem: async (k: string) => store.get(k) ?? null,
-    removeItem: async (k: string) => store.delete(k),
-    clear: async () => store.clear(),
-    iterate: async (fn: (v: unknown) => void) => store.forEach((v) => fn(v)),
-  }
-  return { createInstance: () => instance }
-})
 
 const base = { course_id: 'c1', course_code: 'SC3099', status: 'active', scheduled_start: '', scheduled_end: '', venue_name: 'LT1' }
 const photoOnly = { ...base, id: 's1', name: 'Tutorial A', require_liveness_check: false, require_face_match: true }
@@ -72,7 +59,6 @@ describe('face step follows the session liveness requirement', () => {
     installGeolocation({ latitude: 1.3483, longitude: 103.6831, accuracy: 15 })
     Object.defineProperty(navigator, 'onLine', { configurable: true, get: () => true })
     window.localStorage.clear()
-    await clearOfflineQueue()
   })
   afterEach(() => jest.useRealTimers())
 

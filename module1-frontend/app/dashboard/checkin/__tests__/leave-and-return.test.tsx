@@ -6,7 +6,6 @@ import { installCamera, installGeolocation, installPermissions } from '@/test/br
 import { stubAdapter, type RecordedRequest, type StubReply } from '@/test/axios-stub'
 import { attemptsUsed, resetVerifyCalls } from '@/lib/liveness/verify'
 import { requestCheckInRestart } from '@/lib/checkin/restart'
-import { clearOfflineQueue } from '@/lib/services/offline.service'
 import httpClient from '@/lib/utils/http-client'
 import type { InternalAxiosRequestConfig } from 'axios'
 
@@ -16,18 +15,6 @@ jest.mock('@/lib/hooks/useAuth', () => ({
     saveConsent: jest.fn(async () => undefined),
   }),
 }))
-
-jest.mock('localforage', () => {
-  const store = new Map<string, unknown>()
-  const instance = {
-    setItem: async (k: string, v: unknown) => store.set(k, v),
-    getItem: async (k: string) => store.get(k) ?? null,
-    removeItem: async (k: string) => store.delete(k),
-    clear: async () => store.clear(),
-    iterate: async (fn: (v: unknown) => void) => store.forEach((v) => fn(v)),
-  }
-  return { createInstance: () => instance }
-})
 
 function makeSession(id: string, name: string) {
   return { id, course_id: 'c1', course_code: 'SC3099', name, status: 'active', scheduled_start: '', scheduled_end: '', venue_name: 'LT1' }
@@ -109,7 +96,6 @@ describe('leaving a check-in and coming back', () => {
     geo = installGeolocation({ latitude: 1.3483, longitude: 103.6831, accuracy: 15 })
     Object.defineProperty(navigator, 'onLine', { configurable: true, get: () => true })
     window.localStorage.clear()
-    await clearOfflineQueue()
   })
   afterEach(() => jest.useRealTimers())
 

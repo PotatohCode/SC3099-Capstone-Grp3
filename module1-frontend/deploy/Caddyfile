@@ -24,6 +24,12 @@
 	import saiv_routes
 }
 
+# Instructor dashboard over HTTPS, so browser geolocation works off localhost.
+{$DASHBOARD_SITES:https://localhost:8443} {
+	tls internal
+	reverse_proxy dashboard:8501
+}
+
 http://:3000 {
 	import saiv_routes
 }

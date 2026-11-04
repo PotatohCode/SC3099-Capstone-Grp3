@@ -8,15 +8,22 @@ interface FakeRequest {
   url: string
   method: string
   destination: string
+  mode?: string
 }
 
-function loadWorker(network: (url: string) => Promise<{ ok: boolean; body: string; clone: () => unknown }>) {
+type FakeResponse = { ok: boolean; body: string; clone: () => unknown; text?: () => Promise<string> }
+
+function loadWorker(network: (url: string) => Promise<FakeResponse>) {
   const store = new Map<string, unknown>()
   const listeners: Record<string, Handler> = {}
+  const key = (req: FakeRequest | string) => new URL(typeof req === 'string' ? req : req.url, 'https://app.test').href
   const cache = {
-    match: async (req: FakeRequest) => store.get(req.url),
-    put: async (req: FakeRequest, res: unknown) => {
-      store.set(req.url, res)
+    match: async (req: FakeRequest | string) => store.get(key(req)),
+    put: async (req: FakeRequest | string, res: unknown) => {
+      store.set(key(req), res)
+    },
+    add: async (req: string) => {
+      store.set(key(req), await network(key(req)))
     },
     addAll: async () => undefined,
   }
@@ -37,16 +44,23 @@ function loadWorker(network: (url: string) => Promise<{ ok: boolean; body: strin
   self.self = self
   context.self = self
   runInNewContext(readFileSync(join(process.cwd(), 'public/service-worker.js'), 'utf8'), context)
-  async function get(url: string) {
+  const background: Promise<unknown>[] = []
+  async function get(url: string, mode?: string) {
     let pending: Promise<unknown> | undefined
-    listeners.fetch({ request: { url, method: 'GET', destination: '' }, respondWith: (p) => (pending = p) })
-    return pending
+    listeners.fetch({
+      request: { url, method: 'GET', destination: '', mode },
+      respondWith: (p) => (pending = p),
+      waitUntil: (p: Promise<unknown>) => background.push(p),
+    } as Parameters<Handler>[0])
+    const result = await pending
+    await Promise.all(background)
+    return result
   }
   return { get, store }
 }
 
 function reply(body: string) {
-  const res = { ok: true, body, clone: () => res }
+  const res: FakeResponse = { ok: true, body, clone: () => res, text: async () => body }
   return res
 }
 
@@ -70,5 +84,35 @@ describe('service worker caching for check-in history', () => {
     await get(url)
     online = false
     expect(await get(url)).toMatchObject({ body: 'cached' })
+  })
+})
+
+describe('service worker caching for app pages', () => {
+  const page = 'https://app.test/dashboard/settings'
+  const html = '<script src="/_next/static/chunks/app/dashboard/settings/page-abc.js"></script><link href="/_next/static/css/x.css">'
+
+  it('caches a page and the scripts and styles it references, then serves them offline', async () => {
+    let online = true
+    const { get, store } = loadWorker(async (url) => {
+      if (!online) throw new TypeError('Failed to fetch')
+      return reply(url === page ? html : `asset ${url}`)
+    })
+    expect(await get(page, 'navigate')).toMatchObject({ body: html })
+    expect(store.has('https://app.test/_next/static/chunks/app/dashboard/settings/page-abc.js')).toBe(true)
+    expect(store.has('https://app.test/_next/static/css/x.css')).toBe(true)
+    online = false
+    expect(await get(page, 'navigate')).toMatchObject({ body: html })
+  })
+
+  it('serves the login page offline even though /auth/ API calls stay network-only', async () => {
+    let online = true
+    const { get } = loadWorker(async (url) => {
+      if (!online) throw new TypeError('Failed to fetch')
+      return reply(`body ${url}`)
+    })
+    await get('https://app.test/auth/login', 'navigate')
+    online = false
+    expect(await get('https://app.test/auth/login', 'navigate')).toMatchObject({ body: 'body https://app.test/auth/login' })
+    await expect(get('https://app.test/api/v1/auth/me')).rejects.toThrow('Failed to fetch')
   })
 })

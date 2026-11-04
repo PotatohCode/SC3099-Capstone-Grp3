@@ -15,18 +15,6 @@ jest.mock('@/lib/hooks/useAuth', () => ({
   }),
 }))
 
-jest.mock('localforage', () => {
-  const store = new Map<string, unknown>()
-  const instance = {
-    setItem: async (k: string, v: unknown) => store.set(k, v),
-    getItem: async (k: string) => store.get(k) ?? null,
-    removeItem: async (k: string) => store.delete(k),
-    clear: async () => store.clear(),
-    iterate: async (fn: (v: unknown) => void) => store.forEach((v) => fn(v)),
-  }
-  return { createInstance: () => instance }
-})
-
 const session = {
   id: 's1',
   course_id: 'c1',
@@ -225,8 +213,10 @@ describe('check-in wizard', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Start' }))
     await flush(CAPTURE_MS + 200)
     expect(
-      screen.getByText('Your liveliness check was unsuccessful, please approach your instructor to mark your attendance.')
+      screen.getByText('Your liveness check was unsuccessful, please approach your instructor to mark your attendance.')
     ).toBeTruthy()
+    expect(screen.getByText('Not confirmed (sent for review)')).toBeTruthy()
+    expect(screen.queryByText(/^Completed/)).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Submit check-in' }))
     await flush()
     const verified = (calls.filter((c) => c.url?.endsWith('/verify'))[2].data as { frames: string[] }).frames
@@ -286,7 +276,7 @@ describe('check-in wizard', () => {
     await flush(CAPTURE_MS + 200)
     expect(screen.getByText('Review & submit')).toBeTruthy()
     expect(
-      screen.getByText('Your liveliness check was unsuccessful, please approach your instructor to mark your attendance.')
+      screen.getByText('Your liveness check was unsuccessful, please approach your instructor to mark your attendance.')
     ).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Submit check-in' }))
     await flush()
@@ -311,7 +301,7 @@ describe('check-in wizard', () => {
     await flush(100)
     expect(screen.getByText('Not completed')).toBeTruthy()
     expect(
-      screen.getByText('Your liveliness check was unsuccessful, please approach your instructor to mark your attendance.')
+      screen.getByText('Your liveness check was unsuccessful, please approach your instructor to mark your attendance.')
     ).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Submit check-in' }))
     await flush()
@@ -344,7 +334,7 @@ describe('check-in wizard', () => {
     expect(calls.filter((c) => c.url === '/checkins/challenge')).toHaveLength(3)
   })
 
-  it('queues the check-in with one image when offline', async () => {
+  it('blocks submitting while offline and stores nothing on the device', async () => {
     const calls = backend([])
     render(<CheckInProvider><CheckInWizardPage /></CheckInProvider>)
     await flush()
@@ -353,15 +343,18 @@ describe('check-in wizard', () => {
     act(() => {
       window.dispatchEvent(new Event('offline'))
     })
-    fireEvent.click(screen.getByRole('button', { name: 'Submit check-in' }))
+    const submit = screen.getByRole('button', { name: 'Submit check-in' }) as HTMLButtonElement
+    expect(submit.disabled).toBe(true)
+    expect(screen.getByText(/Check-ins are sent live, so connect to the internet to submit/)).toBeTruthy()
+    fireEvent.click(submit)
     await flush()
-    expect(screen.getByText('Saved for sync')).toBeTruthy()
     expect(calls.filter((c) => c.url === '/checkins/')).toHaveLength(0)
-    const { getQueuedCheckIns } = await import('@/lib/services/offline.service')
-    const [queued] = await getQueuedCheckIns()
-    expect(queued.payload).not.toHaveProperty('challenge_id')
-    expect(queued.payload).not.toHaveProperty('liveness_challenge_frames')
-    expect(typeof queued.payload.liveness_challenge_response).toBe('string')
+    expect(Object.keys(window.sessionStorage).filter((k) => /queue/i.test(k))).toEqual([])
+    Object.defineProperty(navigator, 'onLine', { configurable: true, get: () => true })
+    act(() => {
+      window.dispatchEvent(new Event('online'))
+    })
+    expect((screen.getByRole('button', { name: 'Submit check-in' }) as HTMLButtonElement).disabled).toBe(false)
   })
 
   it('Back from the face check stays on location and lets the student change session', async () => {

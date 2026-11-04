@@ -1,4 +1,4 @@
-import { classifyChallengeError, classifyCheckInError } from '@/lib/checkin/errors'
+import { classifyChallengeError, classifyCheckInError, OFFLINE_MESSAGE } from '@/lib/checkin/errors'
 import { PayloadTooLargeError } from '@/lib/checkin/payload'
 import { httpError, networkError } from '@/test/axios-stub'
 
@@ -51,8 +51,8 @@ describe('classifyCheckInError', () => {
     )
   })
 
-  it('queues only when the browser is offline', () => {
-    expect(classifyCheckInError(networkError(), false).action).toBe('queue-offline')
+  it('tells an offline student to reconnect instead of saving the check-in', () => {
+    expect(classifyCheckInError(networkError(), false)).toEqual({ message: OFFLINE_MESSAGE, action: 'retry-capture' })
     expect(classifyCheckInError(networkError(), true)).toEqual({
       message: "We couldn't reach the server. Check your connection and try again.",
       action: 'retry-capture',
@@ -67,9 +67,12 @@ describe('classifyCheckInError', () => {
 })
 
 describe('classifyChallengeError', () => {
-  it('falls back to a photo on 503 or no response', () => {
+  it('falls back to a photo on 503 and sends the student back when the server is unreachable', () => {
     expect(classifyChallengeError(httpError(503, { code: 'CHALLENGE_UNAVAILABLE' }))).toEqual({ fallbackToPhoto: true })
-    expect(classifyChallengeError(networkError())).toEqual({ fallbackToPhoto: true })
+    const unreachable = { fallbackToPhoto: false, view: { message: 'Unable to connect to server.', action: 'reselect-session' } }
+    expect(classifyChallengeError(networkError())).toEqual(unreachable)
+    expect(classifyChallengeError(httpError(502))).toEqual(unreachable)
+    expect(classifyChallengeError(httpError(504))).toEqual(unreachable)
   })
 
   it('sends session problems back to session select', () => {

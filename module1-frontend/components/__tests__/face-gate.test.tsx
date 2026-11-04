@@ -13,9 +13,7 @@ jest.mock('next/navigation', () => ({
   useRouter: () => ({ push, replace }),
   usePathname: () => mockPath,
 }))
-jest.mock('@/lib/hooks/useOfflineSync', () => ({
-  useOfflineSync: () => ({ isOnline: true, queueLength: 2, isSyncing: false, syncBlocked: mockUser?.face_enrolled !== true, syncNow: jest.fn() }),
-}))
+jest.mock('@/lib/hooks/useOnlineStatus', () => ({ useOnlineStatus: () => true }))
 jest.mock('@/lib/context/CheckInContext', () => ({
   CheckInProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }))
@@ -24,7 +22,6 @@ import DashboardLayout from '@/app/dashboard/layout'
 import DashboardHomePage from '@/app/dashboard/page'
 import CheckInLayout from '@/app/dashboard/checkin/layout'
 import { FaceEnrollmentPrompt } from '@/components/FaceEnrollmentPrompt'
-import { OnlineStatusIndicator } from '@/components/OnlineStatusIndicator'
 
 const student: User = { id: 'u1', email: 's@e.edu', full_name: 'Sam', role: 'student' }
 
@@ -105,11 +102,6 @@ describe('face identity gate', () => {
       expect(screen.getByText('Check-in is turned off')).toBeTruthy()
     })
 
-    it('hides Sync now while blocked', () => {
-      render(<OnlineStatusIndicator />)
-      expect(screen.queryByRole('button', { name: 'Sync now' })).toBeNull()
-      expect(screen.getByText('Sync paused until your face is registered')).toBeTruthy()
-    })
   })
 
   describe('student with a registered face', () => {
@@ -121,7 +113,6 @@ describe('face identity gate', () => {
       const { container } = render(<DashboardLayout><DashboardHomePage /></DashboardLayout>)
       expect(screen.queryByRole('dialog')).toBeNull()
       expect(container.querySelectorAll('a[href="/dashboard/checkin"]')).toHaveLength(2)
-      expect(screen.getByRole('button', { name: 'Sync now' })).toBeTruthy()
       render(<CheckInLayout><p>wizard</p></CheckInLayout>)
       expect(screen.getByText('wizard')).toBeTruthy()
     })

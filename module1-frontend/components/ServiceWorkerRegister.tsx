@@ -12,9 +12,10 @@ export function ServiceWorkerRegister() {
     if (typeof window === 'undefined') return
     if (!('serviceWorker' in navigator)) return
 
-    navigator.serviceWorker.register('/service-worker.js').catch(() => {
+    navigator.serviceWorker.register('/service-worker.js').catch((error: unknown) => {
       // Registration failures (e.g. unsupported browser, dev environment quirks)
       // should not break the app - PWA features simply degrade gracefully.
+      console.warn('Service worker registration failed; offline support is unavailable.', error)
     })
   }, [])
 

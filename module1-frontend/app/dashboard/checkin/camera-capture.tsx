@@ -13,7 +13,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAuth } from '@/lib/hooks/useAuth'
 import { useCameraStream, type CameraStatus } from '@/lib/hooks/useCameraStream'
 import { requestChallenge, verifyChallenge } from '@/lib/services/checkin.service'
-import { classifyChallengeError, type CheckInErrorView } from '@/lib/checkin/errors'
+import { classifyChallengeError, isServerUnreachable, type CheckInErrorView } from '@/lib/checkin/errors'
 import { middleFrame, type CapturedMedia } from '@/lib/checkin/payload'
 
 type BurstMedia = Extract<CapturedMedia, { kind: 'burst' }>
@@ -31,6 +31,7 @@ interface CameraCaptureProps {
   photoMode: boolean
   onComplete: (media: CapturedMedia) => void
   onReselectSession: () => void
+  onServerUnreachable: () => void
 }
 
 /** Skip button with a confirm prompt, for students who can't or won't do the face check. */
@@ -81,7 +82,7 @@ function SkipFaceCheck({ onSkip }: { onSkip: () => void }) {
 const INTERRUPTED = "The face check was interrupted. Let's try again."
 const NO_FRAMES = "We couldn't get images from your camera. Please try again."
 
-export function CameraCapture({ sessionId, photoMode, onComplete, onReselectSession }: CameraCaptureProps) {
+export function CameraCapture({ sessionId, photoMode, onComplete, onReselectSession, onServerUnreachable }: CameraCaptureProps) {
   const { user, saveConsent } = useAuth()
   const { videoRef, status, error, isStreaming, startStream, stopStream } = useCameraStream()
   const [gate, setGate] = useState<ConsentGate | null>(null)
@@ -187,6 +188,14 @@ export function CameraCapture({ sessionId, photoMode, onComplete, onReselectSess
     onComplete({ kind: 'photo', photo })
   }
 
+  /** Gives back the try, releases the camera and returns the student to the session list. */
+  function leaveUnreachable(userId: string) {
+    undoAttempt(userId, sessionId)
+    abortRef.current = null
+    stopStream()
+    onServerUnreachable()
+  }
+
   function finishAttempt(decision: AttemptDecision, burst: BurstMedia | null) {
     if (!mountedRef.current) return
     abortRef.current = null
@@ -238,6 +247,7 @@ export function CameraCapture({ sessionId, photoMode, onComplete, onReselectSess
         challenge = await requestChallenge(sessionId)
       } catch (err) {
         if (!mountedRef.current) return
+        if (isServerUnreachable(err)) return leaveUnreachable(userId)
         const classified = classifyChallengeError(err)
         if (classified.fallbackToPhoto && classified.attemptsExhausted) {
           return finishAttempt({ kind: 'submit', media: 'none', verification: 'review', restartFreshness: false }, null)
@@ -299,6 +309,8 @@ export function CameraCapture({ sessionId, photoMode, onComplete, onReselectSess
       try {
         outcome = { kind: 'verified', response: await verifyChallenge(challenge.challenge_id, frames) }
       } catch (error) {
+        if (!mountedRef.current) return
+        if (isServerUnreachable(error)) return leaveUnreachable(userId)
         outcome = { kind: 'verify-error', error }
       }
       finishAttempt(decideAttempt(outcome, attempt), burst)

@@ -12,16 +12,15 @@ import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useCheckIn } from '@/lib/hooks/useCheckIn'
 import type { CheckInStep } from '@/lib/context/CheckInContext'
-import { useOfflineSync } from '@/lib/hooks/useOfflineSync'
+import { useOnlineStatus } from '@/lib/hooks/useOnlineStatus'
 import { getMySessions } from '@/lib/services/session.service'
 import { submitCheckIn } from '@/lib/services/checkin.service'
 import { getOrCreateDeviceFingerprint } from '@/lib/utils/device-fingerprint'
 import { extractErrorMessage } from '@/lib/utils/http-client'
 import { submitAttempt } from '@/lib/checkin/submit'
-import { ALREADY_CHECKED_IN_VIEW, QUEUED_CHECKIN_VIEW, type CheckInErrorAction, type CheckInErrorView } from '@/lib/checkin/errors'
+import { ALREADY_CHECKED_IN_VIEW, SERVER_UNREACHABLE_MESSAGE, type CheckInErrorAction, type CheckInErrorView } from '@/lib/checkin/errors'
 import { hasCheckIn, loadCheckedInSessions, PRECHECK_TIMEOUT_MS } from '@/lib/checkin/checked-in'
 import { REVIEW_MESSAGE } from '@/lib/liveness/verify'
-import { useAuth } from '@/lib/hooks/useAuth'
 import { FlaggedNotice } from '@/components/FlaggedNotice'
 import { LoadingSpinner } from '@/components/LoadingSpinner'
 import { StatusBadge, RiskBadge } from '@/components/StatusBadge'
@@ -83,11 +82,8 @@ function StepIndicator({ current }: { current: CheckInStep }) {
 
 function SessionSelectStep() {
   const { selectSession, markAlreadyCheckedIn } = useCheckIn()
-  const { user } = useAuth()
-  const userId = user?.id ?? null
   const [sessions, setSessions] = useState<SessionSummary[]>([])
   const [hiddenCount, setHiddenCount] = useState(0)
-  const [hiddenQueued, setHiddenQueued] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
   const [checkingId, setCheckingId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -108,13 +104,12 @@ function SessionSelectStep() {
       try {
         const [data, done] = await Promise.all([
           getMySessions({ status: 'active' }),
-          loadCheckedInSessions(userId).catch(() => null),
+          loadCheckedInSessions().catch(() => null),
         ])
         if (cancelled) return
         const open = done ? data.filter((s) => !hasCheckIn(done, s.id)) : data
         setSessions(open)
         setHiddenCount(data.length - open.length)
-        setHiddenQueued(!!done && data.some((s) => done.queued.has(s.id)))
       } catch (err) {
         if (!cancelled) setError(extractErrorMessage(err, 'Failed to load sessions.'))
       } finally {
@@ -125,17 +120,16 @@ function SessionSelectStep() {
     return () => {
       cancelled = true
     }
-  }, [userId])
+  }, [])
 
   async function choose(session: SessionSummary) {
     setCheckingId(session.id)
-    const done = await loadCheckedInSessions(userId, { courseId: session.course_id, timeoutMs: PRECHECK_TIMEOUT_MS }).catch(
+    const done = await loadCheckedInSessions({ courseId: session.course_id, timeoutMs: PRECHECK_TIMEOUT_MS }).catch(
       () => null
     )
     if (!mountedRef.current) return
     setCheckingId(null)
-    if (done?.submitted.has(session.id)) markAlreadyCheckedIn(session, false)
-    else if (done?.queued.has(session.id)) markAlreadyCheckedIn(session, true)
+    if (done?.submitted.has(session.id)) markAlreadyCheckedIn(session)
     else selectSession(session)
   }
 
@@ -145,24 +139,15 @@ function SessionSelectStep() {
     return <p className="text-sm text-red-600" role="alert">{error}</p>
   }
 
-  const queuedNote = hiddenQueued && (
-    <p className="text-sm text-gray-600">
-      A check-in you made offline is saved on this device and will be sent automatically when you&apos;re back online.
-    </p>
-  )
-
   if (sessions.length === 0) {
     return hiddenCount > 0 ? (
-      <div className="space-y-2">
-        <p className="text-sm text-gray-600">
-          You&apos;ve already checked in to every open session. You can see them in{' '}
-          <Link href="/dashboard/history" className="font-medium text-blue-700 underline">
-            History
-          </Link>
-          .
-        </p>
-        {queuedNote}
-      </div>
+      <p className="text-sm text-gray-600">
+        You&apos;ve already checked in to every open session. You can see them in{' '}
+        <Link href="/dashboard/history" className="font-medium text-blue-700 underline">
+          History
+        </Link>
+        .
+      </p>
     ) : (
       <p className="text-sm text-gray-600">
         No active check-in sessions right now. Check back once your instructor opens one.
@@ -172,7 +157,6 @@ function SessionSelectStep() {
 
   return (
     <div className="space-y-3">
-      {queuedNote}
       <ul className="space-y-3">
         {sessions.map((session) => (
           <li key={session.id}>
@@ -195,7 +179,7 @@ function SessionSelectStep() {
   )
 }
 
-const ACTION_LABELS: Record<Exclude<CheckInErrorAction, 'queue-offline' | 'view-history'>, string> = {
+const ACTION_LABELS: Record<Exclude<CheckInErrorAction, 'view-history'>, string> = {
   'retry-capture': 'Redo face check',
   'retry-location': 'Update my location',
   'reselect-session': 'Choose another session',
@@ -219,7 +203,7 @@ function CheckInErrorPanel({ view, onAction }: { view: CheckInErrorView; onActio
             >
               Go to history
             </Link>
-          ) : action === 'queue-offline' ? null : (
+          ) : (
             <button
               key={action}
               type="button"
@@ -240,19 +224,17 @@ function CheckInErrorPanel({ view, onAction }: { view: CheckInErrorView; onActio
 }
 
 function ConfirmStep() {
-  const { session, media, location, result, alreadyCheckedIn, previousStep, goToStep, retakeLocation, reset, submitSucceeded, submitQueued, submitFailed, setSubmitting } =
+  const { session, media, location, result, alreadyCheckedIn, previousStep, goToStep, retakeLocation, reset, submitSucceeded, submitFailed, setSubmitting } =
     useCheckIn()
-  const { isOnline, queueCheckIn } = useOfflineSync()
+  const isOnline = useOnlineStatus()
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [errorView, setErrorView] = useState<CheckInErrorView | null>(null)
-  const [queuedOffline, setQueuedOffline] = useState(false)
 
   async function handleSubmit() {
     if (!session || !media || !location) return
     setIsSubmitting(true)
     setSubmitting(true)
     setErrorView(null)
-    setQueuedOffline(false)
     const outcome = await submitAttempt({
       sessionId: session.id,
       location,
@@ -262,13 +244,9 @@ function ConfirmStep() {
       browserOnline: () => navigator.onLine,
       now: () => performance.now(),
       submit: submitCheckIn,
-      queue: queueCheckIn,
     }).finally(() => setSubmitting(false))
     if (outcome.kind === 'success') {
       submitSucceeded(outcome.result)
-    } else if (outcome.kind === 'queued') {
-      submitQueued()
-      setQueuedOffline(true)
     } else {
       submitFailed(!!outcome.view.challengeInvalid)
       setErrorView(outcome.view)
@@ -308,31 +286,9 @@ function ConfirmStep() {
     )
   }
 
-  if (queuedOffline) {
-    return (
-      <div className="space-y-3 rounded-lg border border-amber-200 bg-amber-50 p-5">
-        <h2 className="text-lg font-semibold text-amber-800">Saved for sync</h2>
-        <p className="text-sm text-amber-700">
-          You&apos;re offline. Your check-in has been saved and will be submitted
-          automatically once you&apos;re back online. Keep this tab open.
-        </p>
-        <button
-          type="button"
-          onClick={reset}
-          className="min-h-[44px] rounded-md border border-amber-400 px-4 py-2 text-sm font-medium text-amber-800 hover:bg-amber-100"
-        >
-          Done
-        </button>
-      </div>
-    )
-  }
-
   if (alreadyCheckedIn) {
     return (
-      <CheckInErrorPanel
-        view={alreadyCheckedIn === 'queued' ? QUEUED_CHECKIN_VIEW : ALREADY_CHECKED_IN_VIEW}
-        onAction={handleErrorAction}
-      />
+      <CheckInErrorPanel view={ALREADY_CHECKED_IN_VIEW} onAction={handleErrorAction} />
     )
   }
 
@@ -357,7 +313,9 @@ function ConfirmStep() {
                 : media.kind === 'burst'
                   ? media.verification === 'passed'
                     ? `Movements confirmed (${media.sequence.length} actions)`
-                    : `Completed (${media.sequence.length} actions)`
+                    : media.verification === 'review'
+                      ? 'Not confirmed (sent for review)'
+                      : `Recorded (${media.sequence.length} actions)`
                   : media.kind === 'photo' && media.verification !== 'review'
                     ? 'Photo taken'
                     : media.kind === 'none' && media.skipped
@@ -382,8 +340,8 @@ function ConfirmStep() {
           </p>
         )}
         {!isOnline && (
-          <p className="mt-3 text-xs text-amber-700">
-            You&apos;re currently offline - this check-in will be queued and synced automatically.
+          <p className="mt-3 text-xs text-amber-700" role="status">
+            You&apos;re offline. Check-ins are sent live, so connect to the internet to submit.
           </p>
         )}
       </div>
@@ -400,7 +358,7 @@ function ConfirmStep() {
         <button
           type="button"
           onClick={handleSubmit}
-          disabled={isSubmitting || !session || !media || !location}
+          disabled={isSubmitting || !isOnline || !session || !media || !location}
           className="min-h-[44px] flex-1 rounded-md bg-blue-700 px-4 py-2 font-medium text-white hover:bg-blue-800 disabled:opacity-60"
         >
           {isSubmitting ? 'Submitting...' : 'Submit check-in'}
@@ -412,6 +370,20 @@ function ConfirmStep() {
 
 export default function CheckInWizardPage() {
   const { step, photoMode, session, location, setMedia, setLocation, continueFromLocation, previousStep, reset, restartCount } = useCheckIn()
+  const [notice, setNotice] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (step !== 'session-select') setNotice(null)
+  }, [step])
+
+  useEffect(() => {
+    setNotice(null)
+  }, [restartCount])
+
+  function serverUnreachable() {
+    setNotice(SERVER_UNREACHABLE_MESSAGE)
+    reset()
+  }
 
   return (
     <div>
@@ -423,6 +395,11 @@ export default function CheckInWizardPage() {
         </p>
       )}
 
+      {step === 'session-select' && notice && (
+        <p className="mb-4 rounded-md bg-red-50 p-3 text-sm font-medium text-red-700" role="alert">
+          {notice}
+        </p>
+      )}
       {step === 'session-select' && <SessionSelectStep key={restartCount} />}
 
       {step === 'location' && (
@@ -440,7 +417,7 @@ export default function CheckInWizardPage() {
 
       {step === 'camera' && session && (
         <div className="space-y-4">
-          <CameraCapture sessionId={session.id} photoMode={photoMode} onComplete={setMedia} onReselectSession={reset} />
+          <CameraCapture sessionId={session.id} photoMode={photoMode} onComplete={setMedia} onReselectSession={reset} onServerUnreachable={serverUnreachable} />
           <button
             type="button"
             onClick={previousStep}

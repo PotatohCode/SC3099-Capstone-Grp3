@@ -5,7 +5,6 @@ import type { CheckInRequest } from '@/lib/types'
 import { installCamera, installGeolocation, installPermissions } from '@/test/browser-mocks'
 import { stubAdapter, type RecordedRequest, type StubReply } from '@/test/axios-stub'
 import { resetVerifyCalls } from '@/lib/liveness/verify'
-import { clearOfflineQueue, queueCheckIn } from '@/lib/services/offline.service'
 import { FLAGGED_WARNING } from '@/components/FlaggedNotice'
 
 jest.mock('@/lib/hooks/useAuth', () => ({
@@ -14,18 +13,6 @@ jest.mock('@/lib/hooks/useAuth', () => ({
     saveConsent: jest.fn(async () => undefined),
   }),
 }))
-
-jest.mock('localforage', () => {
-  const store = new Map<string, unknown>()
-  const instance = {
-    setItem: async (k: string, v: unknown) => store.set(k, v),
-    getItem: async (k: string) => store.get(k) ?? null,
-    removeItem: async (k: string) => store.delete(k),
-    clear: async () => store.clear(),
-    iterate: async (fn: (v: unknown) => void) => store.forEach((v) => fn(v)),
-  }
-  return { createInstance: () => instance }
-})
 
 function makeSession(id: string, name: string) {
   return {
@@ -84,7 +71,6 @@ describe('check-in feedback changes', () => {
     installPermissions('granted')
     installGeolocation({ latitude: 1.3483, longitude: 103.6831, accuracy: 15 })
     Object.defineProperty(navigator, 'onLine', { configurable: true, get: () => true })
-    await clearOfflineQueue()
   })
   afterEach(() => jest.useRealTimers())
 
@@ -103,37 +89,6 @@ describe('check-in feedback changes', () => {
     expect(screen.queryByRole('button', { name: /Lecture/ })).toBeNull()
     expect(screen.getByText(/already checked in to every open session/)).toBeTruthy()
     expect(screen.getByRole('link', { name: 'History' }).getAttribute('href')).toBe('/dashboard/history')
-  })
-
-  it("leaves out a session with this student's queued offline check-in, but not another student's", async () => {
-    await queueCheckIn({ session_id: 's1', latitude: 1.3, longitude: 103.8, device_fingerprint: 'web-x' }, 'u1')
-    await queueCheckIn({ session_id: 's2', latitude: 1.3, longitude: 103.8, device_fingerprint: 'web-y' }, 'someone-else')
-    backend()
-    renderWizard()
-    await flush()
-    expect(screen.queryByRole('button', { name: /Lecture 7/ })).toBeNull()
-    expect(screen.getByRole('button', { name: /Lecture 8/ })).toBeTruthy()
-  })
-
-  it('says a hidden session is waiting to sync when only the offline queue has it', async () => {
-    await queueCheckIn({ session_id: 's1', latitude: 1.3, longitude: 103.8, device_fingerprint: 'web-x' }, 'u1')
-    backend()
-    renderWizard()
-    await flush()
-    expect(screen.getByText(/A check-in you made offline is saved on this device/)).toBeTruthy()
-  })
-
-  it('jumps to a waiting-to-sync message when a stale list offers a session queued offline', async () => {
-    backend()
-    renderWizard()
-    await flush()
-    await queueCheckIn({ session_id: 's1', latitude: 1.3, longitude: 103.8, device_fingerprint: 'web-x' }, 'u1')
-    fireEvent.click(screen.getByRole('button', { name: /Lecture 7/ }))
-    await flush()
-    expect(screen.getByText('Check-in waiting to sync')).toBeTruthy()
-    expect(screen.getByText('Step 4 of 4: Confirm')).toBeTruthy()
-    expect(screen.queryByRole('link', { name: 'Go to history' })).toBeNull()
-    expect(screen.getByRole('button', { name: 'Choose another session' })).toBeTruthy()
   })
 
   it('carries on with the check-in if the already-checked-in lookup takes over 5 seconds', async () => {
