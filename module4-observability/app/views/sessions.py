@@ -339,6 +339,115 @@ def _create_form() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Edit
+# ---------------------------------------------------------------------------
+
+def _utc_iso(moment: datetime) -> str:
+    return moment.astimezone(timezone.utc).replace(tzinfo=None).isoformat()
+
+
+def _same_time(a, b) -> bool:
+    """Backend timestamps vs. ones we built: equal to the second?"""
+    first, second = ui.to_local(a), ui.to_local(b)
+    return first is not None and second is not None and abs((first - second).total_seconds()) < 1
+
+
+def _edit_form(session: dict) -> None:
+    """Change a scheduled or active session: name, type, times, check-in window,
+    checks and location (PATCH /sessions/{id}, only the fields that changed)."""
+    key = f"edit-{session['id']}"
+    start = ui.to_local(session.get("scheduled_start"))
+    end = ui.to_local(session.get("scheduled_end"))
+    opens = ui.to_local(session.get("checkin_opens_at")) or start
+    closes = ui.to_local(session.get("checkin_closes_at")) or start
+    if start is None or end is None:
+        st.info("This session's times couldn't be read, so it can't be edited here.")
+        return
+    if session.get("status") == "active":
+        st.caption("This session is live: changes apply to check-ins from now on, not to ones already made.")
+
+    left, right = st.columns(2)
+    name = left.text_input("Session name", value=session.get("name") or "", max_chars=200, key=f"es-name-{key}")
+    types = ["lecture", "tutorial", "lab", "exam"]
+    session_type = right.selectbox("Type", types, key=f"es-type-{key}",
+                                   index=types.index(session["session_type"]) if session.get("session_type") in types else 0)
+    day = left.date_input("Date", value=start.date(), key=f"es-day-{key}")
+    clock = right.time_input("Starts", value=start.time().replace(second=0, microsecond=0), step=300,
+                             key=f"es-start-{key}")
+    duration = left.number_input("Duration (minutes)", 15, 480, max(15, int((end - start).total_seconds() // 60)),
+                                 step=15, key=f"es-duration-{key}")
+    a, b = right.columns(2)
+    before = a.number_input("Check-in opens (min before)", 0, 240, max(0, int((start - opens).total_seconds() // 60)),
+                            step=5, key=f"es-opens-{key}")
+    after = b.number_input("Check-in closes (min after)", 5, 480, max(5, int((closes - start).total_seconds() // 60)),
+                           step=5, key=f"es-closes-{key}")
+    a, b = st.columns(2)
+    liveness = a.toggle("Require liveness check", value=bool(session.get("require_liveness_check")),
+                        key=f"es-liveness-{key}")
+    face = b.toggle("Require face match", value=bool(session.get("require_face_match")), key=f"es-face-{key}")
+
+    location = _edit_location(session, key)
+
+    new_start = datetime.combine(day, clock, tzinfo=config.LOCAL_TZ)
+    st.caption(f"Check-in will be open **{new_start - timedelta(minutes=int(before)):%d %b %H:%M}** – "
+               f"**{new_start + timedelta(minutes=int(after)):%H:%M}**.")
+    if not st.button("Save changes", type="primary", disabled=location is None, key=f"es-save-{key}"):
+        return
+    if not name.strip():
+        st.warning("The session name can't be empty.")
+        return
+    wanted = {
+        "name": name.strip(), "session_type": session_type,
+        "require_liveness_check": liveness, "require_face_match": face, **location,
+    }
+    changes = {k: v for k, v in wanted.items() if session.get(k) != v}
+    times = {
+        "scheduled_start": new_start, "scheduled_end": new_start + timedelta(minutes=int(duration)),
+        "checkin_opens_at": new_start - timedelta(minutes=int(before)),
+        "checkin_closes_at": new_start + timedelta(minutes=int(after)),
+    }
+    changes.update({k: _utc_iso(v) for k, v in times.items() if not _same_time(session.get(k), v)})
+    if not changes:
+        st.info("Nothing changed.")
+        return
+    if ui.safe(api.patch, f"/api/v1/sessions/{session['id']}", changes):
+        for k in [k for k in st.session_state if key in str(k)]:
+            del st.session_state[k]
+        forget_venues()
+        ui.flash("Session saved.", "✅")
+        st.rerun()
+
+
+def _edit_location(session: dict, key: str) -> dict | None:
+    """The session's location: the course's (clears the session's own, so it
+    follows the course), or its own. None while the pin isn't valid."""
+    course = ui.safe(api.get, f"/api/v1/courses/{session['course_id']}") or {}
+    saved = course_location(course)
+    own = session.get("venue_latitude") is not None and session.get("venue_longitude") is not None
+    st.markdown("**Location**")
+    if saved:
+        mode = st.radio("Location", ["course", "own"], index=1 if own else 0, key=f"es-loc-mode-{key}",
+                        horizontal=True, label_visibility="collapsed",
+                        format_func=lambda m: f"Course location ({ui.md(course.get('venue_name') or 'classroom')})"
+                        if m == "course" else "This session's own location")
+        if mode == "course":
+            ui.location_map(*saved, course.get("venue_name") or "", key=f"es-course-map-{key}")
+            return {"venue_latitude": None, "venue_longitude": None, "geofence_radius_meters": None,
+                    "venue_name": course.get("venue_name")}
+    start = (session["venue_latitude"], session["venue_longitude"],
+             float(session.get("geofence_radius_meters") or (saved[2] if saved else 100))) if own else saved
+    lat, lon, radius, venue = location_picker(key, start, session.get("venue_name") or "")
+    if lat is None or lon is None:
+        st.info("Click the map where the session takes place, or enter the latitude and longitude.")
+        return None
+    if not ui.in_singapore(lat, lon):
+        st.error("Those coordinates are outside Singapore, so nobody could check in. Check the numbers.")
+        return None
+    return {"venue_latitude": lat, "venue_longitude": lon, "geofence_radius_meters": float(radius),
+            "venue_name": venue.strip() or None}
+
+
+# ---------------------------------------------------------------------------
 # Status changes
 # ---------------------------------------------------------------------------
 
@@ -647,6 +756,13 @@ def _session_detail(session: dict) -> None:
             st.page_link(st.session_state.pages["review"], label=f"Review {stats['flagged_count']} flagged check-in(s) →")
 
     ui.live(live_part)
+
+    if auth.can("manage_sessions"):
+        with st.expander("✏️ Edit session"):
+            if session.get("status") in ("scheduled", "active"):
+                _edit_form(session)
+            else:
+                st.caption("Closed and cancelled sessions are kept as attendance records, so they can't be edited.")
 
     # Shown for cancelled sessions too: no new manual check-ins there, but staff
     # can still undo earlier ones within the backend's 7-day window.

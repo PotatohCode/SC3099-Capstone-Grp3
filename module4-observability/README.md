@@ -42,7 +42,7 @@ to get an "Explore with sample data" button on the sign-in page (works without a
 |---|:-:|:-:|:-:|---|
 | Today | ✓ | ✓ | ✓ | Needs-review count (top-left), today's sessions (first 6, "Show all" for the rest) with live check-in counts, 7-day trends |
 | Review queue | ✓ | ✓ | ✓ | Flagged and appealed check-ins, appeals then highest risk first, reasons in plain words, approve / reject with a note |
-| Sessions | view + manual check-in | ✓ | ✓ | Create (location from the course, or its own, with a map); activate / close / cancel / delete (scheduled only); cancelled hidden by default; live attendance, outcome and risk charts, every check-in (📱 app / ✍️ manual / ✅ override); manual check-in + undo; per-session export |
+| Sessions | view + manual check-in | ✓ | ✓ | Create (location from the course, or its own, with a map); activate / close / cancel / delete (scheduled only); edit a scheduled or live session (name, type, times, check-in window, checks, location); cancelled hidden by default; live attendance, outcome and risk charts, every check-in (📱 app / ✍️ manual / ✅ override); manual check-in + undo; per-session export |
 | Check-ins | ✓ | ✓ | ✓ | Search every check-in in your courses by course, status, dates, student and risk; open one for its full details (liveness, face match, accuracy, review, appeal) |
 | Courses | | ✓ | ✓ | Attendance per session and per student; students under 75% |
 | Students | | ✓ | ✓ | One student's attendance across your courses and recent check-ins; face reset code |
