@@ -2,6 +2,7 @@
 (attendance, risk breakdown, every check-in)."""
 from __future__ import annotations
 
+import re
 from datetime import datetime, time, timedelta, timezone
 
 import pandas as pd
@@ -59,7 +60,7 @@ def course_location(course: dict) -> tuple[float, float, float] | None:
 
 def _known_venues() -> list[dict]:
     """Named venues already saved on courses and sessions, so instructors can pick
-    one instead of typing coordinates. Loaded once per sign-in."""
+    one instead of typing coordinates. Loaded once, then again after forget_venues()."""
     if "known_venues" not in st.session_state:
         places = ui.safe(api.get_all, "/api/v1/courses/", default=[]) + \
             ui.safe(lambda: visible_sessions(api.get_all("/api/v1/sessions/")), default=[])
@@ -73,6 +74,11 @@ def _known_venues() -> list[dict]:
                               {"name": name, "lat": lat, "lon": lon, "radius": radius})
         st.session_state.known_venues = sorted(venues.values(), key=lambda v: (v["name"].lower(), v["radius"]))
     return st.session_state.known_venues
+
+
+def forget_venues() -> None:
+    """After a session or course location is saved, reload the Saved venue list."""
+    st.session_state.pop("known_venues", None)
 
 
 def _saved_venue_picker(key: str) -> None:
@@ -125,12 +131,41 @@ def _pick_on_map(key: str, lat: float | None, lon: float | None, radius: float, 
         ui.location_caption(lat, lon, radius)
 
 
+def _host() -> str:
+    """The address the page was opened at, reduced to host-name characters so it's
+    safe to show in Markdown (it comes from the request's Host header)."""
+    try:
+        host = st.context.headers.get("host") or ""
+    except Exception:  # no browser request (e.g. tests)
+        return ""
+    return re.sub(r"[^A-Za-z0-9.:\-\[\]]", "", host)[:100]
+
+
+def _location_allowed() -> bool:
+    """Browsers share location only in a secure context: https, or localhost.
+    Opened at http://<IP>:8501 the request is blocked without any answer."""
+    try:
+        headers = st.context.headers
+    except Exception:
+        return True
+    host = (headers.get("host") or "").rsplit(":", 1)[0].strip("[]").lower()
+    if not host or host in {"localhost", "127.0.0.1", "::1"} or host.endswith(".localhost"):
+        return True
+    return (headers.get("x-forwarded-proto") or "").lower() == "https"
+
+
 def _current_location(key: str) -> None:
     """'Use my current location': asks the browser where the instructor is and fills
     the latitude/longitude boxes. Browsers only share it on localhost or HTTPS, and a
     laptop's position (from Wi-Fi) can be tens of metres off, so the accuracy is shown
     and the map lets the instructor check it before creating the session."""
     pending, accuracy_key = f"loc-geo-pending-{key}", f"loc-geo-accuracy-{key}"
+    if not _location_allowed():
+        st.button("📍 Use my current location", key=f"loc-geo-btn-{key}", disabled=True)
+        st.caption("📍 Your browser only shares its location on **https** or **localhost**, and this page is "
+                   f"opened at **http://{_host()}**. Click the map or pick a saved venue instead, "
+                   "or open the portal at http://localhost:8501 on this computer.")
+        return
     if not st.session_state.get(pending):
         if st.button("📍 Use my current location", key=f"loc-geo-btn-{key}"):
             st.session_state[pending] = st.session_state.get(f"loc-geo-round-{key}", 0) + 1
@@ -190,12 +225,29 @@ def _location_section(course: dict) -> dict | None:
         st.warning("This course has no classroom location saved, so enter where this session takes place. "
                    "Without a location, students could check in from anywhere.", icon="📍")
 
+    lat, lon, radius, venue = location_picker(key, saved)
+    if lat is None or lon is None:
+        st.info("Click the map where the session takes place, or enter the latitude and longitude.")
+        return None
+    if not ui.in_singapore(lat, lon):
+        st.error("Those coordinates are outside Singapore. The backend refuses check-ins from outside "
+                 "Singapore, so nobody could check in. Check the numbers (latitude first).")
+        return None
+    return {"venue_latitude": lat, "venue_longitude": lon, "geofence_radius_meters": float(radius),
+            "venue_name": venue.strip() or None}
+
+
+def location_picker(key: str, start: tuple[float, float, float] | None = None, venue_name: str = ""
+                    ) -> tuple[float | None, float | None, int, str]:
+    """Saved venue, 'Use my current location', the coordinate boxes and the
+    click-to-move map. Returns (lat, lon, radius, venue name). Also used for a
+    course's default location (Manage page), with its own `key`."""
     # Starting values set once through session state (not value=), so picking a
     # saved venue below can fill the boxes in.
-    st.session_state.setdefault(f"loc-lat-{key}", saved[0] if saved else None)
-    st.session_state.setdefault(f"loc-lon-{key}", saved[1] if saved else None)
-    st.session_state.setdefault(f"loc-r-{key}", int(saved[2]) if saved else 100)
-    st.session_state.setdefault(f"loc-name-{key}", "")
+    st.session_state.setdefault(f"loc-lat-{key}", start[0] if start else None)
+    st.session_state.setdefault(f"loc-lon-{key}", start[1] if start else None)
+    st.session_state.setdefault(f"loc-r-{key}", int(start[2]) if start else 100)
+    st.session_state.setdefault(f"loc-name-{key}", venue_name)
     # A click on the map (below) arrives on the next rerun; apply it before the
     # boxes are drawn so they show the new position.
     _apply_map_click(key)
@@ -216,18 +268,11 @@ def _location_section(course: dict) -> dict | None:
     lon = b.number_input("Longitude", -180.0, 180.0, format="%.6f", placeholder="103.6831", key=f"loc-lon-{key}",
                          on_change=typed)
     radius = c.number_input("Radius (m)", 20, 2000, step=10, key=f"loc-r-{key}", on_change=typed)
-    venue = d.text_input("Venue name", placeholder="e.g. Exam Hall A", key=f"loc-name-{key}", on_change=typed)
+    venue = d.text_input("Venue name", placeholder="e.g. Exam Hall A", key=f"loc-name-{key}", on_change=typed,
+                         help="Give the place a name to save it: it's then offered under Saved venue next time.")
     st.caption("Or type them: in Google Maps, right-click the room's building and click the coordinates to copy them.")
     _pick_on_map(key, lat, lon, radius, venue)
-    if lat is None or lon is None:
-        st.info("Click the map where the session takes place, or enter the latitude and longitude.")
-        return None
-    if not ui.in_singapore(lat, lon):
-        st.error("Those coordinates are outside Singapore. The backend refuses check-ins from outside "
-                 "Singapore, so nobody could check in. Check the numbers (latitude first).")
-        return None
-    return {"venue_latitude": lat, "venue_longitude": lon, "geofence_radius_meters": float(radius),
-            "venue_name": venue.strip() or None}
+    return lat, lon, radius, venue
 
 
 def _create_form() -> None:
@@ -287,6 +332,7 @@ def _create_form() -> None:
     }
     created = ui.safe(api.post, "/api/v1/sessions/", body)
     if created:
+        forget_venues()  # a newly named venue is offered under Saved venue straight away
         st.session_state.selected_session_id = created["id"]
         ui.flash(f"Session “{created['name']}” created. Activate it when class starts.", "✅")
         st.rerun()
@@ -330,9 +376,17 @@ def _actions(session: dict) -> list[tuple[str, str, list[tuple[str, dict, str]]]
             actions.append(("Activate check-in", f"Students can check in now, until {closes}.", [
                 ("Activate", {"status": "active"}, "Check-in is open now."),
             ]))
-        actions.append(("Cancel session", "The session will be marked cancelled.", [
+        actions.append(("Cancel session", "The session will be marked cancelled. It stays in the list "
+                        "(hidden by default) as a record.", [
             ("Cancel session", {"status": "cancelled"}, "Session cancelled."),
         ]))
+        if auth.can("delete_session"):
+            # body None = DELETE. The backend deletes only scheduled sessions: once
+            # activated, a session is an attendance record and can only be cancelled/closed.
+            actions.append(("Delete session", "Removes the session completely, for one created by mistake. "
+                            "Only possible while it's still scheduled (never activated). This can't be undone.", [
+                ("Delete session", None, "Session deleted."),
+            ]))
     elif status == "active":
         if window == "not_open":
             actions.append(("Open check-in now", f"Check-in is set to open at {opens}.", [
@@ -356,7 +410,12 @@ def _confirm_change(session: dict, explanation: str, choices: list[tuple[str, di
     for index, (label, body, done) in enumerate(choices):
         if st.button(label, key=f"choice-{index}", type="primary" if index == 0 else "secondary",
                      use_container_width=True):
-            if ui.safe(api.patch, f"/api/v1/sessions/{session['id']}", body) is not None:
+            if body is None:
+                if ui.safe(api.delete, f"/api/v1/sessions/{session['id']}", default=False) is not False:
+                    st.session_state.selected_session_id = None
+                    ui.flash(done, "🗑️")
+                    st.rerun()
+            elif ui.safe(api.patch, f"/api/v1/sessions/{session['id']}", body) is not None:
                 ui.flash(done, "✅")
                 st.rerun()
     if st.button("Back", use_container_width=True):
@@ -520,14 +579,14 @@ def _session_detail(session: dict) -> None:
         f"check-in {ui.fmt_time(session.get('checkin_opens_at'), '%H:%M')}–{ui.fmt_time(session.get('checkin_closes_at'), '%H:%M')}"
         f"{' · ' + ui.md(session['venue_name']) if session.get('venue_name') else ''}"
     )
-    status_col, *buttons = st.columns([2, 1, 1])
+    actions = _actions(session) if auth.can("manage_sessions") else []
+    status_col, *buttons = st.columns([2] + [1] * max(len(actions), 2))
     status_col.markdown(f"Status: **{ui.status_label(session.get('status'))}**  \n"
                         f"Check-in: **{ui.checkin_state(session)}**")
-    if auth.can("manage_sessions"):
-        for index, (column, (label, explanation, choices)) in enumerate(zip(buttons, _actions(session))):
-            if column.button(label, key=f"action-{index}-{session['id']}", use_container_width=True,
-                             type="primary" if index == 0 and label != "Close check-in" else "secondary"):
-                _confirm_change(session, explanation, choices)
+    for index, (column, (label, explanation, choices)) in enumerate(zip(buttons, actions)):
+        if column.button(label, key=f"action-{index}-{session['id']}", use_container_width=True,
+                         type="primary" if index == 0 and label != "Close check-in" else "secondary"):
+            _confirm_change(session, explanation, choices)
 
     def live_part() -> None:
         stats = ui.safe(api.get, f"/api/v1/stats/sessions/{session['id']}")
@@ -614,13 +673,17 @@ def render() -> None:
             _create_form()
 
     left, right = st.columns(2)
-    status = left.selectbox("Status", ["All", "active", "scheduled", "closed", "cancelled"],
-                            format_func=lambda s: s if s == "All" else ui.status_label(s))
+    # Cancelled sessions are kept as records but hidden unless asked for.
+    status = left.selectbox("Status", ["current", "All", "active", "scheduled", "closed", "cancelled"],
+                            format_func=lambda s: {"current": "All except cancelled", "All": "All, incl. cancelled"}.get(
+                                s, ui.status_label(s)))
     courses = _manageable_courses()
     course = right.selectbox("Course", [None] + [c["id"] for c in courses],
                              format_func=lambda cid: "All courses" if cid is None else ui.course_label(
                                  next(c for c in courses if c["id"] == cid)))
-    sessions = _sessions(None if status == "All" else status, course)
+    sessions = _sessions(None if status in ("All", "current") else status, course)
+    if status == "current":
+        sessions = [s for s in sessions if s.get("status") != "cancelled"]
 
     if not sessions:
         st.info("No sessions match. Create one above, or change the filters.")

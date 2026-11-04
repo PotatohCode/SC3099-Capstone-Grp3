@@ -18,13 +18,17 @@ GOOD, WARN, BAD, NEUTRAL, INFO = "#15803d", "#d97706", "#b91c1c", "#64748b", "#0
 STATUS_COLOURS = {
     "approved": GOOD, "pending": NEUTRAL, "flagged": WARN, "appealed": WARN, "rejected": BAD,
     "active": GOOD, "scheduled": INFO, "closed": NEUTRAL, "cancelled": BAD,
-    "low": GOOD, "medium": WARN, "high": BAD,
+    # Risk levels use their own light-to-dark scale, not green/red: a low-risk
+    # check-in can still be flagged or rejected (location, face and liveness
+    # checks also decide), so green "low" next to a red outcome would mislead.
+    "low": "#c7d2fe", "medium": "#818cf8", "high": "#4338ca",
 }
 STATUS_ICONS = {
     "approved": "🟢", "pending": "⚪", "flagged": "🟠", "appealed": "🟠", "rejected": "🔴",
     "active": "🟢", "scheduled": "🔵", "closed": "⚫", "cancelled": "🔴",
 }
-RISK_ICONS = {"LOW": "🟢", "MEDIUM": "🟡", "HIGH": "🟠", "CRITICAL": "🔴"}
+# How much the check-in looked suspicious (not its outcome, see STATUS_COLOURS).
+RISK_ICONS = {"LOW": "▂", "MEDIUM": "▄", "HIGH": "▆", "CRITICAL": "█"}
 
 # Plain-language reasons for the backend's risk factor types
 # (module2-backend/api-docs/CHANGES-2026-10-01.md section 5.3).

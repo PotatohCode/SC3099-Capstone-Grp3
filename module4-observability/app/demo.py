@@ -237,9 +237,24 @@ def handle(method: str, path: str, params: dict | None = None, body: dict | None
         return _session_view(db, session)
     if m := re.fullmatch(r"/sessions/([^/]+)", path):
         session = find("sessions", m[1])
+        if method == "DELETE":
+            if session["status"] != "scheduled":
+                raise api.ApiError("Only scheduled sessions can be deleted", 400, "SESSION_NOT_DELETABLE")
+            db["sessions"].remove(session)
+            return None
         if method == "PATCH":
             session.update(body)
         return _session_view(db, session)
+    if method == "GET" and path == "/checkins":
+        items = [_enriched(db, c) for c in db["checkins"]]
+        course_sessions = {s["id"] for s in db["sessions"] if s["course_id"] == params.get("course_id")}
+        items = [c for c in items
+                 if (not params.get("course_id") or c["session_id"] in course_sessions)
+                 and (not params.get("status") or c["status"] == params["status"])
+                 and (not params.get("start_date") or c["checked_in_at"] >= params["start_date"])
+                 and (not params.get("end_date") or c["checked_in_at"] <= params["end_date"])
+                 and c["risk_score"] >= float(params.get("min_risk_score") or 0)]
+        return _page(sorted(items, key=lambda c: c["checked_in_at"], reverse=True), params)
     if m := re.fullmatch(r"/stats/sessions/([^/]+)", path):
         return _session_stats(db, find("sessions", m[1]))
     if m := re.fullmatch(r"/checkins/session/([^/]+)", path):
@@ -354,6 +369,12 @@ def handle(method: str, path: str, params: dict | None = None, body: dict | None
                 "records": _export_records(db, {session["id"]})}
     if m := re.fullmatch(r"/export/attendance/([^/]+)", path):
         return _export_records(db, {s["id"] for s in db["sessions"] if s["course_id"] == m[1]})
+    if method == "GET" and (m := re.fullmatch(r"/checkins/([^/]+)", path)):
+        c = _enriched(db, find("checkins", m[1]))
+        return {**c, "liveness_passed": c["risk_score"] < 0.5, "liveness_score": round(1 - c["risk_score"], 2),
+                "face_match_passed": None, "face_match_score": None, "location_accuracy_meters": 18.0,
+                "device_id": "demo-device", "reviewed_at": None, "review_notes": None,
+                "appealed_at": c["checked_in_at"] if c.get("appeal_reason") else None}
     raise api.ApiError("Not available in preview mode.", 404)
 
 

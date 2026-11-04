@@ -18,11 +18,11 @@ import config  # noqa: E402
 
 PASSWORD = "SaivDemo2026!"
 ROLES = {
-    "admin": ("admin@saiv.demo", ["today", "review", "sessions", "courses", "students", "exports",
-                                  "accounts", "audit", "system"]),
-    "instructor": ("instructor@saiv.demo", ["today", "review", "sessions", "courses", "students",
+    "admin": ("admin@saiv.demo", ["today", "review", "sessions", "checkins", "courses", "students", "exports",
+                                  "accounts", "manage", "audit", "system"]),
+    "instructor": ("instructor@saiv.demo", ["today", "review", "sessions", "checkins", "courses", "students",
                                             "exports", "accounts"]),
-    "ta": ("ta@saiv.demo", ["today", "review", "sessions", "exports"]),
+    "ta": ("ta@saiv.demo", ["today", "review", "sessions", "checkins", "exports"]),
 }
 
 
@@ -31,17 +31,19 @@ def harness(page_key: str) -> None:
     import sys
     sys.path.insert(0, "app")
     import streamlit as st
-    from views import accounts, audit, courses, exports_page, overview, review, sessions, students, system
+    from views import (accounts, audit, checkins, courses, exports_page, manage, overview, review, sessions,
+                       students, system)
 
     renders = {"today": overview.render, "review": review.render, "sessions": sessions.render,
-               "courses": courses.render, "students": students.render, "exports": exports_page.render,
-               "accounts": accounts.render, "audit": audit.render, "system": system.render}
+               "checkins": checkins.render, "courses": courses.render, "students": students.render,
+               "exports": exports_page.render, "accounts": accounts.render, "manage": manage.render,
+               "audit": audit.render, "system": system.render}
     pages = {key: st.Page(fn, title=key, url_path=key, default=key == page_key) for key, fn in renders.items()}
     st.session_state.pages = pages
     st.navigation(list(pages.values())).run()
 
 
-PICKERS = ("Course", "Student", "Session")
+PICKERS = ("Course", "Student", "Session", "Edit a course")
 
 
 def _problems(app: AppTest, step: str) -> list[str]:
@@ -80,7 +82,7 @@ def seeded_choices(token: str) -> dict:
         offset += len(page["items"])
         if course is None and (not page["items"] or offset >= page["total"]):
             raise SystemExit("Seeded course SC3099 not found: run scripts/seed_demo_data.py first")
-    choices = {"Course": course["id"]}
+    choices = {"Course": course["id"], "Edit a course": course["id"]}
     roster = get(f"/enrollments/course/{course['id']}")
     if roster.ok and roster.json()["students"]:
         choices["Student"] = roster.json()["students"][0]["student_id"]

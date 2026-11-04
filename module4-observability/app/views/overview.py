@@ -13,6 +13,9 @@ import config
 import ui
 
 
+CARD_LIMIT = 6
+
+
 def _today_bounds_utc() -> tuple[str, str]:
     today = datetime.now(config.LOCAL_TZ).date()
     start = datetime.combine(today, time.min, tzinfo=config.LOCAL_TZ).astimezone(timezone.utc)
@@ -52,7 +55,12 @@ def _todays_sessions() -> None:
         st.caption("No sessions scheduled today.")
         return
     order = {"active": 0, "scheduled": 1, "closed": 2, "cancelled": 3}
+    sessions = [s for s in sessions if s.get("status") != "cancelled"] or sessions
     sessions.sort(key=lambda s: (order.get(s.get("status"), 9), s.get("scheduled_start", "")))
+    # A few cards (live ones first), so a busy day doesn't push the trends far down.
+    total = len(sessions)
+    if total > CARD_LIMIT and not st.session_state.get("today_show_all"):
+        sessions = sessions[:CARD_LIMIT]
     columns = st.columns(3)
     for index, session in enumerate(sessions):
         with columns[index % 3].container(border=True):
@@ -70,6 +78,11 @@ def _todays_sessions() -> None:
             if st.button("Open session", key=f"open-{session['id']}", use_container_width=True):
                 st.session_state.selected_session_id = session["id"]
                 st.switch_page(st.session_state.pages["sessions"])
+    if total > CARD_LIMIT:
+        showing_all = st.session_state.get("today_show_all")
+        if st.button("Show fewer" if showing_all else f"Show all {total} sessions today", key="today-toggle"):
+            st.session_state.today_show_all = not showing_all
+            st.rerun()
 
 
 def _trends() -> None:

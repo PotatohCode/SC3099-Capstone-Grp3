@@ -189,7 +189,9 @@ def _roster() -> None:
     if not course:
         return
     with st.form("enrol-existing", clear_on_submit=True):
-        emails_text = st.text_area("Enrol existing accounts (one email per line, students or TAs)")
+        emails_text = st.text_area("Enrol existing accounts (one email per line, students or TAs)",
+                                   help="For students who already have an account (e.g. from an earlier "
+                                        "semester). Paste as many emails as you like.")
         if st.form_submit_button("Enrol"):
             emails = sorted({e.strip().lower() for e in re.split(r"[\s,;]+", emails_text) if e.strip()})
             bad = [e for e in emails if not EMAIL_RE.match(e)]
@@ -229,7 +231,7 @@ def _roster() -> None:
 def render() -> None:
     who = "any role" if auth.role() == "admin" else "student and TA"
     ui.header("ACCOUNTS", "Accounts", f"Create {who} accounts and manage who is enrolled in your courses.")
-    single, bulk, roster = st.tabs(["Create account", "Import CSV", "Course roster"])
+    single, bulk, roster = st.tabs(["Create account", "Import CSV", "Enrol students"])
     with single:
         _single()
     with bulk:

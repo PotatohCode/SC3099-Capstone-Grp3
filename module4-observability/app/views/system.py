@@ -69,3 +69,29 @@ def render() -> None:
         ])
 
     ui.live(live_part)
+    _data_cleanup()
+
+
+def _data_cleanup() -> None:
+    """The backend's privacy clean-up (retention sweep): it anonymises accounts
+    30 days after they were deleted and check-ins after their 30-day retention.
+    It runs by itself about every hour; each run is in the audit log."""
+    st.subheader("Data clean-up", anchor=False)
+    st.caption("Anonymises deleted accounts and expired check-in data once their 30 days are up. "
+               "Runs automatically about every hour.")
+    last = (ui.safe(api.get, "/api/v1/audit/", action="retention_sweep_run", limit=1) or {}).get("items") or []
+    if last:
+        run = last[0]
+        details = run.get("details") or {}
+        how = "automatic" if details.get("trigger") == "scheduled" else f"run by {run.get('user_email') or 'staff'}"
+        st.markdown(f"Last clean-up: **{ui.fmt_time(run.get('timestamp'))}** ({how}) · "
+                    f"**{details.get('users_anonymized', 0)}** account(s) and "
+                    f"**{details.get('checkins_anonymized', 0)}** check-in(s) anonymised.")
+    else:
+        st.markdown("No clean-up has run yet.")
+    if st.button("Run clean-up now", key="run-cleanup"):
+        result = ui.safe(api.post, "/api/v1/admin/retention/run")
+        if result:
+            ui.flash(f"Clean-up done: {result.get('users_anonymized', 0)} account(s) and "
+                     f"{result.get('checkins_anonymized', 0)} check-in(s) anonymised.", "🧹")
+            st.rerun()
