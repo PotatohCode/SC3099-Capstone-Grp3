@@ -40,6 +40,25 @@ def _summary(days: int) -> None:
         ui.bar_chart(frame, "action", "count", "Event", "Count")
 
 
+def _user_filter(column) -> str | None:
+    """'Everything this person did': type part of a name or email, then pick the account."""
+    with column:
+        search = st.text_input("User (name or email)", key="audit-user-search",
+                               placeholder="Type to find an account, or leave empty for everyone")
+        if not search.strip():
+            return None
+        found = (ui.safe(api.get, "/api/v1/users/", search=search.strip(), limit=50) or {}).get("items", [])
+        if not found:
+            st.caption("No account matches.")
+            return None
+        by_id = {u["id"]: u for u in found}
+        # "" (not None) for "everyone": Streamlit shows a None value as "nothing picked yet".
+        picked = st.selectbox("Account", [""] + list(by_id), key="audit-user-pick",
+                              format_func=lambda uid: f"All {len(by_id)} matching account(s)… pick one" if not uid
+                              else f"{by_id[uid]['full_name']} · {by_id[uid]['email']}")
+        return picked or None
+
+
 def render() -> None:
     ui.header("AUDIT", "Audit log", "Every security-relevant event. The log can't be edited or deleted.")
     days = st.select_slider("Summary period", [1, 7, 30, 90, 365], value=30, format_func=lambda d: f"{d} days")
@@ -54,10 +73,12 @@ def render() -> None:
     today = datetime.now(config.LOCAL_TZ).date()
     start = c.date_input("From", today - timedelta(days=7))
     end = d.date_input("To", today)
-    security_only = st.toggle("Security events only", help=", ".join(SECURITY_ACTIONS))
+    who_col, toggle_col = st.columns([2.4, 2])
+    user_id = _user_filter(who_col)
+    security_only = toggle_col.toggle("Security events only", help=", ".join(SECURITY_ACTIONS))
 
     params = {"action": action, "start_date": _utc(start), "end_date": _utc(end, end=True),
-              "success": None if outcome == "All" else outcome == "Succeeded"}
+              "success": None if outcome == "All" else outcome == "Succeeded", "user_id": user_id}
     logs = ui.safe(api.get_all, "/api/v1/audit/", **params, default=[])
     if security_only:
         logs = [log for log in logs if log.get("action") in SECURITY_ACTIONS]

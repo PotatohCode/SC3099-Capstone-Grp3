@@ -76,6 +76,26 @@ def _known_venues() -> list[dict]:
     return st.session_state.known_venues
 
 
+RISK_HELP = ("Check-ins whose risk score is above this go to the review queue. Lower = stricter "
+             "(more check-ins flagged), higher = more lenient. The location, face and liveness checks "
+             "still apply either way.")
+
+
+def risk_slider(value: float, key: str, label: str = "Flag check-ins with risk above") -> float:
+    """The risk threshold (0-1) the backend compares each check-in's risk score with."""
+    return round(st.slider(label, 0.0, 1.0, float(value), 0.05, key=key, help=RISK_HELP), 2)
+
+
+def _session_risk(key: str, course: dict, current: float | None = None) -> float | None:
+    """A session follows its course's risk threshold (None) unless it sets its own."""
+    course_value = float(course.get("risk_threshold") if course.get("risk_threshold") is not None else 0.5)
+    own = st.toggle(f"Own risk threshold (course uses {course_value:.2f})", value=current is not None,
+                    key=f"{key}-risk-own", help=RISK_HELP)
+    if not own:
+        return None
+    return risk_slider(current if current is not None else course_value, f"{key}-risk")
+
+
 def forget_venues() -> None:
     """After a session or course location is saved, reload the Saved venue list."""
     st.session_state.pop("known_venues", None)
@@ -308,6 +328,7 @@ def _create_form() -> None:
     a, b = st.columns(2)
     liveness = a.toggle("Require liveness check", value=True, key="new-session-liveness")
     face = b.toggle("Require face match", value=False, key="new-session-face")
+    risk = _session_risk(f"new-session-{course['id']}", course)
 
     location = _location_section(course)
 
@@ -328,6 +349,7 @@ def _create_form() -> None:
         "checkin_opens_at": (start_local - timedelta(minutes=int(opens_before))).astimezone(timezone.utc).replace(tzinfo=None).isoformat(),
         "checkin_closes_at": (start_local + timedelta(minutes=int(closes_after))).astimezone(timezone.utc).replace(tzinfo=None).isoformat(),
         "require_liveness_check": liveness, "require_face_match": face,
+        **({"risk_threshold": risk} if risk is not None else {}),
         **{k: v for k, v in location.items() if v is not None},
     }
     created = ui.safe(api.post, "/api/v1/sessions/", body)
@@ -385,8 +407,10 @@ def _edit_form(session: dict) -> None:
     liveness = a.toggle("Require liveness check", value=bool(session.get("require_liveness_check")),
                         key=f"es-liveness-{key}")
     face = b.toggle("Require face match", value=bool(session.get("require_face_match")), key=f"es-face-{key}")
+    course = ui.safe(api.get, f"/api/v1/courses/{session['course_id']}") or {}
+    risk = _session_risk(f"es-{key}", course, session.get("risk_threshold"))
 
-    location = _edit_location(session, key)
+    location = _edit_location(session, key, course)
 
     new_start = datetime.combine(day, clock, tzinfo=config.LOCAL_TZ)
     st.caption(f"Check-in will be open **{new_start - timedelta(minutes=int(before)):%d %b %H:%M}** – "
@@ -398,7 +422,7 @@ def _edit_form(session: dict) -> None:
         return
     wanted = {
         "name": name.strip(), "session_type": session_type,
-        "require_liveness_check": liveness, "require_face_match": face, **location,
+        "require_liveness_check": liveness, "require_face_match": face, "risk_threshold": risk, **location,
     }
     changes = {k: v for k, v in wanted.items() if session.get(k) != v}
     times = {
@@ -418,10 +442,9 @@ def _edit_form(session: dict) -> None:
         st.rerun()
 
 
-def _edit_location(session: dict, key: str) -> dict | None:
+def _edit_location(session: dict, key: str, course: dict) -> dict | None:
     """The session's location: the course's (clears the session's own, so it
     follows the course), or its own. None while the pin isn't valid."""
-    course = ui.safe(api.get, f"/api/v1/courses/{session['course_id']}") or {}
     saved = course_location(course)
     own = session.get("venue_latitude") is not None and session.get("venue_longitude") is not None
     st.markdown("**Location**")

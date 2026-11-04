@@ -9,7 +9,7 @@ import streamlit as st
 import api
 import auth
 import ui
-from views.sessions import course_location, forget_venues, location_picker
+from views.sessions import course_location, forget_venues, location_picker, risk_slider
 
 ROLE_LABELS = {"student": "Student", "ta": "TA", "instructor": "Instructor", "admin": "Admin"}
 
@@ -99,6 +99,7 @@ def _create_course() -> None:
     a, b = st.columns(2)
     face = a.toggle("Require face recognition", value=False, key="nc-face")
     device = b.toggle("Require a registered device", value=True, key="nc-device")
+    risk = risk_slider(0.5, "nc-risk")
     location = _location_fields("new")
     if not st.button("Create course", type="primary", disabled=location is None, key="nc-create"):
         return
@@ -108,7 +109,8 @@ def _create_course() -> None:
         return
     body = {"code": code, "name": name.strip(), "semester": semester.strip(), "instructor_id": instructor,
             "description": description.strip() or None, "require_face_recognition": face,
-            "require_device_binding": device, **{k: v for k, v in location.items() if v is not None}}
+            "require_device_binding": device, "risk_threshold": risk,
+            **{k: v for k, v in location.items() if v is not None}}
     created = ui.safe(api.post, "/api/v1/courses/", body)
     if created:
         # Empty the form (its boxes and its map) for the next course.
@@ -154,6 +156,8 @@ def _edit_course(course: dict) -> None:
                     key=f"ec-face-{key}")
     device = b.toggle("Require a registered device", value=bool(course.get("require_device_binding")),
                       key=f"ec-device-{key}")
+    risk = risk_slider(float(course.get("risk_threshold") if course.get("risk_threshold") is not None else 0.5),
+                       f"ec-risk-{key}")
     location = _location_fields(key, course)
     save, archive = st.columns([1, 1])
     if save.button("Save changes", type="primary", disabled=location is None, key=f"ec-save-{key}",
@@ -163,7 +167,7 @@ def _edit_course(course: dict) -> None:
             return
         wanted = {"name": name.strip(), "semester": semester.strip(), "instructor_id": instructor,
                   "description": description.strip() or None, "require_face_recognition": face,
-                  "require_device_binding": device, **location}
+                  "require_device_binding": device, "risk_threshold": risk, **location}
         changes = {k: v for k, v in wanted.items() if course.get(k) != v}
         if not changes:
             st.info("Nothing changed.")
@@ -336,6 +340,9 @@ def _confirm_device(device: dict, action: str) -> None:
         "revoke": (f"Revoke **{ui.md(name)}**?",
                    "For a lost or shared phone: it can't be used for check-in any more. The student has to "
                    "register a device again on their next sign-in. Its history is kept."),
+        "restore": (f"Restore **{ui.md(name)}**?",
+                    "For a device revoked by mistake: it can be used for check-in again, and keeps its "
+                    "trusted / not trusted setting."),
     }
     question, explanation = texts[action]
     st.write(question)
@@ -343,11 +350,11 @@ def _confirm_device(device: dict, action: str) -> None:
     left, right = st.columns(2)
     if left.button("Revoke" if action == "revoke" else "Confirm", type="primary", use_container_width=True):
         path = f"/api/v1/devices/{device['id']}"
-        call = (lambda: api.delete(path)) if action == "revoke" else \
-            (lambda: api.patch(path, {"is_trusted": action == "trust"}))
+        body = {"restore": {"is_active": True}}.get(action, {"is_trusted": action == "trust"})
+        call = (lambda: api.delete(path)) if action == "revoke" else (lambda: api.patch(path, body))
         if ui.safe(call, default=False) is not False:
             ui.flash({"trust": "Device trusted.", "untrust": "Device no longer trusted.",
-                      "revoke": "Device revoked."}[action], "✅")
+                      "revoke": "Device revoked.", "restore": "Device restored."}[action], "✅")
             st.rerun()
     if right.button("Cancel", use_container_width=True):
         st.rerun()
@@ -397,8 +404,20 @@ def _devices_tab() -> None:
             _confirm_device(device, "untrust")
     elif trust_btn.button("Mark trusted", use_container_width=True, disabled=not device.get("is_active")):
         _confirm_device(device, "trust")
-    if revoke_btn.button("Revoke device", use_container_width=True, disabled=not device.get("is_active")):
-        _confirm_device(device, "revoke")
+    if device.get("is_active"):
+        if revoke_btn.button("Revoke device", use_container_width=True):
+            _confirm_device(device, "revoke")
+    elif revoke_btn.button("Restore device", use_container_width=True):
+        _confirm_device(device, "restore")
+    with st.form(f"rename-device-{device['id']}"):
+        name_col, save_col = st.columns([3, 1], vertical_alignment="bottom")
+        new_name = name_col.text_input("Device name", value=device.get("device_name") or "", max_chars=100)
+        if save_col.form_submit_button("Rename", use_container_width=True):
+            if new_name.strip() == (device.get("device_name") or ""):
+                st.info("Nothing changed.")
+            elif ui.safe(api.patch, f"/api/v1/devices/{device['id']}", {"device_name": new_name.strip()}):
+                ui.flash("Device renamed.", "✅")
+                st.rerun()
 
 
 def render() -> None:

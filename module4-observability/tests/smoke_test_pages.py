@@ -19,10 +19,10 @@ import config  # noqa: E402
 PASSWORD = "SaivDemo2026!"
 ROLES = {
     "admin": ("admin@saiv.demo", ["today", "review", "sessions", "checkins", "courses", "students", "exports",
-                                  "accounts", "manage", "audit", "system"]),
+                                  "accounts", "manage", "audit", "system", "account"]),
     "instructor": ("instructor@saiv.demo", ["today", "review", "sessions", "checkins", "courses", "students",
-                                            "exports", "accounts"]),
-    "ta": ("ta@saiv.demo", ["today", "review", "sessions", "checkins", "exports"]),
+                                            "exports", "accounts", "account"]),
+    "ta": ("ta@saiv.demo", ["today", "review", "sessions", "checkins", "exports", "account"]),
 }
 
 
@@ -31,13 +31,13 @@ def harness(page_key: str) -> None:
     import sys
     sys.path.insert(0, "app")
     import streamlit as st
-    from views import (accounts, audit, checkins, courses, exports_page, manage, overview, review, sessions,
-                       students, system)
+    from views import (account, accounts, audit, checkins, courses, exports_page, manage, overview, review,
+                       sessions, students, system)
 
     renders = {"today": overview.render, "review": review.render, "sessions": sessions.render,
                "checkins": checkins.render, "courses": courses.render, "students": students.render,
                "exports": exports_page.render, "accounts": accounts.render, "manage": manage.render,
-               "audit": audit.render, "system": system.render}
+               "audit": audit.render, "system": system.render, "account": account.render}
     pages = {key: st.Page(fn, title=key, url_path=key, default=key == page_key) for key, fn in renders.items()}
     st.session_state.pages = pages
     st.navigation(list(pages.values())).run()

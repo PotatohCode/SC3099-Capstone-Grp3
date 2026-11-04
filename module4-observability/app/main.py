@@ -6,7 +6,8 @@ import streamlit as st
 
 import auth
 import ui
-from views import accounts, audit, checkins, courses, exports_page, manage, overview, review, sessions, students, system
+from views import (account, accounts, audit, checkins, courses, exports_page, manage, overview, review, sessions,
+                   students, system)
 
 st.set_page_config(page_title="SAIV · Instructor portal", page_icon="🎓", layout="wide")
 
@@ -41,6 +42,7 @@ PAGES = {
     "manage": st.Page(manage.render, title="Users & courses", icon="🛠️", url_path="manage"),
     "audit": st.Page(audit.render, title="Audit log", icon="🧾", url_path="audit"),
     "system": st.Page(system.render, title="System health", icon="🩺", url_path="system"),
+    "account": st.Page(account.render, title="My account", icon="🔑", url_path="account"),
 }
 st.session_state.pages = PAGES
 
@@ -52,6 +54,7 @@ admin = [PAGES[k] for k, allowed in (("accounts", auth.can("manage_accounts")), 
                                      ("audit", auth.can("audit")), ("system", auth.can("system"))) if allowed]
 if admin:
     menu["Administration"] = admin
+menu["You"] = [PAGES["account"]]
 
 with st.sidebar:
     user = auth.user()
