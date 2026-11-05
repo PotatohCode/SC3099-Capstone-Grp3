@@ -15,6 +15,34 @@ async function flush() {
   })
 }
 
+describe('GeolocationStep map', () => {
+  it('shows a map under the captured coordinates, with the venue when given', async () => {
+    geoConsent = true
+    installPermissions('granted')
+    installGeolocation({ latitude: 1.35, longitude: 103.8, accuracy: 9 })
+    render(
+      <GeolocationStep
+        knownLocation={null}
+        venue={{ latitude: 1.3483, longitude: 103.6831, radius: 150 }}
+        onLocationConfirmed={jest.fn()}
+        onContinue={jest.fn()}
+      />
+    )
+    await flush()
+    await flush()
+    expect(screen.getByText('Location captured')).toBeTruthy()
+    expect(screen.getByRole('img', { name: 'Map of your location and the venue' })).toBeTruthy()
+  })
+
+  it('shows a map for a location captured earlier', async () => {
+    render(
+      <GeolocationStep knownLocation={{ latitude: 1.35, longitude: 103.8 }} onLocationConfirmed={jest.fn()} onContinue={jest.fn()} />
+    )
+    await flush()
+    expect(screen.getByRole('img', { name: 'Map of your location' })).toBeTruthy()
+  })
+})
+
 describe('GeolocationStep', () => {
   beforeEach(() => {
     saveConsent.mockClear()

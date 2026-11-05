@@ -322,9 +322,9 @@ def _create_form() -> None:
     start_at = datetime.combine(day, start, tzinfo=config.LOCAL_TZ)
     opens_at = start_at - timedelta(minutes=int(opens_before))
     closes_at = start_at + timedelta(minutes=int(closes_after))
-    when = "now (once activated)" if opens_at <= datetime.now(config.LOCAL_TZ) else opens_at.strftime("%d %b %H:%M")
+    when = "now" if opens_at <= datetime.now(config.LOCAL_TZ) else opens_at.strftime("%d %b %H:%M")
     st.caption(f"Students can check in from **{when}** until **{closes_at:%H:%M}**. "
-               "The session must also be activated.")
+               "The session activates and closes by itself within 15 minutes of those times.")
     a, b = st.columns(2)
     liveness = a.toggle("Require liveness check", value=True, key="new-session-liveness")
     face = b.toggle("Require face match", value=False, key="new-session-face")
@@ -356,7 +356,7 @@ def _create_form() -> None:
     if created:
         forget_venues()  # a newly named venue is offered under Saved venue straight away
         st.session_state.selected_session_id = created["id"]
-        ui.flash(f"Session “{created['name']}” created. Activate it when class starts.", "✅")
+        ui.flash(f"Session “{created['name']}” created. It activates by itself when check-in opens.", "✅")
         st.rerun()
 
 
@@ -804,6 +804,31 @@ def _session_detail(session: dict) -> None:
 # Page
 # ---------------------------------------------------------------------------
 
+def _refresh_button() -> None:
+    """Applies the status rules now (same as the 15-minute job) and reports which of this user's sessions changed."""
+    clicked = st.button("🔄 Refresh statuses", key="sessions-refresh-status",
+                        help="Scheduled → Active once check-in opens. Active or Scheduled → Closed once check-in "
+                             "closes. This also happens automatically every 15 minutes.")
+    st.caption("Statuses update automatically every 15 minutes; refresh to apply them now.")
+    if not clicked:
+        return
+    try:
+        result = api.post("/api/v1/sessions/refresh-status") or {}
+    except api.ApiError as err:
+        ui.show_error(err)
+        return
+    # Only report sessions this user can see
+    activated = [s["name"] for s in visible_sessions(result.get("activated", []))]
+    closed = [s["name"] for s in visible_sessions(result.get("closed", []))]
+    if not (activated or closed):
+        ui.flash("All your session statuses are up to date.", icon="ℹ️")
+    else:
+        parts = [f"{label}: {', '.join(names[:3])}{f' +{len(names) - 3} more' if len(names) > 3 else ''}"
+                 for label, names in (("Activated", activated), ("Closed", closed)) if names]
+        ui.flash("Statuses updated. " + " · ".join(parts))
+    st.rerun()
+
+
 def render() -> None:
     ui.header("SESSIONS", "Sessions", "Create sessions, open and close check-in, and follow attendance live.")
 
@@ -825,6 +850,8 @@ def render() -> None:
         sessions = [s for s in sessions if s.get("status") != "cancelled"]
 
     if not sessions:
+        if auth.can("manage_sessions"):
+            _refresh_button()
         st.info("No sessions match. Create one above, or change the filters.")
         return
 
@@ -863,6 +890,8 @@ def render() -> None:
                  format_func=lambda sid: f"{ui.session_label(by_id[sid])} · {ui.status_label(by_id[sid].get('status'))}")
     st.caption("Or tick the box at the left edge of a row in the table. The open session is highlighted.")
 
+    if auth.can("manage_sessions"):
+        _refresh_button()
     shown = frame.drop(columns=["id"])
     highlight = frame["id"].eq(current).tolist()
     styled = shown.style.apply(

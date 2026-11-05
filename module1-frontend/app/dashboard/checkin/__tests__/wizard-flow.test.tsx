@@ -7,6 +7,7 @@ import { installCamera, installGeolocation, installPermissions } from '@/test/br
 import { stubAdapter, type RecordedRequest, type StubReply } from '@/test/axios-stub'
 import { resetVerifyCalls } from '@/lib/liveness/verify'
 import { planCapture } from '@/lib/liveness/challenge'
+import { OPEN_WINDOW } from '@/test/fixtures/session'
 
 jest.mock('@/lib/hooks/useAuth', () => ({
   useAuth: () => ({
@@ -24,6 +25,7 @@ const session = {
   scheduled_start: '2026-10-22T08:00:00',
   scheduled_end: '2026-10-22T10:00:00',
   venue_name: 'LT1',
+  ...OPEN_WINDOW,
 }
 
 const CAPTURE_MS = planCapture(['blink', 'turn_left'], 30)!.durationMs
@@ -61,6 +63,7 @@ async function runToConfirm() {
   await flush(CAPTURE_MS + 100)
   await flush(100)
   expect(screen.getByText('Review & submit')).toBeTruthy()
+  expect(screen.getByRole('img', { name: /^Map of your location/ })).toBeTruthy()
 }
 
 describe('check-in wizard', () => {

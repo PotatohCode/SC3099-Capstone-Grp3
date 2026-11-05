@@ -5,6 +5,7 @@ import type { CheckInRequest } from '@/lib/types'
 import { installCamera, installGeolocation, installPermissions } from '@/test/browser-mocks'
 import { stubAdapter, type RecordedRequest } from '@/test/axios-stub'
 import { attemptsUsed, resetVerifyCalls } from '@/lib/liveness/verify'
+import { OPEN_WINDOW } from '@/test/fixtures/session'
 
 jest.mock('@/lib/hooks/useAuth', () => ({
   useAuth: () => ({
@@ -13,7 +14,7 @@ jest.mock('@/lib/hooks/useAuth', () => ({
   }),
 }))
 
-const base = { course_id: 'c1', course_code: 'SC3099', status: 'active', scheduled_start: '', scheduled_end: '', venue_name: 'LT1' }
+const base = { course_id: 'c1', course_code: 'SC3099', status: 'active', scheduled_start: '', scheduled_end: '', venue_name: 'LT1', ...OPEN_WINDOW }
 const photoOnly = { ...base, id: 's1', name: 'Tutorial A', require_liveness_check: false, require_face_match: true }
 const nothing = { ...base, id: 's2', name: 'Tutorial B', require_liveness_check: false, require_face_match: false }
 const liveOnly = { ...base, id: 's3', name: 'Lecture C', require_liveness_check: true, require_face_match: false }

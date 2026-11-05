@@ -6,6 +6,8 @@ import { installCamera, installGeolocation, installPermissions } from '@/test/br
 import { stubAdapter, type RecordedRequest, type StubReply } from '@/test/axios-stub'
 import { resetVerifyCalls } from '@/lib/liveness/verify'
 import { FLAGGED_WARNING } from '@/components/FlaggedNotice'
+import { REJECTED_WARNING } from '@/components/RejectedNotice'
+import { OPEN_WINDOW } from '@/test/fixtures/session'
 
 jest.mock('@/lib/hooks/useAuth', () => ({
   useAuth: () => ({
@@ -24,6 +26,7 @@ function makeSession(id: string, name: string) {
     scheduled_start: '2026-10-26T01:00:00',
     scheduled_end: '2026-10-26T03:00:00',
     venue_name: 'LT1',
+    ...OPEN_WINDOW,
   }
 }
 
@@ -141,6 +144,25 @@ describe('check-in feedback changes', () => {
     await flush()
     expect(screen.queryByRole('button', { name: /Lecture 7/ })).toBeNull()
     expect(screen.getByRole('button', { name: /Lecture 8/ })).toBeTruthy()
+  })
+
+  it('a rejected result tells the student it did not count and links to the appeal form', async () => {
+    backend({
+      checkin: { status: 201, data: { id: 'c7', status: 'rejected', risk_score: 0.2, risk_level: 'LOW', distance_from_venue_meters: 15000 } },
+    })
+    renderWizard()
+    await flush()
+    fireEvent.click(screen.getByRole('button', { name: /Lecture 7/ }))
+    await flush()
+    await flush()
+    fireEvent.click(await screen.findByRole('button', { name: 'Skip face check' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Skip and continue' }))
+    await flush()
+    fireEvent.click(screen.getByRole('button', { name: 'Submit check-in' }))
+    await flush()
+    expect(screen.getByText(REJECTED_WARNING)).toBeTruthy()
+    expect(screen.getByRole('link', { name: 'Write an appeal' }).getAttribute('href')).toBe('/dashboard/history/c7#appeal')
+    expect(screen.queryByText(FLAGGED_WARNING)).toBeNull()
   })
 
   it('skips the face check, submits location with no image and shows the flagged warning', async () => {

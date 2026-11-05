@@ -203,6 +203,27 @@ def _export_records(db: dict, session_ids: set[str]) -> list[dict]:
     return rows
 
 
+def _change(s: dict) -> dict:
+    """The fields the refresh endpoint returns for a changed session."""
+    return {"id": s["id"], "name": s["name"], "course_id": s["course_id"], "instructor_id": s.get("instructor_id")}
+
+
+def _refresh_statuses(db: dict) -> dict:
+    """Preview copy of session_status_scheduler.advance_session_statuses: open check-in activates, closed check-in closes."""
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    result = {"activated": [], "closed": []}
+    for s in db["sessions"]:
+        if s["status"] not in ("scheduled", "active"):
+            continue
+        if datetime.fromisoformat(s["checkin_closes_at"]) <= now:
+            s["status"] = "closed"
+            result["closed"].append(_change(s))
+        elif s["status"] == "scheduled" and datetime.fromisoformat(s["checkin_opens_at"]) <= now:
+            s["status"] = "active"
+            result["activated"].append(_change(s))
+    return result
+
+
 def handle(method: str, path: str, params: dict | None = None, body: dict | None = None, raw: bool = False):
     db = _db()
     path = path.replace("/api/v1", "", 1).rstrip("/") or "/"
@@ -235,6 +256,8 @@ def handle(method: str, path: str, params: dict | None = None, body: dict | None
         session = {**_session(course, body["name"], start, "scheduled"), **{k: v for k, v in body.items() if v is not None}}
         db["sessions"].append(session)
         return _session_view(db, session)
+    if method == "POST" and path == "/sessions/refresh-status":
+        return _refresh_statuses(db)
     if m := re.fullmatch(r"/sessions/([^/]+)", path):
         session = find("sessions", m[1])
         if method == "DELETE":

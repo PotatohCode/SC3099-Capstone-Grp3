@@ -6,6 +6,7 @@ import { installCamera, installGeolocation, installPermissions } from '@/test/br
 import { stubAdapter, type StubReply } from '@/test/axios-stub'
 import { attemptsUsed, resetVerifyCalls } from '@/lib/liveness/verify'
 import { planCapture } from '@/lib/liveness/challenge'
+import { OPEN_WINDOW } from '@/test/fixtures/session'
 
 jest.mock('@/lib/hooks/useAuth', () => ({
   useAuth: () => ({
@@ -88,7 +89,7 @@ describe('face check when the server is unreachable', () => {
     stubAdapter((req) => {
       if (down) return { status: 502 }
       if (req.url === '/sessions/my-sessions') {
-        return { status: 200, data: [{ id: 's1', course_id: 'c1', name: 'Lecture 7', status: 'active', venue_name: 'LT1' }] }
+        return { status: 200, data: [{ id: 's1', course_id: 'c1', name: 'Lecture 7', status: 'active', venue_name: 'LT1', ...OPEN_WINDOW }] }
       }
       return { status: 404 }
     })

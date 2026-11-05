@@ -76,3 +76,19 @@ class SessionResponse(BaseModel):
     total_enrolled: Optional[int] = None
     checked_in_count: Optional[int] = None
     created_at: datetime
+
+
+class SessionStatusChange(BaseModel):
+    """One session a status refresh changed."""
+
+    id: str
+    name: str
+    course_id: str
+    instructor_id: Optional[str] = None
+
+
+class SessionStatusRefreshResponse(BaseModel):
+    """Sessions a POST /sessions/refresh-status pass activated and closed."""
+
+    activated: list[SessionStatusChange]
+    closed: list[SessionStatusChange]

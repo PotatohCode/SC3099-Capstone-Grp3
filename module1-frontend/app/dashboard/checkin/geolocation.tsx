@@ -10,14 +10,16 @@ import { useAuth } from '@/lib/hooks/useAuth'
 import { useGeolocation } from '@/lib/hooks/useGeolocation'
 import { decideConsentGate, queryPermission, type ConsentGate } from '@/lib/utils/consent-tracker'
 import type { LocationData } from '@/lib/types'
+import { LocationMap, type MapVenue } from '@/components/LocationMap'
 
 interface GeolocationStepProps {
   knownLocation: LocationData | null
+  venue?: MapVenue | null
   onLocationConfirmed: (location: LocationData) => void
   onContinue: () => void
 }
 
-export function GeolocationStep({ knownLocation, onLocationConfirmed, onContinue }: GeolocationStepProps) {
+export function GeolocationStep({ knownLocation, venue, onLocationConfirmed, onContinue }: GeolocationStepProps) {
   const { user, saveConsent } = useAuth()
   const { status, position, error, requestLocation } = useGeolocation()
   const [gate, setGate] = useState<ConsentGate | null>(null)
@@ -84,6 +86,7 @@ export function GeolocationStep({ knownLocation, onLocationConfirmed, onContinue
         <p className="text-sm text-green-700">
           {knownLocation.latitude.toFixed(5)}, {knownLocation.longitude.toFixed(5)}
         </p>
+        <LocationMap latitude={knownLocation.latitude} longitude={knownLocation.longitude} accuracy={knownLocation.accuracy} venue={venue} />
         <div className="flex flex-wrap gap-3">
           <button
             type="button"
@@ -160,6 +163,7 @@ export function GeolocationStep({ knownLocation, onLocationConfirmed, onContinue
             <dd>{typeof position.accuracy === 'number' ? `${Math.round(position.accuracy)}m` : 'Unknown'}</dd>
           </div>
         </dl>
+        <LocationMap latitude={position.latitude} longitude={position.longitude} accuracy={position.accuracy} venue={venue} />
       </div>
     )
   }

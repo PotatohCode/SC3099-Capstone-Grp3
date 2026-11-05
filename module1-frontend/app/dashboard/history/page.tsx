@@ -29,13 +29,30 @@ import { LoadingSpinner } from '@/components/LoadingSpinner'
 import { RiskBadge, StatusBadge } from '@/components/StatusBadge'
 import { StudentOnlyGuard } from '@/components/StudentOnlyGuard'
 import { FlaggedNotice } from '@/components/FlaggedNotice'
+import { RejectedNotice } from '@/components/RejectedNotice'
 import { MY_CHECKINS_LIMIT } from '@/lib/checkin/checked-in'
+import { missedDate, missedSessions } from '@/lib/checkin/missed'
+import { getMySessions } from '@/lib/services/session.service'
+import { serverNow, syncServerClock } from '@/lib/utils/server-clock'
 import { APP_TIME_ZONE_LABEL, formatShortDateParts, isWithinMonthRange, parseServerDate } from '@/lib/utils/datetime'
-import type { CheckInHistoryItem, CheckInStatus } from '@/lib/types'
+import type { CheckInHistoryItem, CheckInStatus, SessionSummary } from '@/lib/types'
 
 const PAGE_SIZE = 10
+const SESSIONS_LIMIT = 100
 
-const STATUS_OPTIONS: CheckInStatus[] = ['pending', 'approved', 'flagged', 'rejected', 'appealed']
+type HistoryStatus = CheckInStatus | 'missed'
+
+const STATUS_OPTIONS: HistoryStatus[] = ['pending', 'approved', 'flagged', 'rejected', 'appealed', 'missed']
+
+/** One History row: a check-in record, or a closed session the student never checked in to. */
+interface HistoryRow {
+  key: string
+  date: string
+  courseCode?: string
+  sessionName: string
+  status: HistoryStatus
+  checkin?: CheckInHistoryItem
+}
 
 type SortColumn = 'date' | 'course' | 'status'
 type SortDirection = 'asc' | 'desc'
@@ -62,8 +79,9 @@ export default function HistoryPage() {
 function HistoryPageContent() {
   const [checkins, setCheckins] = useState<CheckInHistoryItem[]>([])
   const [enrollments, setEnrollments] = useState<MyEnrollment[]>([])
+  const [missed, setMissed] = useState<SessionSummary[]>([])
   const [courseFilter, setCourseFilter] = useState<string>('all')
-  const [statusFilter, setStatusFilter] = useState<CheckInStatus | 'all'>('all')
+  const [statusFilter, setStatusFilter] = useState<HistoryStatus | 'all'>('all')
   const [monthFrom, setMonthFrom] = useState<string>('')
   const [monthTo, setMonthTo] = useState<string>('')
   const [sortColumn, setSortColumn] = useState<SortColumn | null>(null)
@@ -78,13 +96,19 @@ function HistoryPageContent() {
       setIsLoading(true)
       setError(null)
       try {
-        const [checkinData, enrollmentData] = await Promise.all([
+        // Separate status calls keep future sessions out of the 100 cap
+        const [checkinData, enrollmentData, closedData, activeData] = await Promise.all([
           getMyCheckIns({ limit: MY_CHECKINS_LIMIT }),
-          getMyEnrollments().catch(() => []),
+          getMyEnrollments().catch(() => null),
+          getMySessions({ status: 'closed', limit: SESSIONS_LIMIT }).catch(() => []),
+          getMySessions({ status: 'active', limit: SESSIONS_LIMIT }).catch(() => []),
+          syncServerClock(),
         ])
         if (!cancelled) {
           setCheckins(checkinData)
-          setEnrollments(enrollmentData)
+          setEnrollments(enrollmentData ?? [])
+          const capped = checkinData.length >= MY_CHECKINS_LIMIT
+          setMissed(missedSessions([...closedData, ...activeData], checkinData, enrollmentData, serverNow(), capped))
         }
       } catch (err) {
         if (!cancelled) setError(extractErrorMessage(err, 'Failed to load check-in history.'))
@@ -98,14 +122,34 @@ function HistoryPageContent() {
     }
   }, [])
 
+  const rows = useMemo<HistoryRow[]>(() => {
+    const attended = checkins.map((c) => ({
+      key: c.id,
+      date: c.checked_in_at,
+      courseCode: c.course_code,
+      sessionName: c.session_name,
+      status: c.status as HistoryStatus,
+      checkin: c,
+    }))
+    const absent = missed.map((s) => ({
+      key: `missed-${s.id}`,
+      date: missedDate(s),
+      courseCode: s.course_code,
+      sessionName: s.name,
+      status: 'missed' as const,
+    }))
+    // Newest first, like the server's check-in order
+    return [...attended, ...absent].sort((a, b) => parseServerDate(b.date).getTime() - parseServerDate(a.date).getTime())
+  }, [checkins, missed])
+
   const filtered = useMemo(() => {
-    return checkins.filter((c) => {
-      if (courseFilter !== 'all' && c.course_code !== courseFilter) return false
-      if (statusFilter !== 'all' && c.status !== statusFilter) return false
-      if (!isWithinMonthRange(c.checked_in_at, monthFrom, monthTo)) return false
+    return rows.filter((r) => {
+      if (courseFilter !== 'all' && r.courseCode !== courseFilter) return false
+      if (statusFilter !== 'all' && r.status !== statusFilter) return false
+      if (!isWithinMonthRange(r.date, monthFrom, monthTo)) return false
       return true
     })
-  }, [checkins, courseFilter, statusFilter, monthFrom, monthTo])
+  }, [rows, courseFilter, statusFilter, monthFrom, monthTo])
 
   const sorted = useMemo(() => {
     if (!sortColumn) return filtered
@@ -113,9 +157,9 @@ function HistoryPageContent() {
     return [...filtered].sort((a, b) => {
       let cmp = 0
       if (sortColumn === 'date') {
-        cmp = parseServerDate(a.checked_in_at).getTime() - parseServerDate(b.checked_in_at).getTime()
+        cmp = parseServerDate(a.date).getTime() - parseServerDate(b.date).getTime()
       } else if (sortColumn === 'course') {
-        cmp = (a.course_code ?? '').localeCompare(b.course_code ?? '')
+        cmp = (a.courseCode ?? '').localeCompare(b.courseCode ?? '')
       } else if (sortColumn === 'status') {
         cmp = a.status.localeCompare(b.status)
       }
@@ -197,7 +241,7 @@ function HistoryPageContent() {
             id="status-filter"
             value={statusFilter}
             onChange={(e) => {
-              setStatusFilter(e.target.value as CheckInStatus | 'all')
+              setStatusFilter(e.target.value as HistoryStatus | 'all')
               setPage(0)
             }}
             className="min-h-[44px] rounded-md border border-gray-300 bg-white px-3 py-2 text-sm capitalize"
@@ -267,11 +311,11 @@ function HistoryPageContent() {
             </thead>
             <tbody>
               {pageItems.map((item) => {
-                const courseLabel = item.course_code ?? '-'
-                const { date, time } = formatShortDateParts(item.checked_in_at)
+                const courseLabel = item.courseCode ?? '-'
+                const { date, time } = formatShortDateParts(item.date)
                 return (
                   <tr
-                    key={item.id}
+                    key={item.key}
                     className="relative border-t border-gray-100 hover:bg-gray-50 focus-within:bg-gray-50"
                   >
                     <td className="whitespace-nowrap px-4 py-3 text-gray-700">
@@ -281,19 +325,27 @@ function HistoryPageContent() {
                       </div>
                     </td>
                     <td className="whitespace-nowrap px-4 py-3 text-gray-700">
-                      <Link
-                        href={`/dashboard/history/${item.id}`}
-                        className="static after:absolute after:inset-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
-                        aria-label={`View check-in for ${courseLabel} on ${date} at ${time}`}
-                      >
-                        {courseLabel}
-                      </Link>
+                      {item.checkin ? (
+                        <Link
+                          href={`/dashboard/history/${item.checkin.id}`}
+                          className="static after:absolute after:inset-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
+                          aria-label={`View check-in for ${courseLabel} on ${date} at ${time}`}
+                        >
+                          {courseLabel}
+                        </Link>
+                      ) : (
+                        <div className="flex flex-col leading-tight">
+                          <span>{courseLabel}</span>
+                          <span className="text-xs text-gray-500">{item.sessionName}</span>
+                        </div>
+                      )}
                     </td>
                     <td className="whitespace-nowrap px-4 py-3">
                       <div className="flex flex-col items-start gap-1">
                         <StatusBadge status={item.status} />
-                        <RiskBadge riskLevel={item.risk_level} riskScore={item.risk_score} />
+                        {item.checkin && <RiskBadge riskLevel={item.checkin.risk_level} riskScore={item.checkin.risk_score} />}
                         {item.status === 'flagged' && <FlaggedNotice compact />}
+                        {item.status === 'rejected' && <RejectedNotice compact />}
                       </div>
                     </td>
                   </tr>

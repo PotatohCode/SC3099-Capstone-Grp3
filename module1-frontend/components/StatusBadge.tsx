@@ -5,15 +5,16 @@
 import type { CheckInStatus, RiskLevel } from '@/lib/types'
 import { RISK_LABEL, riskLevelFor } from '@/lib/utils/risk'
 
-const STATUS_STYLES: Record<CheckInStatus, string> = {
+const STATUS_STYLES: Record<CheckInStatus | 'missed', string> = {
   pending: 'bg-gray-100 text-gray-700 border-gray-300',
   approved: 'bg-green-100 text-green-700 border-green-300',
   flagged: 'bg-amber-100 text-amber-700 border-amber-300',
   rejected: 'bg-red-100 text-red-700 border-red-300',
   appealed: 'bg-blue-100 text-blue-700 border-blue-300',
+  missed: 'bg-slate-200 text-slate-700 border-slate-400',
 }
 
-export function StatusBadge({ status }: { status: CheckInStatus }) {
+export function StatusBadge({ status }: { status: CheckInStatus | 'missed' }) {
   return (
     <span
       className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium capitalize ${STATUS_STYLES[status] ?? STATUS_STYLES.pending}`}

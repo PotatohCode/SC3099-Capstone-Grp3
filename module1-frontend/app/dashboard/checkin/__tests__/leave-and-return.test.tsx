@@ -8,6 +8,7 @@ import { attemptsUsed, resetVerifyCalls } from '@/lib/liveness/verify'
 import { requestCheckInRestart } from '@/lib/checkin/restart'
 import httpClient from '@/lib/utils/http-client'
 import type { InternalAxiosRequestConfig } from 'axios'
+import { OPEN_WINDOW } from '@/test/fixtures/session'
 
 jest.mock('@/lib/hooks/useAuth', () => ({
   useAuth: () => ({
@@ -17,7 +18,7 @@ jest.mock('@/lib/hooks/useAuth', () => ({
 }))
 
 function makeSession(id: string, name: string) {
-  return { id, course_id: 'c1', course_code: 'SC3099', name, status: 'active', scheduled_start: '', scheduled_end: '', venue_name: 'LT1' }
+  return { id, course_id: 'c1', course_code: 'SC3099', name, status: 'active', scheduled_start: '', scheduled_end: '', venue_name: 'LT1', ...OPEN_WINDOW }
 }
 
 const s1 = makeSession('s1', 'Lecture 7')
