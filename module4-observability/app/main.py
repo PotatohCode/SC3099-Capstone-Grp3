@@ -27,6 +27,7 @@ st.markdown("""
 auth.init_session()
 
 if not auth.is_signed_in():
+    auth.restore_login()  # a browser refresh: sign back in from the tab's saved login
     st.navigation([st.Page(auth.login_page, title="Sign in", icon="🔐")], position="hidden").run()
     st.stop()
 
@@ -69,8 +70,17 @@ with st.sidebar:
         auth.sign_out()
         st.rerun()
 
+page = st.navigation(menu)
+current = next((key for key, p in PAGES.items() if p.url_path == page.url_path), "today")
+# After a browser refresh, go back to the page that was open (the URL is lost while
+# the saved login is read back), if this role can open it.
+restore_page = st.session_state.pop("restore_page", None)
+if restore_page and restore_page != current and any(PAGES.get(restore_page) is p for ps in menu.values() for p in ps):
+    st.switch_page(PAGES[restore_page])
+auth.remember_login(current)
+
 try:
-    st.navigation(menu).run()
+    page.run()
 except Exception as err:  # last-resort guard so one page bug never blanks the app
     from api import ApiError
     if isinstance(err, ApiError):

@@ -62,8 +62,12 @@ Instructors use `POST /auth/register`, which the course spec makes public for ev
 the instructor → student/TA limit is applied in the portal. CSV columns:
 `email, full_name, role, password` (template downloadable on the page).
 
-**Security notes:** tokens live only in Streamlit's server-side session (never in the browser
-or URL) and are renewed automatically; sign-out revokes them on the backend. Names and notes
+**Security notes:** the access token lives only in Streamlit's server-side session (never in the
+browser or URL) and is renewed automatically. So that a browser refresh doesn't sign staff out,
+the refresh token is also kept in the tab's `sessionStorage` (as the student app does): it's
+cleared when the tab closes or on sign-out, and sign-out also revokes both tokens on the
+backend. That copy could be read by a script running in the page, so names and notes
+are shown as plain text. CSV exports guard against spreadsheet formula injection. Python
 are shown as plain text. CSV exports guard against spreadsheet formula injection. Python
 tracebacks are hidden from users.
 
