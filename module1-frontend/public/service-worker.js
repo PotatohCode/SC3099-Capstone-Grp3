@@ -6,6 +6,8 @@
  *   - Cache-First:            static assets (JS, CSS, images, fonts, icons, manifest)
  *   - Stale-While-Revalidate: GET /sessions*
  *   - Network-First:          GET /checkins/my-checkins (must be fresh to hide checked-in sessions)
+ *                             GET /sessions/my-sessions (status and check-in window must be current)
+ *   - Not intercepted:        OpenStreetMap tiles (OSM tile policy forbids offline storage)
  *   - Network-Only:           /auth/*, any non-GET request (incl. POST /checkins/)
  *
  * Section 7 Risk Analysis: "Service Worker Cache Poisoning" -> mitigated by the strict
@@ -15,7 +17,7 @@
 
 importScripts('/offline.js')
 
-const CACHE_VERSION = 'v2'
+const CACHE_VERSION = 'v3'
 const STATIC_CACHE = `saiv-static-${CACHE_VERSION}`
 const READS_CACHE = `saiv-reads-${CACHE_VERSION}`
 const PAGES_CACHE = `saiv-pages-${CACHE_VERSION}`
@@ -105,7 +107,12 @@ function isStaleWhileRevalidate(url) {
 }
 
 function isNetworkFirst(url) {
-  return /\/checkins\/my-checkins/.test(url.pathname)
+  return /\/checkins\/my-checkins|\/sessions\/my-sessions/.test(url.pathname)
+}
+
+/** Map tiles go straight to the network so they are never stored for offline use. */
+function isMapTile(url) {
+  return url.hostname === 'tile.openstreetmap.org' || url.hostname.endsWith('.tile.openstreetmap.org')
 }
 
 function isStaticAsset(request, url) {
@@ -121,6 +128,8 @@ self.addEventListener('fetch', (event) => {
 
   // Never intercept non-HTTP(S) requests (e.g. chrome-extension://).
   if (!url.protocol.startsWith('http')) return
+
+  if (isMapTile(url)) return
 
   // Pages: fresh online, cached offline.
   if (request.method === 'GET' && request.mode === 'navigate' && url.origin === self.location.origin) {

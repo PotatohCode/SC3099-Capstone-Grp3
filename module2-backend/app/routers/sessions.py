@@ -18,12 +18,19 @@ from app.db.models.enrollment import Enrollment
 from app.db.models.session import ClassSession
 from app.db.models.user import User
 from app.schemas.common import Page, page_limit
-from app.schemas.session import SessionCreate, SessionResponse, SessionUpdate
+from app.schemas.session import (
+    SessionCreate,
+    SessionResponse,
+    SessionStatusChange,
+    SessionStatusRefreshResponse,
+    SessionUpdate,
+)
 from app.services.audit import log_event
 from app.services.authz import require_edit_course, require_manage_session
 from app.services.partial_update import drop_nulls_for_required
 from app.services.roster import active_student_enrollments
 from app.services.sanitize import sanitize_text
+from app.services.session_status_scheduler import advance_session_statuses
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 settings = get_settings()
@@ -163,6 +170,25 @@ def list_sessions(
     total = query.count()
     sessions = query.order_by(ClassSession.scheduled_start.desc()).offset(offset).limit(limit).all()
     return Page(items=_to_responses(db, sessions), total=total, limit=limit, offset=offset)
+
+
+@router.post("/refresh-status", response_model=SessionStatusRefreshResponse)
+def refresh_session_statuses(
+    current_user: User = Depends(require_role("instructor", "admin")),
+    db: Session = Depends(get_db),
+):
+    """Applies the session status rules now, like the quarter-hour job, and returns the sessions it activated and closed."""
+    result = advance_session_statuses(db, _now(), trigger="manual", requested_by=current_user.id)
+    db.commit()
+    changed = result["activated"] + result["closed"]
+    rows = {s.id: s for s in db.query(ClassSession).filter(ClassSession.id.in_(changed)).all()} if changed else {}
+
+    def describe(ids: list) -> list:
+        """Name and course for each changed session id."""
+        return [SessionStatusChange(id=i, name=rows[i].name, course_id=rows[i].course_id,
+                                    instructor_id=rows[i].instructor_id) for i in ids if i in rows]
+
+    return SessionStatusRefreshResponse(activated=describe(result["activated"]), closed=describe(result["closed"]))
 
 
 @router.get("/active", response_model=List[SessionResponse])

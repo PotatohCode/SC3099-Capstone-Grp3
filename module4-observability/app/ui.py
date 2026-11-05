@@ -220,7 +220,7 @@ def checkin_state(session: dict) -> str:
     if status == "active":
         return {"open": f"🟢 Open now · closes {closes}", "not_open": f"⏳ Opens {opens}",
                 "closed": f"⛔ Window ended {closes}"}[window]
-    return {"open": f"🔵 Not activated · window open until {closes}", "not_open": f"🔵 Opens {opens} once activated",
+    return {"open": f"🔵 Activating soon · window open until {closes}", "not_open": f"🔵 Activates {opens}",
             "closed": f"⛔ Window ended {closes}"}[window]
 
 

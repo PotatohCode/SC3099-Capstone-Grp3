@@ -6,6 +6,7 @@ module.exports = nextJest({ dir: './' })({
   moduleNameMapper: {
     '^@/(.*)$': '<rootDir>/$1',
     '^axios$': '<rootDir>/node_modules/axios/dist/node/axios.cjs',
+    '^leaflet$': '<rootDir>/test/leaflet-mock.ts',
   },
   globalSetup: '<rootDir>/test/global-setup.js',
   setupFilesAfterEnv: ['<rootDir>/test/setup.ts'],

@@ -17,6 +17,7 @@
     "@types/react-dom": "^18",
     "axios": "^1.6.5",
     "jose": "^5.2.0",
+    "leaflet": "1.9.4",
     "next": "14.1.0",
     "react": "^18",
     "react-dom": "^18",
@@ -25,6 +26,7 @@
   "devDependencies": {
     "@testing-library/react": "^14.3.1",
     "@types/jest": "^29.5.12",
+    "@types/leaflet": "^1.9.20",
     "autoprefixer": "^10.4.17",
     "eslint": "^8",
     "eslint-config-next": "14.1.0",

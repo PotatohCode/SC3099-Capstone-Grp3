@@ -45,10 +45,10 @@ function loadWorker(network: (url: string) => Promise<FakeResponse>) {
   context.self = self
   runInNewContext(readFileSync(join(process.cwd(), 'public/service-worker.js'), 'utf8'), context)
   const background: Promise<unknown>[] = []
-  async function get(url: string, mode?: string) {
+  async function get(url: string, mode?: string, destination = '') {
     let pending: Promise<unknown> | undefined
     listeners.fetch({
-      request: { url, method: 'GET', destination: '', mode },
+      request: { url, method: 'GET', destination, mode },
       respondWith: (p) => (pending = p),
       waitUntil: (p: Promise<unknown>) => background.push(p),
     } as Parameters<Handler>[0])
@@ -84,6 +84,45 @@ describe('service worker caching for check-in history', () => {
     await get(url)
     online = false
     expect(await get(url)).toMatchObject({ body: 'cached' })
+  })
+})
+
+describe('service worker caching for session list and map tiles', () => {
+  it('returns a fresh my-sessions list instead of an older cached copy', async () => {
+    let version = 'scheduled'
+    const { get } = loadWorker(async () => reply(version))
+    const url = 'https://app.test/api/v1/sessions/my-sessions?status=active'
+    expect(await get(url)).toMatchObject({ body: 'scheduled' })
+    version = 'active'
+    expect(await get(url)).toMatchObject({ body: 'active' })
+  })
+
+  it('falls back to the cached my-sessions copy when offline', async () => {
+    let online = true
+    const { get } = loadWorker(async () => {
+      if (!online) throw new TypeError('Failed to fetch')
+      return reply('cached')
+    })
+    const url = 'https://app.test/api/v1/sessions/my-sessions?status=active'
+    await get(url)
+    online = false
+    expect(await get(url)).toMatchObject({ body: 'cached' })
+  })
+
+  it('does not intercept or store OpenStreetMap tiles', async () => {
+    const network = jest.fn(async () => reply('tile'))
+    const { get, store } = loadWorker(network)
+    expect(await get('https://tile.openstreetmap.org/17/1/2.png', undefined, 'image')).toBeUndefined()
+    expect(network).not.toHaveBeenCalled()
+    expect(Array.from(store.keys()).some((k) => k.includes('openstreetmap'))).toBe(false)
+  })
+
+  it('still caches same-origin images cache-first', async () => {
+    const network = jest.fn(async () => reply('icon'))
+    const { get } = loadWorker(network)
+    await get('https://app.test/icons/icon-192.png', undefined, 'image')
+    expect(await get('https://app.test/icons/icon-192.png', undefined, 'image')).toMatchObject({ body: 'icon' })
+    expect(network).toHaveBeenCalledTimes(1)
   })
 })
 

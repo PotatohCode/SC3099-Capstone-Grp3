@@ -18,14 +18,15 @@ import { LoadingSpinner } from '@/components/LoadingSpinner'
 import { StatusBadge, RiskBadge } from '@/components/StatusBadge'
 import { StudentOnlyGuard } from '@/components/StudentOnlyGuard'
 import { FlaggedNotice } from '@/components/FlaggedNotice'
+import { RejectedNotice } from '@/components/RejectedNotice'
 import { formatDateTime } from '@/lib/utils/datetime'
 import type { CheckInResponse, SessionSummary } from '@/lib/types'
 
 const APPEALABLE_STATUSES = new Set(['flagged', 'rejected'])
 
-function DetailCard({ title, children }: { title: string; children: React.ReactNode }) {
+function DetailCard({ title, id, children }: { title: string; id?: string; children: React.ReactNode }) {
   return (
-    <div className="space-y-2 rounded-lg border border-gray-200 bg-white p-4">
+    <div id={id} className="scroll-mt-4 space-y-2 rounded-lg border border-gray-200 bg-white p-4">
       <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500">{title}</h2>
       {children}
     </div>
@@ -64,12 +65,17 @@ function BooleanBadge({ value }: { value: boolean | null | undefined }) {
 function AppealForm({
   checkinId,
   onAppealed,
+  isOpen,
+  onOpen,
+  onClose,
 }: {
   checkinId: string
   onAppealed: (updated: Pick<CheckInResponse, 'status' | 'appeal_reason' | 'appealed_at'>) => void
+  isOpen: boolean
+  onOpen: () => void
+  onClose: () => void
 }) {
   const [reason, setReason] = useState('')
-  const [isOpen, setIsOpen] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -77,7 +83,7 @@ function AppealForm({
     return (
       <button
         type="button"
-        onClick={() => setIsOpen(true)}
+        onClick={onOpen}
         className="min-h-[44px] rounded-md border border-blue-300 px-4 py-2 text-sm font-medium text-blue-700 hover:bg-blue-50"
       >
         Appeal this check-in
@@ -100,7 +106,7 @@ function AppealForm({
         appeal_reason: response.appeal_reason,
         appealed_at: response.appealed_at,
       })
-      setIsOpen(false)
+      onClose()
     } catch (err) {
       setError(extractErrorMessage(err, 'Failed to submit appeal.'))
     } finally {
@@ -133,7 +139,7 @@ function AppealForm({
         </button>
         <button
           type="button"
-          onClick={() => setIsOpen(false)}
+          onClick={onClose}
           className="min-h-[44px] rounded-md border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100"
         >
           Cancel
@@ -159,6 +165,14 @@ function CheckInDetailContent() {
   const [session, setSession] = useState<SessionSummary | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [appealOpen, setAppealOpen] = useState(false)
+
+  // Arriving from check-in step 4 opens the appeal form
+  useEffect(() => {
+    if (checkin?.status !== 'rejected' || window.location.hash !== '#appeal') return
+    setAppealOpen(true)
+    requestAnimationFrame(() => document.getElementById('appeal')?.scrollIntoView?.({ behavior: 'smooth' }))
+  }, [checkin?.status])
 
   useEffect(() => {
     let cancelled = false
@@ -227,6 +241,16 @@ function CheckInDetailContent() {
       </div>
 
       {checkin.status === 'flagged' && <FlaggedNotice />}
+      {checkin.status === 'rejected' && (
+        <RejectedNotice
+          appealed={hasAppeal}
+          onAppeal={() => {
+            setAppealOpen(true)
+            // Scroll once the form has rendered
+            requestAnimationFrame(() => document.getElementById('appeal')?.scrollIntoView?.({ behavior: 'smooth' }))
+          }}
+        />
+      )}
 
       <DetailCard title="Check-in">
         <Field label="Checked in at" value={formatDateTime(checkin.checked_in_at)} />
@@ -290,14 +314,20 @@ function CheckInDetailContent() {
         </DetailCard>
       )}
 
-      <DetailCard title="Appeal">
+      <DetailCard title="Appeal" id="appeal">
         {hasAppeal ? (
           <>
             {checkin.appealed_at && <Field label="Appealed at" value={formatDateTime(checkin.appealed_at)} />}
             {checkin.appeal_reason && <p className="pt-1 text-sm text-gray-700">{checkin.appeal_reason}</p>}
           </>
         ) : APPEALABLE_STATUSES.has(checkin.status) ? (
-          <AppealForm checkinId={checkin.id} onAppealed={handleAppealed} />
+          <AppealForm
+            checkinId={checkin.id}
+            onAppealed={handleAppealed}
+            isOpen={appealOpen}
+            onOpen={() => setAppealOpen(true)}
+            onClose={() => setAppealOpen(false)}
+          />
         ) : (
           <p className="text-sm text-gray-500">This check-in is not eligible for appeal.</p>
         )}

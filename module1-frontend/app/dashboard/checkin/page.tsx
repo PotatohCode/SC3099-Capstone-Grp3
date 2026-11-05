@@ -20,13 +20,20 @@ import { extractErrorMessage } from '@/lib/utils/http-client'
 import { submitAttempt } from '@/lib/checkin/submit'
 import { ALREADY_CHECKED_IN_VIEW, SERVER_UNREACHABLE_MESSAGE, type CheckInErrorAction, type CheckInErrorView } from '@/lib/checkin/errors'
 import { hasCheckIn, loadCheckedInSessions, PRECHECK_TIMEOUT_MS } from '@/lib/checkin/checked-in'
+import { checkinWindow } from '@/lib/checkin/window'
+import { useNow } from '@/lib/hooks/useNow'
+import { serverNow, syncServerClock } from '@/lib/utils/server-clock'
 import { REVIEW_MESSAGE } from '@/lib/liveness/verify'
 import { FlaggedNotice } from '@/components/FlaggedNotice'
+import { RejectedNotice } from '@/components/RejectedNotice'
+import { LocationMap, venueFromSession } from '@/components/LocationMap'
 import { LoadingSpinner } from '@/components/LoadingSpinner'
 import { StatusBadge, RiskBadge } from '@/components/StatusBadge'
 import { CameraCapture } from './camera-capture'
 import { GeolocationStep } from './geolocation'
 import type { SessionSummary } from '@/lib/types'
+
+const SESSION_REFRESH_MS = 60_000
 
 const STEPS: { key: CheckInStep; label: string }[] = [
   { key: 'session-select', label: 'Session' },
@@ -87,6 +94,9 @@ function SessionSelectStep() {
   const [isLoading, setIsLoading] = useState(true)
   const [checkingId, setCheckingId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [blocked, setBlocked] = useState<{ id: string; message: string; at: number } | null>(null)
+  // Re-render every 15 s; times come from serverNow()
+  useNow(15000, serverNow)
   const mountedRef = useRef(true)
 
   useEffect(() => {
@@ -98,38 +108,61 @@ function SessionSelectStep() {
 
   useEffect(() => {
     let cancelled = false
-    async function load() {
-      setIsLoading(true)
-      setError(null)
+    /** Loads active sessions; a quiet reload keeps the current list on failure. */
+    async function load(quiet: boolean) {
+      if (!quiet) {
+        setIsLoading(true)
+        setError(null)
+      }
       try {
         const [data, done] = await Promise.all([
           getMySessions({ status: 'active' }),
           loadCheckedInSessions().catch(() => null),
+          syncServerClock(),
         ])
         if (cancelled) return
         const open = done ? data.filter((s) => !hasCheckIn(done, s.id)) : data
         setSessions(open)
         setHiddenCount(data.length - open.length)
+        setError(null)
       } catch (err) {
-        if (!cancelled) setError(extractErrorMessage(err, 'Failed to load sessions.'))
+        if (!cancelled && !quiet) setError(extractErrorMessage(err, 'Failed to load sessions.'))
       } finally {
-        if (!cancelled) setIsLoading(false)
+        if (!cancelled && !quiet) setIsLoading(false)
       }
     }
-    load()
+    load(false)
+    // Pick up sessions the backend activates or extends
+    const timer = setInterval(() => load(true), SESSION_REFRESH_MS)
+    const onVisible = () => document.visibilityState === 'visible' && load(true)
+    document.addEventListener('visibilitychange', onVisible)
     return () => {
       cancelled = true
+      clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVisible)
     }
   }, [])
 
   async function choose(session: SessionSummary) {
+    const before = checkinWindow(session, serverNow())
+    if (!before.open) {
+      setBlocked({ id: session.id, message: before.message, at: serverNow() })
+      return
+    }
+    setBlocked(null)
     setCheckingId(session.id)
     const done = await loadCheckedInSessions({ courseId: session.course_id, timeoutMs: PRECHECK_TIMEOUT_MS }).catch(
       () => null
     )
     if (!mountedRef.current) return
     setCheckingId(null)
-    if (done?.submitted.has(session.id)) markAlreadyCheckedIn(session)
+    if (done?.submitted.has(session.id)) {
+      markAlreadyCheckedIn(session)
+      return
+    }
+    // Window may close during the precheck
+    const after = checkinWindow(session, serverNow())
+    if (!after.open) setBlocked({ id: session.id, message: after.message, at: serverNow() })
     else selectSession(session)
   }
 
@@ -139,37 +172,70 @@ function SessionSelectStep() {
     return <p className="text-sm text-red-600" role="alert">{error}</p>
   }
 
-  if (sessions.length === 0) {
+  const current = serverNow()
+  // Closed-window sessions move to History
+  const listed = sessions
+    .map((session) => ({ session, window: checkinWindow(session, current) }))
+    .filter((item) => item.window.open || item.window.reason !== 'closed')
+    .sort((a, b) => Number(b.window.open) - Number(a.window.open))
+  // Hide the alert once that session opens
+  const blockedSession = blocked && listed.find((item) => item.session.id === blocked.id)
+  const showBlocked = blocked && !(blockedSession && blockedSession.window.open && current >= blocked.at)
+  const alert = showBlocked && (
+    <p className="text-sm text-red-600" role="alert">
+      {blocked.message}
+    </p>
+  )
+
+  if (listed.length === 0) {
     return hiddenCount > 0 ? (
-      <p className="text-sm text-gray-600">
-        You&apos;ve already checked in to every open session. You can see them in{' '}
-        <Link href="/dashboard/history" className="font-medium text-blue-700 underline">
-          History
-        </Link>
-        .
-      </p>
+      <div className="space-y-3">
+        {alert}
+        <p className="text-sm text-gray-600">
+          You&apos;ve already checked in to every open session. Your check-ins and any missed sessions are in{' '}
+          <Link href="/dashboard/history" className="font-medium text-blue-700 underline">
+            History
+          </Link>
+          .
+        </p>
+      </div>
     ) : (
-      <p className="text-sm text-gray-600">
-        No active check-in sessions right now. Check back once your instructor opens one.
-      </p>
+      <div className="space-y-3">
+        {alert}
+        <p className="text-sm text-gray-600">
+          No sessions are open for check-in right now. This page updates by itself when one opens. Sessions whose
+          check-in has closed are in{' '}
+          <Link href="/dashboard/history" className="font-medium text-blue-700 underline">
+            History
+          </Link>
+          .
+        </p>
+      </div>
     )
   }
 
   return (
     <div className="space-y-3">
+      {alert}
       <ul className="space-y-3">
-        {sessions.map((session) => (
+        {listed.map(({ session, window }) => (
           <li key={session.id}>
             <button
               type="button"
               onClick={() => choose(session)}
-              disabled={checkingId !== null}
-              className="min-h-[44px] w-full rounded-lg border border-gray-200 bg-white p-4 text-left hover:border-blue-400 hover:bg-blue-50 disabled:opacity-60"
+              disabled={checkingId !== null || !window.open}
+              aria-describedby={window.open ? undefined : `window-${session.id}`}
+              className="min-h-[44px] w-full rounded-lg border border-gray-200 bg-white p-4 text-left hover:border-blue-400 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:border-gray-200 disabled:hover:bg-white"
             >
               <p className="font-semibold text-gray-900">{session.name}</p>
               <p className="text-sm text-gray-500">
                 {session.course_code ?? session.course_name} &middot; {session.venue_name ?? 'Venue TBD'}
               </p>
+              {!window.open && (
+                <p id={`window-${session.id}`} className="mt-1 text-sm text-amber-700">
+                  {window.message}
+                </p>
+              )}
               {checkingId === session.id && <p className="mt-1 text-xs text-gray-500">Checking...</p>}
             </button>
           </li>
@@ -270,6 +336,7 @@ function ConfirmStep() {
           <RiskBadge riskLevel={result.risk_level} riskScore={result.risk_score} />
         </div>
         {result.status === 'flagged' && <FlaggedNotice />}
+        {result.status === 'rejected' && <RejectedNotice appealHref={`/dashboard/history/${result.id}#appeal`} />}
         {typeof result.distance_from_venue_meters === 'number' && (
           <p className="text-sm text-gray-600">
             Distance from venue: {Math.round(result.distance_from_venue_meters)}m
@@ -330,6 +397,16 @@ function ConfirmStep() {
             </dd>
           </div>
         </dl>
+        {location && (
+          <div className="mt-3">
+            <LocationMap
+              latitude={location.latitude}
+              longitude={location.longitude}
+              accuracy={location.accuracy}
+              venue={venueFromSession(session)}
+            />
+          </div>
+        )}
         {media?.kind === 'none' && media.skipped ? (
           <p className="mt-3 text-xs text-amber-700" role="status">
             You skipped the face check, so this check-in may be flagged for your instructor to review.
@@ -404,7 +481,12 @@ export default function CheckInWizardPage() {
 
       {step === 'location' && (
         <div className="space-y-4">
-          <GeolocationStep knownLocation={location} onLocationConfirmed={setLocation} onContinue={continueFromLocation} />
+          <GeolocationStep
+            knownLocation={location}
+            venue={venueFromSession(session)}
+            onLocationConfirmed={setLocation}
+            onContinue={continueFromLocation}
+          />
           <button
             type="button"
             onClick={previousStep}

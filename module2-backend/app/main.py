@@ -34,6 +34,7 @@ from app.routers import admin, audit, auth, checkins, courses, devices, enrollme
 from app.db.base import SessionLocal
 from app.services.rate_limit import _get_client as _redis_client
 from app.services.retention_scheduler import retention_loop
+from app.services.session_status_scheduler import session_status_loop
 
 settings = get_settings()
 logger = logging.getLogger("saiv.errors")
@@ -272,6 +273,21 @@ async def start_retention_sweep() -> None:
 @app.on_event("shutdown")
 async def stop_retention_sweep() -> None:
     task = getattr(app.state, "retention_task", None)
+    if task is not None:
+        task.cancel()
+
+
+@app.on_event("startup")
+async def start_session_status_job() -> None:
+    """Start the quarter-hour session status job unless its interval setting is 0."""
+    if settings.SESSION_STATUS_INTERVAL_MINUTES > 0:
+        app.state.session_status_task = asyncio.create_task(session_status_loop())
+
+
+@app.on_event("shutdown")
+async def stop_session_status_job() -> None:
+    """Cancel the session status job on shutdown."""
+    task = getattr(app.state, "session_status_task", None)
     if task is not None:
         task.cancel()
 

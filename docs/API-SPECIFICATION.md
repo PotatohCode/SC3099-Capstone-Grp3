@@ -492,12 +492,34 @@ Update a session. **Requires auth (instructor only, must be session owner).**
 - `active` → `closed`: Closes check-in, finalizes attendance
 - Any status → `cancelled`: Cancels session
 
+The first two transitions also happen automatically when the check-in window opens and closes; see `POST /sessions/refresh-status`.
+
 #### DELETE /sessions/{session_id}
 Delete a session. **Requires auth (instructor only, must be session owner).**
 
 Only sessions with status `scheduled` can be deleted. Active or closed sessions should be cancelled instead.
 
 **Response:** `204 No Content`
+
+#### POST /sessions/refresh-status
+Apply the automatic status rules now. **Requires auth (instructor or admin).** No request body.
+
+The backend also runs these rules by itself at every quarter hour (:00, :15, :30, :45 UTC) and about 10 seconds after startup (`SESSION_STATUS_INTERVAL_MINUTES`, default 15; 0 turns the job off). This endpoint runs the same pass immediately:
+- `scheduled` → `active` when now ≥ `checkin_opens_at`
+- `active` or `scheduled` → `closed` when now ≥ `checkin_closes_at`
+- `closed` and `cancelled` sessions are never changed
+
+The pass covers every session, not only the caller's. Each change writes one `session_updated` audit row with no `user_id` and details `{"old_status", "new_status", "trigger": "manual", "requested_by": "<caller id>"}` (the automatic job writes `"trigger": "scheduled"`). Running it twice in a row changes nothing the second time.
+
+**Response:** `200 OK`
+```json
+{
+  "activated": [{"id": "uuid", "name": "Week 5 Lecture", "course_id": "uuid", "instructor_id": "uuid"}],
+  "closed": [{"id": "uuid", "name": "Week 4 Tutorial", "course_id": "uuid", "instructor_id": "uuid"}]
+}
+```
+
+**Errors:** `401` no or invalid token, `403` student or TA, `429` rate limit.
 
 ---
 

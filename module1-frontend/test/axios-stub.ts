@@ -8,6 +8,7 @@ export interface RecordedRequest {
   data: unknown
   authorization: string | undefined
   timeout: number | undefined
+  params?: Record<string, unknown>
 }
 
 export type StubReply =
@@ -43,6 +44,7 @@ export function stubAdapter(handler: (req: RecordedRequest) => StubReply): Recor
       data: typeof config.data === 'string' ? JSON.parse(config.data) : config.data,
       authorization: typeof auth === 'string' ? auth : undefined,
       timeout: config.timeout,
+      params: config.params,
     }
     calls.push(req)
     const reply = handler(req)
