@@ -5,6 +5,9 @@ and buttons to show (Module 4 design deck: "hide UI elements user can't
 access", but "backend must enforce permissions")."""
 from __future__ import annotations
 
+import hashlib
+import json
+
 import streamlit as st
 
 import api
@@ -120,6 +123,86 @@ def clear_session() -> None:
         st.session_state[key] = None
     for key in [k for k in st.session_state.keys() if k not in SESSION_KEYS + ("live_updates", "login_notice")]:
         del st.session_state[key]
+    # Signed out (or the login expired): forget the copy kept in the tab, and
+    # don't try to restore from it on this page.
+    st.session_state.restore_checked = True
+    st.session_state.forget_saved_login = True
+
+
+# ---------------------------------------------------------------------------
+# Staying signed in across a browser refresh
+#
+# A refresh starts a new Streamlit session, which has no tokens. So the refresh
+# token is also kept in the tab's sessionStorage (like the student app): on a
+# fresh page it's read back and swapped for new tokens. sessionStorage belongs
+# to this tab only and is cleared when the tab closes; sign-out removes it. The
+# access token never leaves the server.
+# ---------------------------------------------------------------------------
+
+SAVED_LOGIN_KEY = "saiv_portal_refresh_token"
+SAVED_PAGE_KEY = "saiv_portal_page"
+
+
+def _js(expression: str, key: str):
+    from streamlit_js_eval import streamlit_js_eval
+    return streamlit_js_eval(js_expressions=expression, key=key)
+
+
+def remember_login(page: str) -> None:
+    """Keeps the tab's copy of the refresh token up to date (it changes at
+    sign-in and when tokens are renewed), plus which page is open, so a refresh
+    comes back to it."""
+    token = st.session_state.refresh_token
+    saved = (token, page)
+    if st.session_state.get("demo") or not token or st.session_state.get("saved_login") == saved:
+        return
+    storage = "window.parent.sessionStorage"
+    _js(f"{storage}.setItem({json.dumps(SAVED_LOGIN_KEY)}, {json.dumps(token)}); "
+        f"{storage}.setItem({json.dumps(SAVED_PAGE_KEY)}, {json.dumps(page)}); 'saved'",
+        key=f"save-login-{hashlib.sha256((token + page).encode()).hexdigest()[:16]}")
+    st.session_state.saved_login = saved
+
+
+def restore_login() -> None:
+    """On a page with no sign-in: sign back in from the tab's saved refresh token,
+    if there is one. Stops the page while the browser is asked (one quick rerun)."""
+    storage = "window.parent.sessionStorage"
+    if st.session_state.get("forget_saved_login"):
+        _js(f"{storage}.removeItem({json.dumps(SAVED_LOGIN_KEY)}); {storage}.removeItem({json.dumps(SAVED_PAGE_KEY)}); "
+            "'forgotten'", key=f"forget-login-{st.session_state.get('forget_round', 0)}")
+        st.session_state.forget_saved_login = False
+        st.session_state.forget_round = st.session_state.get("forget_round", 0) + 1
+    if st.session_state.get("restore_checked"):
+        return
+    answer = _js(f"JSON.stringify([{storage}.getItem({json.dumps(SAVED_LOGIN_KEY)}) || '', "
+                 f"{storage}.getItem({json.dumps(SAVED_PAGE_KEY)}) || ''])", key="restore-login")
+    if answer is None:  # the browser hasn't answered yet; it reruns the page when it does
+        st.caption("Restoring your sign-in…")
+        st.stop()
+    st.session_state.restore_checked = True
+    try:
+        saved, page = json.loads(answer)
+    except (TypeError, ValueError):
+        return
+    if not saved:
+        return
+    st.session_state.refresh_token = saved
+    st.session_state.restore_page = page or None
+    try:
+        if not api._refresh():
+            raise api.SessionExpired("expired")
+        st.session_state.user = None
+        me = api._send("GET", "/api/v1/users/me", token=st.session_state.access_token)
+        if not me.ok or me.json().get("role") not in config.STAFF_ROLES:
+            raise api.SessionExpired("not staff")
+        st.session_state.user = api._unescape(me.json())
+        st.session_state.demo = False
+        st.session_state.saved_login = st.session_state.refresh_token
+    except api.ApiError:  # expired, revoked or unreachable: forget it and show the sign-in page
+        clear_session()
+        restore_login()
+        return
+    st.rerun()
 
 
 def sign_out() -> None:
